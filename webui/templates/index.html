@@ -210,6 +210,9 @@
     #logPanel h3, #retryLogPanel h3, #liveLogPanel h3, #totpLogPanel h3, #emailChangeLogPanel h3, #qrPanel h3 { display:flex; align-items:center; gap:10px; margin-bottom:10px; }
     #logPanel h3 .btn, #retryLogPanel h3 .btn, #liveLogPanel h3 .btn, #totpLogPanel h3 .btn, #emailChangeLogPanel h3 .btn, #qrPanel h3 .btn { margin-left:auto; float:none !important; }
     #logPanel .log, #retryLogPanel .log, #liveLogPanel .log, #totpLogPanel .log, #emailChangeLogPanel .log { max-height: calc(min(760px, calc(100vh - 48px)) - 74px); margin-top:0; }
+    #logPanel:not(.hidden) { display:flex; flex-direction:column; }
+    #logPanel h3, #logPanel .job-log-toolbar { flex-shrink:0; }
+    #logPanel .log { min-height:0; flex:0 1 auto; }
     #qrPanel img { display:block; max-width:min(360px, calc(100vw - 96px)); max-height:420px; margin:12px auto; border:1px solid var(--line); border-radius:10px; background:#fff; }
     #qrPanel .qr-link { display:block; word-break:break-all; white-space:normal; font-size:12px; color:var(--muted); margin-top:8px; }
     .hidden { display: none !important; }
@@ -2595,6 +2598,7 @@
 </div>
 <div class="body hidden" id="logPanel">
   <h3>任务 #<span id="logJobId"></span> 日志 <button class="btn" id="btnCloseLog" style="float:right;min-height:28px;">关闭</button></h3>
+  {% include 'job_log_toolbar.html' %}
   <div class="log" id="logContent">加载中…</div>
 </div>
 <div id="qrPanel" class="body hidden">
@@ -3244,27 +3248,7 @@ async function retrySelectedJobs() {
   }
 }
 
-function openLog(jobId) {
-  activeLogJob = jobId;
-  $('#logJobId').textContent = jobId;
-  $('#logPanel').classList.remove('hidden');
-  updateModalScrollLock();
-  $('#logContent').textContent = '加载中…';
-  pollLog();
-  clearInterval(logTimer);
-  logTimer = setInterval(pollLog, 5000);
-}
-async function pollLog() {
-  if (activeLogJob == null) return;
-  try {
-    const r = await api(`/api/jobs/${activeLogJob}/log`);
-    const c = $('#logContent');
-    const atBottom = c.scrollTop + c.clientHeight >= c.scrollHeight - 30;
-    c.textContent = r.log || '(暂无日志)';
-    if (atBottom) c.scrollTop = c.scrollHeight;
-    if (r.job && ['success','failed','stopped','cancelled'].includes(r.job.status)) clearInterval(logTimer);
-  } catch(e) {}
-}
+{% include 'job_log_script.html' %}
 
 // ---------- 账号 ----------
 let accountsLoading = false;

@@ -1,0 +1,67 @@
+let jobLogText = '';
+let jobLogGeneration = 0;
+let jobLogPending = null;
+
+function openLog(jobId) {
+  activeLogJob = jobId;
+  jobLogGeneration++;
+  jobLogText = '';
+  $('#logJobId').textContent = jobId;
+  $('#logPanel').classList.remove('hidden');
+  updateModalScrollLock();
+  $('#logContent').textContent = '加载中…';
+  $('#jobLogStatus').textContent = '加载中…';
+  $('#jobLogFollow').checked = true;
+  $('#btnCopyJobLog').disabled = true;
+  $('#btnDownloadJobLog').disabled = true;
+  clearInterval(logTimer);
+  logTimer = setInterval(pollLog, 5000);
+  pollLog();
+}
+
+async function pollLog() {
+  if (activeLogJob == null || jobLogPending === jobLogGeneration) return;
+  const jobId = activeLogJob;
+  const generation = jobLogGeneration;
+  jobLogPending = generation;
+  try {
+    const r = await api(`/api/jobs/${jobId}/log`);
+    if (activeLogJob !== jobId || jobLogGeneration !== generation) return;
+    jobLogText = r.log || '';
+    const c = $('#logContent');
+    const previousScroll = c.scrollTop;
+    c.textContent = jobLogText || '(暂无日志)';
+    c.scrollTop = $('#jobLogFollow').checked ? c.scrollHeight : previousScroll;
+    $('#btnCopyJobLog').disabled = !jobLogText;
+    $('#btnDownloadJobLog').disabled = !jobLogText;
+    const finished = r.job && ['success','failed','stopped','cancelled'].includes(r.job.status);
+    $('#jobLogStatus').textContent = finished ? '任务已结束' : '每 5 秒刷新';
+    if (finished) clearInterval(logTimer);
+  } catch (e) {
+    if (activeLogJob === jobId && jobLogGeneration === generation) {
+      $('#jobLogStatus').textContent = '刷新失败: ' + e.message;
+    }
+  } finally {
+    if (jobLogPending === generation) jobLogPending = null;
+  }
+}
+
+$('#btnCopyJobLog').addEventListener('click', () => copyText(jobLogText));
+$('#btnDownloadJobLog').addEventListener('click', () => {
+  if (!jobLogText || activeLogJob == null) return;
+  const url = URL.createObjectURL(new Blob([jobLogText], {type: 'text/plain;charset=utf-8'}));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `job-${activeLogJob}.log`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+});
+$('#jobLogFollow').addEventListener('change', () => {
+  if ($('#jobLogFollow').checked) $('#logContent').scrollTop = $('#logContent').scrollHeight;
+});
+$('#logContent').addEventListener('scroll', () => {
+  const c = $('#logContent');
+  if (c.scrollTop + c.clientHeight < c.scrollHeight - 30) $('#jobLogFollow').checked = false;
+});

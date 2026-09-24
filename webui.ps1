@@ -57,6 +57,28 @@ function Get-Listeners {
     return @(Get-NetTCPConnection -State Listen -ErrorAction Stop | Where-Object { $_.LocalPort -eq $Port })
 }
 
+function Get-ManagedWorkers {
+    param([int]$ParentId)
+    # Windows venv launchers may run the real interpreter as a direct child.
+    return @(Get-CimInstance Win32_Process -Filter "ParentProcessId = $ParentId" | Where-Object {
+        $_.Name -match '^python(?:w)?\.exe$' -and
+        $_.CommandLine -and
+        $_.CommandLine.Contains(('"' + $entry + '"')) -and
+        $_.CommandLine.Contains("--port $Port")
+    })
+}
+
+function Stop-ManagedWorkers {
+    param([int]$ParentId)
+    foreach ($worker in (Get-ManagedWorkers -ParentId $ParentId)) {
+        $handle = Get-Process -Id $worker.ProcessId -ErrorAction SilentlyContinue
+        if ($handle -and [Math]::Abs($handle.StartTime.ToUniversalTime().Ticks - $worker.CreationDate.ToUniversalTime().Ticks) -lt 10) {
+            $handle.Kill()
+            $handle.WaitForExit(10000) | Out-Null
+        }
+    }
+}
+
 function Stop-WebUI {
     $managed = Get-ManagedProcess
     if ($managed) {
@@ -65,6 +87,7 @@ function Stop-WebUI {
         if ([Math]::Abs($handle.StartTime.ToUniversalTime().Ticks - $managed.CreationDate.ToUniversalTime().Ticks) -ge 10) {
             throw 'Process changed while checking its identity. Nothing was stopped.'
         }
+        Stop-ManagedWorkers -ParentId $managed.ProcessId
         $handle.Kill()
         if (!$handle.WaitForExit(10000)) { throw 'WebUI did not exit within 10 seconds.' }
         Write-Output "Stopped WebUI PID=$($managed.ProcessId)."
@@ -108,7 +131,8 @@ function Start-WebUI {
         do {
             $child.Refresh()
             if ($child.HasExited) { throw "WebUI exited with code $($child.ExitCode). See $stderrFile" }
-            if (@(Get-Listeners | Where-Object { $_.OwningProcess -eq $child.Id }).Count) {
+            $workerIds = @((Get-ManagedWorkers -ParentId $child.Id) | ForEach-Object { $_.ProcessId })
+            if (@(Get-Listeners | Where-Object { $_.OwningProcess -eq $child.Id -or $_.OwningProcess -in $workerIds }).Count) {
                 Write-Output "Started WebUI: PID=$($child.Id), $url"
                 Write-Output "Logs: $stdoutFile and $stderrFile"
                 if ($OpenBrowser) { Start-Process $url }
@@ -118,7 +142,11 @@ function Start-WebUI {
         } while ((Get-Date) -lt $deadline)
         throw "Startup timed out. See $stderrFile"
     } catch {
-        if (!$child.HasExited) { $child.Kill(); $child.WaitForExit(10000) | Out-Null }
+        if (!$child.HasExited) {
+            Stop-ManagedWorkers -ParentId $child.Id
+            $child.Kill()
+            $child.WaitForExit(10000) | Out-Null
+        }
         if ($saved -and (Test-Path -LiteralPath $stateFile)) { Remove-Item -LiteralPath $stateFile }
         throw
     }

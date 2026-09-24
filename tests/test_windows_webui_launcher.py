@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import venv
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -39,12 +40,12 @@ class WindowsWebUiLauncherTests(unittest.TestCase):
             self.port = sock.getsockname()[1]
         self.state = self.root / "run" / f"webui-{self.port}.json"
 
-    def command(self, action, *extra, check=True):
+    def command(self, action, *extra, check=True, python_exe=None):
         # File handles avoid waiting for pipe EOF inherited by a detached Windows child.
         with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
             result = subprocess.run(
                 [POWERSHELL, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
-                 str(self.root / "webui.ps1"), action, "-Python", sys.executable,
+                 str(self.root / "webui.ps1"), action, "-Python", python_exe or sys.executable,
                  "-Port", str(self.port), "-StartupTimeout", "8", *extra],
                 stdout=stdout, stderr=stderr, timeout=45,
             )
@@ -75,6 +76,18 @@ class WindowsWebUiLauncherTests(unittest.TestCase):
         self.command("stop")
         self.assertFalse(self.state.exists())
         self.assertIn(b"not running", self.command("status").stdout)
+
+    def test_windows_venv_redirector_starts_and_stops_worker(self):
+        venv_dir = self.root / "env"
+        venv.EnvBuilder(with_pip=False).create(venv_dir)
+        venv_python = str(venv_dir / "Scripts" / "python.exe")
+        self.command("start", python_exe=venv_python)
+        self.assertIn(b"running: PID=", self.command("status").stdout)
+        with socket.create_connection(("127.0.0.1", self.port), timeout=3):
+            pass
+        self.command("stop")
+        with self.assertRaises(OSError):
+            socket.create_connection(("127.0.0.1", self.port), timeout=1)
 
     def test_occupied_port_is_not_stopped(self):
         with socket.socket() as listener:

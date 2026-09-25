@@ -1,6 +1,11 @@
 <details style="margin:12px 0;padding:14px;border:1px solid var(--line);border-radius:8px;background:var(--surface);">
   <summary style="cursor:pointer;font-weight:600;">导入已注册 GPT 账号</summary>
-  <p style="margin:10px 0;color:var(--muted);font-size:13px;">按 邮箱、GPT 密码、2FA 密钥、access token 四列粘贴；支持 Markdown 表格、制表符、CSV 或 ---- 分隔。重复邮箱会跳过。2FA 请填密钥，不要填当前六位验证码。</p>
+  <p style="margin:10px 0;color:var(--muted);font-size:13px;">按 邮箱、GPT 密码、2FA 密钥、access token 四列导入；支持 .xlsx 文件，也可粘贴 Markdown 表格、制表符、CSV 或 ---- 分隔文本。重复邮箱会跳过。2FA 请填密钥，不要填当前六位验证码。</p>
+  <label style="display:block;margin:10px 0;">选择 Excel 文件（.xlsx）
+    <input id="registeredImportFile" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" style="display:block;margin-top:6px;">
+  </label>
+  <button type="button" class="btn jobs-tb-btn jobs-tb-btn--primary" id="btnImportRegisteredFile">导入 Excel</button>
+  <p style="margin:12px 0 6px;color:var(--muted);font-size:13px;">或粘贴四列文本：</p>
   <textarea id="registeredImportText" style="width:100%;min-height:140px;box-sizing:border-box;" placeholder="| 邮箱 | 密码 | 2FA | access token |&#10;| --- | --- | --- | --- |&#10;| user@example.com | GPT密码 | TOTP密钥 | AT |"></textarea>
   <div style="display:flex;align-items:center;gap:12px;margin-top:10px;">
     <button type="button" class="btn jobs-tb-btn jobs-tb-btn--primary" id="btnImportRegistered">导入已注册账号</button>

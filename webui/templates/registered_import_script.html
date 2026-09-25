@@ -20,3 +20,28 @@ $('#btnImportRegistered').addEventListener('click', async () => {
     button.disabled = false;
   }
 });
+
+$('#btnImportRegisteredFile').addEventListener('click', async () => {
+  const fileInput = $('#registeredImportFile');
+  const button = $('#btnImportRegisteredFile');
+  const result = $('#registeredImportResult');
+  const file = fileInput.files && fileInput.files[0];
+  if (!file) { result.textContent = '请先选择 .xlsx 文件'; return; }
+  if (!file.name.toLowerCase().endsWith('.xlsx')) { result.textContent = '仅支持 .xlsx 文件'; return; }
+  if (file.size > 8_000_000) { result.textContent = 'Excel 文件超过 8 MB'; return; }
+  const form = new FormData();
+  form.append('file', file);
+  button.disabled = true;
+  result.textContent = '导入中…';
+  try {
+    const response = await api('/api/accounts/import', {method: 'POST', body: form});
+    result.textContent = `新增 ${response.inserted}，重复 ${response.skipped}，格式错误 ${response.invalid}`;
+    fileInput.value = '';
+    loadAccounts();
+    loadSummary();
+  } catch (error) {
+    result.textContent = '导入失败：' + error.message;
+  } finally {
+    button.disabled = false;
+  }
+});

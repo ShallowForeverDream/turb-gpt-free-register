@@ -401,13 +401,27 @@ def create_app(auth_code: str | None = None, *, local_no_auth: bool = False) -> 
     # ----------------------------------------------------------
     @app.post("/api/accounts/import")
     def api_registered_accounts_import():
-        from core.import_formats import parse_registered_accounts
+        from core.import_formats import parse_registered_accounts, parse_registered_accounts_xlsx
 
-        data = request.get_json(silent=True) or {}
-        text = str(data.get("text") or "")
-        if len(text) > 2_000_000:
-            return jsonify({"ok": False, "error": "导入内容超过 2 MB"}), 413
-        records, invalid = parse_registered_accounts(text)
+        if request.content_length and request.content_length > 8_500_000:
+            return jsonify({"ok": False, "error": "上传内容超过 8 MB"}), 413
+        if request.files:
+            upload = request.files.get("file")
+            if upload is None or not str(upload.filename or "").lower().endswith(".xlsx"):
+                return jsonify({"ok": False, "error": "请选择 .xlsx 文件"}), 400
+            content = upload.stream.read(8_000_001)
+            if len(content) > 8_000_000:
+                return jsonify({"ok": False, "error": "Excel 文件超过 8 MB"}), 413
+            try:
+                records, invalid = parse_registered_accounts_xlsx(content)
+            except ValueError as exc:
+                return jsonify({"ok": False, "error": str(exc)}), 400
+        else:
+            data = request.get_json(silent=True) or {}
+            text = str(data.get("text") or "")
+            if len(text) > 2_000_000:
+                return jsonify({"ok": False, "error": "导入内容超过 2 MB"}), 413
+            records, invalid = parse_registered_accounts(text)
         if not records:
             return jsonify({"ok": False, "error": "未解析到有效账号；需要 邮箱、GPT 密码、2FA 密钥、access token 四列"}), 400
         inserted, skipped = db.import_registered_gpt_accounts(records)

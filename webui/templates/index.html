@@ -2576,7 +2576,7 @@
       </label>
       <label class="outlook-import-check">
         <input id="importAsRegisteredV2" type="checkbox">
-        <span>导入后默认视为「注册成功账号」（邮箱池标记已用，并出现在账号页，可直接批量补跑 Codex）</span>
+        <span>导入后标记为「已注册 GPT 账号」（邮箱池标记已用，并出现在账号页；缺少 GPT 凭据时需后续补齐）</span>
       </label>
       <label class="outlook-import-field">
         <span>邮箱素材</span>
@@ -5426,11 +5426,6 @@ function setImportSourceV2(val) {
   }
   const forwardedSettings = document.getElementById('forwardedInboxSettingsV2');
   if (forwardedSettings) forwardedSettings.classList.toggle('hidden', next !== 'forwarded_imap');
-  const registered = document.getElementById('importAsRegisteredV2');
-  if (registered) {
-    if (next === 'forwarded_imap') registered.checked = false;
-    registered.disabled = next === 'forwarded_imap';
-  }
   if (next === 'forwarded_imap')
     document.getElementById('imapServerV2').value = 'imap.163.com';
   const text = document.getElementById('importTextV2');
@@ -5528,7 +5523,7 @@ async function doImportOutlook() {
     }
     const r = await api('/api/outlook/import', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
     const mode = r.as_registered ? '已注册账号' : '邮箱池素材';
-    const msg = `按 ${mode} 导入：解析 ${r.parsed} 行，新增 ${r.inserted}，跳过 ${r.skipped}，格式错误 ${r.invalid || 0}${r.as_registered ? '；可到“账号”页选择后批量补跑 Codex' : ''}`;
+    const msg = `按 ${mode} 导入：解析 ${r.parsed} 行，新增 ${r.inserted}，跳过 ${r.skipped}，格式错误 ${r.invalid || 0}${r.as_registered ? '；可到“账号”页查看' : ''}`;
     if (resultEl) resultEl.innerHTML = `<div class="banner info">${esc(msg)}</div>`;
     if (textEl) textEl.value = '';
     setPoolSourceV2(source === 'forwarded_imap' ? 'imap' : source);

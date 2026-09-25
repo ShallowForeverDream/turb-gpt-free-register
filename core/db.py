@@ -2261,6 +2261,7 @@ def import_registered_email_accounts(records: list[dict], source: str | None) ->
       - outlook: records 元素 {email,password,client_id,refresh_token[,access_token,totp_secret]}
       - generic_api: records 元素 {email,code_url[,access_token,totp_secret]}
       - imap: records 元素 {email,imap_password,imap_server,imap_port,imap_ssl}
+      - 转发 IMAP: IMAP 字段 + imap_forwarded=True、imap_username=统一收件箱；无需逐个邮箱密码
 
     返回 (新增账号数, 跳过数)。已存在账号会跳过；邮箱池中已存在的素材会复用并标记 used。
     """
@@ -2289,23 +2290,29 @@ def import_registered_email_accounts(records: list[dict], source: str | None) ->
             pool_row = None
 
             if source == "imap":
+                forwarded = bool(raw.get("imap_forwarded"))
                 password = str(raw.get("imap_password") or raw.get("password") or "").strip()
                 server = str(raw.get("imap_server") or raw.get("server") or "").strip()
+                username = str(raw.get("imap_username") or raw.get("username") or "").strip()
                 try:
                     port = int(raw.get("imap_port") or raw.get("port") or 993)
                 except (TypeError, ValueError):
                     port = 0
-                if not password or not server or not (1 <= port <= 65535):
+                if (not server or not (1 <= port <= 65535)
+                        or (forwarded and not valid_email(username))
+                        or (not forwarded and not password)):
                     skipped += 1
                     continue
                 ssl_raw = raw.get("imap_ssl", raw.get("use_ssl", True))
                 use_ssl = ssl_raw if isinstance(ssl_raw, bool) else str(ssl_raw).strip().lower() not in {"0", "false", "no", "off"}
                 pool_row = _find_by_email(imap_rows, email)
                 values = {
-                    "imap_password": password, "imap_server": server, "imap_port": port,
-                    "imap_username": str(raw.get("imap_username") or raw.get("username") or "").strip(),
-                    "imap_ssl": bool(use_ssl),
+                    "imap_server": server, "imap_port": port,
+                    "imap_username": username,
+                    "imap_ssl": bool(use_ssl), "imap_forwarded": forwarded,
                 }
+                if not forwarded:
+                    values["imap_password"] = password
                 if pool_row is None:
                     pool_row = {"id": _next_id(imap_rows), "email": email, **values,
                                 "status": "used", "used_at": now,
@@ -2313,6 +2320,8 @@ def import_registered_email_accounts(records: list[dict], source: str | None) ->
                     imap_rows.append(pool_row)
                 else:
                     pool_row.update(values)
+                    if forwarded:
+                        pool_row.pop("imap_password", None)
                 pool_row["status"] = "used"
                 pool_row["used_at"] = pool_row.get("used_at") or now
                 pool_row["completed_at"] = pool_row.get("completed_at") or now

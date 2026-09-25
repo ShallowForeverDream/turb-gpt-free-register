@@ -101,7 +101,10 @@ def _unauthorized_response():
     return redirect(url_for("auth_login", next=request.path))
 
 
-def register_auth_routes(app: Any) -> None:
+def register_auth_routes(app: Any, *, local_no_auth: bool = False) -> None:
+    def _local_access_without_code() -> bool:
+        return local_no_auth and request.remote_addr in {"127.0.0.1", "::1"}
+
     @app.before_request
     def _require_auth_code():
         endpoint = request.endpoint or ""
@@ -109,12 +112,16 @@ def register_auth_routes(app: Any) -> None:
             return None
         if request.path in ("/favicon.ico",):
             return Response(status=204)
+        if _local_access_without_code():
+            return None
         if request_is_authorized():
             return None
         return _unauthorized_response()
 
     @app.route("/login", methods=["GET", "POST"], endpoint="auth_login")
     def _auth_login():
+        if _local_access_without_code():
+            return redirect("/")
         error = ""
         next_url = request.values.get("next") or "/"
         if not str(next_url).startswith("/") or str(next_url).startswith("//"):

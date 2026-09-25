@@ -108,15 +108,53 @@ class ForwardedImapTests(unittest.TestCase):
                     imap.pick_account()
             self.assertEqual(db.imap_email_pool_summary()["available"], 1)
 
-    def test_forwarded_import_cannot_mark_unregistered_mail_as_registered(self):
+    def test_forwarded_import_promotes_existing_pool_rows_to_registered_accounts(self):
+        with tempfile.TemporaryDirectory() as td, patch.multiple(db, **storage(Path(td))):
+            client = create_app(auth_code="test-auth").test_client()
+            body = {
+                "source": "forwarded_imap", "text": "one@icloud.com\ntwo@icloud.com",
+                "forwarded_inbox": "shared@163.com", "imap_server": "imap.163.com",
+                "as_registered": False,
+            }
+            headers = {"X-Auth-Code": "test-auth"}
+            first = client.post("/api/outlook/import", json=body, headers=headers)
+            self.assertEqual(first.status_code, 200)
+            self.assertEqual(first.get_json()["inserted"], 2)
+
+            body["as_registered"] = True
+            promoted = client.post("/api/outlook/import", json=body, headers=headers)
+            self.assertEqual(promoted.status_code, 200)
+            self.assertEqual(promoted.get_json()["inserted"], 2)
+            for address in ("one@icloud.com", "two@icloud.com"):
+                row = db.get_imap_email_by_email(address)
+                account = db.get_account_by_email(address)
+                self.assertEqual(row["status"], "used")
+                self.assertTrue(row["imap_forwarded"])
+                self.assertEqual(row["registered_account_id"], account["id"])
+                self.assertEqual(account["email_source"], "imap")
+                self.assertFalse(account.get("access_token"))
+                self.assertNotIn("imap_password", row)
+            self.assertEqual(db.imap_email_pool_summary()["total"], 2)
+            self.assertEqual(db.imap_email_pool_summary()["available"], 0)
+            repeated = client.post("/api/outlook/import", json=body, headers=headers)
+            self.assertEqual(repeated.get_json()["inserted"], 0)
+            self.assertEqual(repeated.get_json()["skipped"], 2)
+
+    def test_forwarded_import_can_create_pool_and_registered_account_together(self):
         with tempfile.TemporaryDirectory() as td, patch.multiple(db, **storage(Path(td))):
             client = create_app(auth_code="test-auth").test_client()
             response = client.post("/api/outlook/import", json={
-                "source": "forwarded_imap", "text": "one@icloud.com",
+                "source": "forwarded_imap", "text": "new@icloud.com",
                 "forwarded_inbox": "shared@163.com", "imap_server": "imap.163.com",
-                "as_registered": True}, headers={"X-Auth-Code": "test-auth"})
-            self.assertEqual(response.status_code, 400)
-            self.assertEqual(db.imap_email_pool_summary()["total"], 0)
+                "imap_port": 993, "imap_ssl": True, "as_registered": True,
+            }, headers={"X-Auth-Code": "test-auth"})
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.get_json()["inserted"], 1)
+            account = db.get_account_by_email("new@icloud.com")
+            pool = db.get_imap_email_by_email("new@icloud.com")
+            self.assertEqual(pool["registered_account_id"], account["id"])
+            self.assertEqual(pool["copy_line"], "new@icloud.com")
+            self.assertNotIn("imap_password", pool)
 
     def test_recipient_matching_uses_original_address_not_shared_inbox(self):
         self.assertFalse(imap._matches_recipient({"to": "shared@163.com", "text": "To: other@icloud.com\nCode 111111"},

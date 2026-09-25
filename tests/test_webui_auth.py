@@ -39,6 +39,22 @@ class WebUiAuthTests(unittest.TestCase):
         r = self.client.get("/api/summary")
         self.assertEqual(r.status_code, 200)
 
+    def test_local_no_auth_allows_loopback_without_code(self):
+        client = create_app(auth_code="test-auth", local_no_auth=True).test_client()
+        response = client.get("/api/summary", environ_overrides={"REMOTE_ADDR": "127.0.0.1"})
+        self.assertEqual(response.status_code, 200)
+        login = client.get("/login", environ_overrides={"REMOTE_ADDR": "127.0.0.1"})
+        self.assertEqual(login.status_code, 302)
+        self.assertEqual(login.headers["Location"], "/")
+
+    def test_local_no_auth_keeps_remote_access_protected(self):
+        client = create_app(auth_code="test-auth", local_no_auth=True).test_client()
+        response = client.get("/api/summary", environ_overrides={"REMOTE_ADDR": "192.0.2.8"})
+        self.assertEqual(response.status_code, 401)
+        allowed = client.get("/api/summary", headers={"X-Auth-Code": "test-auth"},
+                             environ_overrides={"REMOTE_ADDR": "192.0.2.8"})
+        self.assertEqual(allowed.status_code, 200)
+
 
 if __name__ == "__main__":
     unittest.main()

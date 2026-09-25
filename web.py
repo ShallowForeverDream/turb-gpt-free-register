@@ -87,16 +87,23 @@ def main() -> None:
     if args.auth_code:
         os.environ["WEBUI_AUTH_CODE"] = args.auth_code
 
+    from config.env_loader import env_str
+    local_no_auth = env_str("WEBUI_LOCAL_NO_AUTH", "").lower() in {"1", "true", "yes", "on"}
+    if local_no_auth and args.host not in {"127.0.0.1", "::1", "localhost"}:
+        parser.error("WEBUI_LOCAL_NO_AUTH 仅允许绑定本机回环地址")
+
     try:
         instance_lock = _acquire_single_instance(args.port)
     except RuntimeError as exc:
         logger.error(str(exc))
         raise SystemExit(2) from exc
 
-    app = create_app(auth_code=args.auth_code)
+    app = create_app(auth_code=args.auth_code, local_no_auth=local_no_auth)
     url = f"http://{'127.0.0.1' if args.host in ('0.0.0.0', '::') else args.host}:{args.port}"
     logger.info(f"WebUI 已启动：{url}")
-    if is_generated_code():
+    if local_no_auth:
+        logger.info("仅本机访问：已关闭 WebUI 授权码登录")
+    elif is_generated_code():
         from webui.auth import expected_auth_code
         logger.warning("未配置 WEBUI_AUTH_CODE/AUTH_CODE，已生成本次临时授权码：%s", expected_auth_code())
     if args.host in ("0.0.0.0", "::"):

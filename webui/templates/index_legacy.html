@@ -718,7 +718,7 @@
         </label>
         <label style="display:flex;gap:8px;align-items:center;margin:8px 0;color:var(--text);font-size:13px;">
           <input id="importAsRegistered" type="checkbox" style="width:auto;min-height:auto;">
-          导入后默认视为“注册成功账号”（邮箱池标记已用，并出现在账号页，可直接批量补跑 Codex）
+          导入后标记为“已注册 GPT 账号”（邮箱池标记已用，并出现在账号页；缺少 GPT 凭据时需后续补齐）
         </label>
         <textarea id="importText" placeholder="Outlook: email----password----clientId----refreshToken
 通用API: email----取码地址
@@ -2857,8 +2857,6 @@ function syncLegacyImapImportSettings() {
   const settings = $('#imapImportSettings');
   if (settings) { settings.classList.toggle('hidden', !isImap); settings.style.display = isImap ? 'grid' : 'none'; }
   $('#forwardedInboxSettings').classList.toggle('hidden', source !== 'forwarded_imap');
-  if (source === 'forwarded_imap') $('#importAsRegistered').checked = false;
-  $('#importAsRegistered').disabled = source === 'forwarded_imap';
   if (source === 'forwarded_imap') $('#imapServer').value = 'imap.163.com';
   $('#importText').placeholder = source === 'forwarded_imap'
     ? 'apple1@icloud.com\napple2@icloud.com'
@@ -2997,7 +2995,7 @@ $('#btnImport').addEventListener('click', async () => {
     }
     const r = await api('/api/outlook/import', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
     const mode = r.as_registered ? '已注册账号' : '邮箱池素材';
-    $('#importResult').innerHTML = `<div class="banner info">按 ${mode} 导入：解析 ${r.parsed} 行，新增 ${r.inserted}，跳过 ${r.skipped}，格式错误 ${r.invalid || 0}${r.as_registered ? '；可到“账号”页选择后批量补跑 Codex' : ''}</div>`;
+    $('#importResult').innerHTML = `<div class="banner info">按 ${mode} 导入：解析 ${r.parsed} 行，新增 ${r.inserted}，跳过 ${r.skipped}，格式错误 ${r.invalid || 0}${r.as_registered ? '；可到“账号”页查看' : ''}</div>`;
     $('#importText').value = '';
     $('#poolSource').value = source === 'forwarded_imap' ? 'imap' : source;
     loadOutlook(); loadAccounts(); loadSummary();

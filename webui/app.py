@@ -254,7 +254,7 @@ def _read_log_tail(path, *, max_bytes: int, default_running: bool = False, runni
             pass
     return {"ok": True, "log": content, "running": running}
 
-def create_app(auth_code: str | None = None) -> Flask:
+def create_app(auth_code: str | None = None, *, local_no_auth: bool = False) -> Flask:
     app = Flask(__name__, template_folder="templates")
     _prepared_downloads: dict[str, dict] = {}
 
@@ -324,7 +324,7 @@ def create_app(auth_code: str | None = None) -> Flask:
         )
 
     init_auth(app, auth_code=auth_code)
-    register_auth_routes(app)
+    register_auth_routes(app, local_no_auth=local_no_auth)
     recovered_plan_checks = db.recover_interrupted_plan_checks()
     if recovered_plan_checks:
         logger.warning("已恢复 %s 个因 WebUI 重启中断的套餐查询状态", recovered_plan_checks)
@@ -1667,8 +1667,6 @@ def create_app(auth_code: str | None = None) -> Flask:
         forwarded_inbox = str(data.get("forwarded_inbox") or "").strip()
         if source == "forwarded_imap":
             from core.import_formats import valid_email
-            if as_registered:
-                return jsonify({"ok": False, "error": "转发邮箱素材尚未注册，不能直接标记为已注册账号"}), 400
             if not valid_email(forwarded_inbox):
                 return jsonify({"ok": False, "error": "请填写有效的转发收件箱地址"}), 400
         records = []
@@ -1680,7 +1678,12 @@ def create_app(auth_code: str | None = None) -> Flask:
             if source == "forwarded_imap":
                 from core.import_formats import valid_email
                 if valid_email(line):
-                    records.append({"email": line})
+                    records.append({
+                        "email": line, "imap_forwarded": True,
+                        "imap_username": forwarded_inbox,
+                        "imap_server": imap_server, "imap_port": imap_port,
+                        "imap_ssl": imap_ssl,
+                    })
                 else:
                     invalid += 1
                 continue
@@ -1732,13 +1735,15 @@ def create_app(auth_code: str | None = None) -> Flask:
                     "4 段：email----password----clientId----refreshToken")
             suffix = "" if source == "forwarded_imap" else "，---- 或 ==== 分隔"
             return jsonify({"ok": False, "error": f"未解析到有效邮箱行（需 {need}{suffix}）"}), 400
-        if source == "forwarded_imap":
+        if as_registered:
+            inserted, skipped = db.import_registered_email_accounts(
+                records, source="imap" if source == "forwarded_imap" else source,
+            )
+        elif source == "forwarded_imap":
             inserted, skipped = db.import_forwarded_imap_emails(
                 records, inbox=forwarded_inbox, server=imap_server,
                 port=imap_port, use_ssl=imap_ssl,
             )
-        elif as_registered:
-            inserted, skipped = db.import_registered_email_accounts(records, source=source)
         elif source == "generic_api":
             inserted, skipped = db.import_generic_api_emails(records)
         elif source == "imap":

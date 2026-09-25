@@ -6,6 +6,7 @@ import base64
 import ipaddress
 import json
 import logging
+import random
 import socket
 import time
 import uuid
@@ -131,7 +132,9 @@ def resolve_plan_check_route(explicit_proxy: Optional[str] = None) -> dict:
         }
 
     candidates = _proxy_lines(getattr(proxy_cfg, "PLAN_CHECK_PROXY", ""))
-    selected = candidates[0] if candidates else str(proxy_cfg.pick_proxy() or "").strip()
+    # 专用代理配置为代理池时，每次新的套餐查询随机选择一个；
+    # 若未配置专用池，则继续从通用 PROXY_POOL 随机选择。
+    selected = random.choice(candidates) if candidates else str(proxy_cfg.pick_proxy() or "").strip()
     if not selected:
         if mode == "proxy":
             raise ValueError("套餐查询网络模式为 proxy，但未配置 PLAN_CHECK_PROXY 或 PROXY_POOL")

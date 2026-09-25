@@ -57,7 +57,14 @@ def _normalize_proxy(proxy: str | None) -> str | None:
 
 
 def _resolve_twofa_proxy(proxy: str | None):
-    """为 2FA 解析传输代理，显式目标代理也要套代理池上游。"""
+    """按 TWOFA_PROXY_MODE 解析传输代理。"""
+    mode = str(getattr(_twofa_cfg, "TWOFA_PROXY_MODE", "saved") or "saved").strip().lower()
+    if mode not in {"saved", "pool"}:
+        raise ValueError(f"TWOFA_PROXY_MODE={mode!r} 无效，可选 saved / pool")
+    if mode == "pool":
+        from core.proxy_chain import open_proxy_pool_proxy
+        transport, relay = open_proxy_pool_proxy(None)
+        return transport or None, relay, "pool"
     target = _normalize_proxy(proxy)
     if not target:
         # 没有可复用的目标代理时交给 BrowserSession 从代理池选择；

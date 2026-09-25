@@ -12,6 +12,11 @@ from config.env_loader import apply_env_overrides
 
 ENABLE_2FA = False
 
+# 2FA 网络代理模式：
+#   saved = 优先使用账号保存的有效代理（无有效代理时回退代理池）
+#   pool  = 忽略账号保存的代理，每次任务都从 PROXY_POOL 随机抽取
+TWOFA_PROXY_MODE = "saved"
+
 # 发起 reauth（CSRF + signin）时的临时网络错误重试。403 会先清理当前会话的
 # 本地熔断，再按指数退避重试；业务类 4xx 不重试。
 TWOFA_REAUTH_MAX_ATTEMPTS = 3
@@ -24,6 +29,7 @@ TWOFA_QUEUE_LIMIT = 200
 # ---- .env overrides for WebUI editable fields ----
 apply_env_overrides(globals(), {
     'ENABLE_2FA': 'bool',
+    'TWOFA_PROXY_MODE': 'str',
     'TWOFA_REAUTH_MAX_ATTEMPTS': 'int',
     'TWOFA_REAUTH_RETRY_DELAY': 'float',
     'TWOFA_WORKERS': 'int',

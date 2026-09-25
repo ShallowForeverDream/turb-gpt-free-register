@@ -72,8 +72,15 @@ function Stop-ManagedWorkers {
     param([int]$ParentId)
     foreach ($worker in (Get-ManagedWorkers -ParentId $ParentId)) {
         $handle = Get-Process -Id $worker.ProcessId -ErrorAction SilentlyContinue
-        if ($handle -and [Math]::Abs($handle.StartTime.ToUniversalTime().Ticks - $worker.CreationDate.ToUniversalTime().Ticks) -lt 10) {
-            $handle.Kill()
+        if (!$handle) { continue }
+        $handle.Refresh()
+        if ($handle.HasExited) { continue }
+        if ([Math]::Abs($handle.StartTime.ToUniversalTime().Ticks - $worker.CreationDate.ToUniversalTime().Ticks) -lt 10) {
+            try { $handle.Kill() }
+            catch {
+                $handle.Refresh()
+                if (!$handle.HasExited) { throw }
+            }
             $handle.WaitForExit(10000) | Out-Null
         }
     }
@@ -88,7 +95,14 @@ function Stop-WebUI {
             throw 'Process changed while checking its identity. Nothing was stopped.'
         }
         Stop-ManagedWorkers -ParentId $managed.ProcessId
-        $handle.Kill()
+        $handle.Refresh()
+        if (!$handle.HasExited) {
+            try { $handle.Kill() }
+            catch {
+                $handle.Refresh()
+                if (!$handle.HasExited) { throw }
+            }
+        }
         if (!$handle.WaitForExit(10000)) { throw 'WebUI did not exit within 10 seconds.' }
         Write-Output "Stopped WebUI PID=$($managed.ProcessId)."
     } else {

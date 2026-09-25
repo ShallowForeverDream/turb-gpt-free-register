@@ -343,6 +343,11 @@ EDITABLE_FIELDS = [
         "label": "通用 IMAP 收件箱", "help": "通用 IMAP 邮箱默认目录，通常为 INBOX；服务器、端口、用户名和密码在邮箱池导入",
     },
     {
+        "key": "FORWARDED_IMAP_PASSWORD", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
+        "label": "转发收件箱 IMAP 授权码", "help": "Apple 邮箱转发到同一收件箱时使用；授权码保存在 .env，不是 163 网页登录密码",
+        "storage": "env", "secret": True,
+    },
+    {
         "key": "GPTMAIL_API_KEY", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
         "label": "GPTMail API Key", "help": "选择 gptmail 邮箱来源时必填；保存在 .env，不会写入 config 源码",
         "storage": "env", "secret": True,

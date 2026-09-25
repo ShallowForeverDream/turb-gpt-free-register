@@ -1,0 +1,22 @@
+$('#btnImportRegistered').addEventListener('click', async () => {
+  const input = $('#registeredImportText');
+  const button = $('#btnImportRegistered');
+  const result = $('#registeredImportResult');
+  if (!input.value.trim()) { result.textContent = '请先粘贴四列账号数据'; return; }
+  button.disabled = true;
+  result.textContent = '导入中…';
+  try {
+    const response = await api('/api/accounts/import', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({text: input.value}),
+    });
+    result.textContent = `新增 ${response.inserted}，重复 ${response.skipped}，格式错误 ${response.invalid}`;
+    input.value = '';
+    loadAccounts();
+    loadSummary();
+  } catch (error) {
+    result.textContent = '导入失败：' + error.message;
+  } finally {
+    button.disabled = false;
+  }
+});

@@ -5,9 +5,11 @@ from __future__ import annotations
 import email as email_lib
 import imaplib
 import logging
+import re
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from email.utils import getaddresses
 
 from config import email as _email_cfg
 from core.otp_utils import extract_otp, looks_like_openai_email
@@ -30,19 +32,23 @@ class ImapEmailAccount:
     username: str = ""
     use_ssl: bool = True
     mailbox: str = "INBOX"
+    forwarded: bool = False
 
 
 def _account_from_row(row: dict | None) -> ImapEmailAccount | None:
     if not row:
         return None
+    forwarded = bool(row.get("imap_forwarded"))
     return ImapEmailAccount(
         email=str(row.get("email") or "").strip(),
-        password=str(row.get("imap_password") or row.get("password") or ""),
+        password=(str(getattr(_email_cfg, "FORWARDED_IMAP_PASSWORD", "") or "")
+                  if forwarded else str(row.get("imap_password") or row.get("password") or "")),
         server=str(row.get("imap_server") or row.get("server") or "").strip(),
         port=int(row.get("imap_port") or row.get("port") or 993),
         username=str(row.get("imap_username") or row.get("username") or "").strip(),
         use_ssl=bool(row.get("imap_ssl", row.get("use_ssl", True))),
         mailbox=str(row.get("imap_mailbox") or getattr(_email_cfg, "IMAP_MAILBOX", "INBOX") or "INBOX"),
+        forwarded=forwarded,
     )
 
 
@@ -51,6 +57,9 @@ def pick_account() -> ImapEmailAccount:
     account = _account_from_row(db.claim_next_imap_email())
     if account is None:
         raise ImapMailError("通用 IMAP 邮箱池没有可用邮箱，请先在邮箱池导入")
+    if account.forwarded and not account.password:
+        db.release_unconsumed_imap_email(account.email)
+        raise ImapMailError("转发收件箱缺少 FORWARDED_IMAP_PASSWORD，请先在配置页填写 IMAP 授权码")
     _CONTEXT_CACHE[account.email.lower()] = account
     return account
 
@@ -61,6 +70,8 @@ def get_account_context(email: str) -> ImapEmailAccount | None:
         return None
     cached = _CONTEXT_CACHE.get(key)
     if cached:
+        if cached.forwarded:
+            cached.password = str(getattr(_email_cfg, "FORWARDED_IMAP_PASSWORD", "") or "")
         return cached
     from core import db
     account = _account_from_row(db.get_imap_email_by_email(email))
@@ -79,6 +90,8 @@ def release_account(email: str, status: str = "available", note: str | None = No
 
 def _connect(account: ImapEmailAccount):
     if not account.server or not account.password:
+        if account.forwarded and not account.password:
+            raise ImapMailError("转发收件箱缺少 FORWARDED_IMAP_PASSWORD，请在配置页填写 IMAP 授权码")
         raise ImapMailError(f"{account.email} 的 IMAP 服务器或密码为空")
     try:
         cls = imaplib.IMAP4_SSL if account.use_ssl else imaplib.IMAP4
@@ -96,13 +109,13 @@ def _connect(account: ImapEmailAccount):
         raise ImapMailError(f"IMAP 连接失败: {exc}") from exc
 
 
-def _search_messages(mail, after_dt: datetime) -> list[dict]:
+def _search_messages(mail, after_dt: datetime, *, limit: int = 20) -> list[dict]:
     status, result = mail.search(None, f'(SINCE {after_dt.strftime("%d-%b-%Y")})')
     if status != "OK":
         return []
     ids = result[0].split() if result and result[0] else []
     messages: list[dict] = []
-    for message_id in ids[-20:]:
+    for message_id in ids[-limit:]:
         status, data = mail.fetch(message_id, "(RFC822)")
         if status != "OK" or not data:
             continue
@@ -116,6 +129,21 @@ def _search_messages(mail, after_dt: datetime) -> list[dict]:
     return messages
 
 
+_FORWARDED_TO_LINE = re.compile(r"^\s*(?:to|original-to|delivered-to|收件人|发送给)\s*[:：]\s*(.+)$", re.IGNORECASE)
+
+
+def _matches_recipient(item: dict, email: str, *, forwarded: bool) -> bool:
+    """Match the exact original recipient, never the shared inbox address."""
+    values = [str(item[key]) for key in ("to", "xOriginalTo", "deliveredTo", "xForwardedTo", "resentTo")
+              if item.get(key)]
+    if forwarded:
+        # Manual forwards commonly preserve original headers only in the body.
+        values.extend(match.group(1) for line in str(item.get("text") or "").splitlines()[:40]
+                      if (match := _FORWARDED_TO_LINE.match(line)))
+    target = email.strip().lower()
+    return any(address.lower() == target for _, address in getaddresses(values))
+
+
 def fetch_latest_otp(
     email: str,
     after_ts: float | None = None,
@@ -126,6 +154,8 @@ def fetch_latest_otp(
     account = get_account_context(email)
     if account is None:
         raise ImapMailError(f"邮箱池中找不到 IMAP 账号: {email}")
+    if account.forwarded and not account.password:
+        raise ImapMailError("转发收件箱缺少 FORWARDED_IMAP_PASSWORD，请先在配置页填写 IMAP 授权码")
     after_ts = float(after_ts or time.time())
     max_wait = int(max_wait if max_wait is not None else _email_cfg.OTP_MAX_WAIT)
     interval = int(poll_interval if poll_interval is not None else _email_cfg.OTP_POLL_INTERVAL)
@@ -139,7 +169,7 @@ def fetch_latest_otp(
         mail = None
         try:
             mail = _connect(account)
-            messages = _search_messages(mail, after_dt)
+            messages = _search_messages(mail, after_dt, limit=100 if account.forwarded else 20)
         except ImapMailError as exc:
             logger.warning("[IMAP] %s", exc)
             messages = []
@@ -152,8 +182,7 @@ def fetch_latest_otp(
 
         messages.sort(key=lambda item: item.get("date") or "", reverse=True)
         for item in messages:
-            recipient = " ".join(str(item.get(k) or "") for k in ("to", "deliveredTo", "xOriginalTo")).lower()
-            if email.lower() not in recipient or not looks_like_openai_email(item):
+            if not _matches_recipient(item, email, forwarded=account.forwarded) or not looks_like_openai_email(item):
                 continue
             otp = extract_otp(item)
             if not otp:
@@ -163,7 +192,7 @@ def fetch_latest_otp(
                 ts = datetime.fromisoformat(raw_ts.replace("Z", "+00:00")).timestamp()
             except Exception:
                 ts = 0.0
-            if ts and ts < after_ts - 30:
+            if (ts or account.forwarded) and ts < after_ts - 30:
                 continue
             if ts >= best_ts:
                 if otp != best_otp:

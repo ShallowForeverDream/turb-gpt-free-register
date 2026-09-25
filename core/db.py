@@ -14,6 +14,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from core.import_formats import valid_email
+
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _DATA_DIR = _PROJECT_ROOT
 _LEGACY_DATA_DIR = _PROJECT_ROOT / "data"
@@ -575,6 +577,8 @@ def _normalize_generic_api_code_url(value: object) -> str:
 
 
 def _imap_email_line(row: dict) -> str:
+    if row.get("imap_forwarded"):
+        return str(row.get("email") or "")
     return "----".join([
         row.get("email") or "",
         row.get("imap_password") or row.get("password") or "",
@@ -2414,6 +2418,38 @@ def import_registered_email_accounts(records: list[dict], source: str | None) ->
         return inserted, skipped
 
 
+def import_registered_gpt_accounts(records: list[dict]) -> tuple[int, int]:
+    """Import existing GPT credentials without treating the GPT password as mail access."""
+    with _LOCK:
+        accounts = _load_accounts()
+        inserted = skipped = 0
+        for raw in records:
+            email = str(raw.get("email") or "").strip()
+            if not valid_email(email) or _find_by_email(accounts, email):
+                skipped += 1
+                continue
+            now = _now()
+            password = str(raw.get("registration_password") or "").strip()
+            row = {
+                "id": _next_id(accounts),
+                "email": email,
+                "created_at": now,
+                "updated_at": now,
+                "access_token": str(raw.get("access_token") or "").strip(),
+                "totp_secret": str(raw.get("totp_secret") or "").strip() or None,
+                "user_name": "Imported Account",
+                "email_source": "",
+                "original_email_line": email,
+                "extra_json": json.dumps({"imported_registered": True,
+                                          "registration_password": password}, ensure_ascii=False),
+            }
+            accounts.append(row)
+            inserted += 1
+        if inserted:
+            _save_accounts(accounts)
+        return inserted, skipped
+
+
 def claim_next_outlook() -> dict | None:
     """原子领取一个可用 Outlook 账号并标记为 used。"""
     with _LOCK:
@@ -2664,6 +2700,37 @@ def import_imap_emails(records: list[dict]) -> tuple[int, int]:
             rows.append(row)
             inserted += 1
         _save_imap_emails(rows)
+        return inserted, skipped
+
+
+def import_forwarded_imap_emails(records: list[dict], *, inbox: str,
+                                 server: str = "imap.163.com", port: int = 993,
+                                 use_ssl: bool = True) -> tuple[int, int]:
+    """Import address-only recipients routed into one shared IMAP inbox."""
+    inbox = str(inbox or "").strip()
+    server = str(server or "").strip()
+    if not valid_email(inbox) or not server or not (1 <= int(port) <= 65535):
+        raise ValueError("转发收件箱、IMAP 服务器或端口无效")
+    with _LOCK:
+        rows = _load_imap_emails()
+        inserted = skipped = 0
+        for raw in records:
+            email = str(raw.get("email") or "").strip()
+            if not valid_email(email) or email.lower() == inbox.lower() or _find_by_email(rows, email):
+                skipped += 1
+                continue
+            row = {
+                "id": _next_id(rows), "email": email,
+                "imap_forwarded": True,
+                "imap_username": inbox,
+                "imap_server": server, "imap_port": int(port), "imap_ssl": bool(use_ssl),
+                "status": "available", "used_at": None,
+                "note": None, "imported_at": _now(),
+            }
+            rows.append(row)
+            inserted += 1
+        if inserted:
+            _save_imap_emails(rows)
         return inserted, skipped
 
 

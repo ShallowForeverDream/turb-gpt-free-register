@@ -2297,6 +2297,7 @@
           <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnCopyAllLinesV2" title="复制当前页所有账号整行，每个账号一行">复制整行</button>
         </div>
       </div>
+      {% include 'registered_import_panel.html' %}
       <div class="accounts-table-v2-wrap">
         <table class="accounts-table-v2">
           <colgroup>
@@ -2534,7 +2535,7 @@
     <div class="outlook-import-head">
       <div class="outlook-import-head-main">
         <h3 id="outlookImportTitle">导入邮箱素材</h3>
-        <p>Outlook：邮箱----密码----clientId----refreshToken；通用 API：邮箱----取码地址；通用 IMAP 邮箱每行仅需“邮箱----IMAP密码”或“邮箱:IMAP密码”，服务器参数在下方统一配置。</p>
+        <p>Outlook：邮箱----密码----clientId----refreshToken；通用 API：邮箱----取码地址；通用 IMAP：邮箱----IMAP密码；转发邮箱：每行只填一个 Apple 邮箱地址。</p>
       </div>
       <button type="button" class="outlook-import-close" id="btnCloseOutlookImport" aria-label="关闭">×</button>
     </div>
@@ -2548,6 +2549,7 @@
             <button type="button" class="outlook-v2-select-item is-active" data-value="outlook" role="option">Outlook 邮箱池</button>
             <button type="button" class="outlook-v2-select-item" data-value="generic_api" role="option">通用 API 取码邮箱</button>
             <button type="button" class="outlook-v2-select-item" data-value="imap" role="option">通用 IMAP 取码邮箱</button>
+            <button type="button" class="outlook-v2-select-item" data-value="forwarded_imap" role="option">转发到同一 IMAP 收件箱</button>
           </div>
           <input type="hidden" id="importSourceV2" value="outlook">
         </div>
@@ -2567,6 +2569,11 @@
           <select id="imapSslV2"><option value="true" selected>启用</option><option value="false">不启用</option></select>
         </label>
       </div>
+      <label class="outlook-import-field hidden" id="forwardedInboxSettingsV2">
+        <span>接收转发邮件的邮箱（如 163 邮箱）</span>
+        <input id="forwardedInboxV2" type="email" placeholder="your-inbox@163.com" autocomplete="off">
+        <span class="outlook-import-hint">这里只存收件箱地址；IMAP 客户端授权码请在“配置 → 邮箱 / OTP → 转发收件箱 IMAP 授权码”填写。</span>
+      </label>
       <label class="outlook-import-check">
         <input id="importAsRegisteredV2" type="checkbox">
         <span>导入后默认视为「注册成功账号」（邮箱池标记已用，并出现在账号页，可直接批量补跑 Codex）</span>
@@ -3249,6 +3256,7 @@ async function retrySelectedJobs() {
 }
 
 {% include 'job_log_script.html' %}
+{% include 'registered_import_script.html' %}
 
 // ---------- 账号 ----------
 let accountsLoading = false;
@@ -5232,7 +5240,7 @@ function renderOutlook() {
         <div class="acc-v2-email">${email || '-'}</div>
         <div class="acc-v2-sub" title="${esc(r.copy_line || '')}">${esc(short(r.copy_line, 70))}</div>
       </td>
-      <td class="col-source">${esc(poolLabel(r.source))}</td>
+      <td class="col-source">${r.imap_forwarded ? '转发 IMAP' : esc(poolLabel(r.source))}</td>
       <td class="col-status">${pill(r.status)}</td>
       <td class="col-token">${_outlookTokenCell(r)}</td>
       <td class="col-time" title="${esc(r.imported_at || r.created_at || '-')}">${esc(r.imported_at || r.created_at || '-')}</td>
@@ -5396,6 +5404,7 @@ const IMPORT_SOURCE_LABELS = {
   outlook: 'Outlook 邮箱池',
   generic_api: '通用 API 取码邮箱',
   imap: '通用 IMAP 取码邮箱',
+  forwarded_imap: '转发到同一 IMAP 收件箱',
 };
 function setImportSourceV2(val) {
   const hidden = document.getElementById('importSourceV2');
@@ -5412,11 +5421,22 @@ function setImportSourceV2(val) {
   }
   const imapSettings = document.getElementById('imapImportSettingsV2');
   if (imapSettings) {
-    imapSettings.classList.toggle('hidden', next !== 'imap');
-    imapSettings.style.display = next === 'imap' ? 'grid' : 'none';
+    imapSettings.classList.toggle('hidden', next !== 'imap' && next !== 'forwarded_imap');
+    imapSettings.style.display = next === 'imap' || next === 'forwarded_imap' ? 'grid' : 'none';
   }
+  const forwardedSettings = document.getElementById('forwardedInboxSettingsV2');
+  if (forwardedSettings) forwardedSettings.classList.toggle('hidden', next !== 'forwarded_imap');
+  const registered = document.getElementById('importAsRegisteredV2');
+  if (registered) {
+    if (next === 'forwarded_imap') registered.checked = false;
+    registered.disabled = next === 'forwarded_imap';
+  }
+  if (next === 'forwarded_imap')
+    document.getElementById('imapServerV2').value = 'imap.163.com';
   const text = document.getElementById('importTextV2');
-  if (text) text.placeholder = next === 'imap'
+  if (text) text.placeholder = next === 'forwarded_imap'
+    ? 'apple1@icloud.com\napple2@icloud.com'
+    : next === 'imap'
     ? 'user@example.com----imapPassword\nuser2@example.com:imapPassword'
     : next === 'generic_api'
       ? 'email----取码地址'
@@ -5496,18 +5516,22 @@ async function doImportOutlook() {
     const source = sourceEl ? sourceEl.value : 'outlook';
     const as_registered = registeredEl ? !!registeredEl.checked : false;
     const payload = {text, source, as_registered};
-    if (source === 'imap') {
+    if (source === 'imap' || source === 'forwarded_imap') {
       payload.imap_server = ($('#imapServerV2')?.value || '').trim();
       payload.imap_port = Number($('#imapPortV2')?.value || 993);
       payload.imap_ssl = ($('#imapSslV2')?.value || 'true') === 'true';
       if (!payload.imap_server) { showToast('请填写 IMAP 服务器'); return; }
     }
+    if (source === 'forwarded_imap') {
+      payload.forwarded_inbox = ($('#forwardedInboxV2')?.value || '').trim();
+      if (!payload.forwarded_inbox) { showToast('请填写接收转发邮件的邮箱'); return; }
+    }
     const r = await api('/api/outlook/import', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
     const mode = r.as_registered ? '已注册账号' : '邮箱池素材';
-    const msg = `按 ${mode} 导入：解析 ${r.parsed} 行，新增 ${r.inserted}，跳过 ${r.skipped}${r.as_registered ? '；可到“账号”页选择后批量补跑 Codex' : ''}`;
+    const msg = `按 ${mode} 导入：解析 ${r.parsed} 行，新增 ${r.inserted}，跳过 ${r.skipped}，格式错误 ${r.invalid || 0}${r.as_registered ? '；可到“账号”页选择后批量补跑 Codex' : ''}`;
     if (resultEl) resultEl.innerHTML = `<div class="banner info">${esc(msg)}</div>`;
     if (textEl) textEl.value = '';
-    setPoolSourceV2(source);
+    setPoolSourceV2(source === 'forwarded_imap' ? 'imap' : source);
     setImportSourceV2(source);
     loadOutlook(); loadAccounts(); loadSummary();
     showToast(`导入完成：新增 ${r.inserted}，跳过 ${r.skipped}`);
@@ -5979,6 +6003,7 @@ function emailConfigSectionForKey(key) {
   if (key.startsWith('REMAIL_')) return ['Remail', 'Remail 开放 API、项目下单和取件配置'];
   if (key.startsWith('OUTLOOK_')) return ['Outlook 邮箱池', 'Outlook 邮箱池和取件模式配置'];
   if (key.startsWith('IMAP_')) return ['通用 IMAP', '通用 IMAP 邮箱池的收件目录配置'];
+  if (key === 'FORWARDED_IMAP_PASSWORD') return ['转发 IMAP', '统一收件箱的 IMAP 客户端授权码'];
   if (key.startsWith('CLOUDFLARE_')) return ['Cloudflare 临时邮箱', 'Cloudflare Worker 临时邮箱 API、鉴权与路径配置'];
   if (['EMAIL_DOMAIN','QQ_EMAIL','QQ_IMAP_PASSWORD'].includes(key)) return ['Cloudflare 域名邮箱', 'Cloudflare 转发到 QQ 邮箱后的 IMAP 收信配置'];
   return ['其他邮箱配置', ''];

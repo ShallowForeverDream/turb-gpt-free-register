@@ -399,6 +399,21 @@ def create_app(auth_code: str | None = None) -> Flask:
     # ----------------------------------------------------------
     # 已注册账号
     # ----------------------------------------------------------
+    @app.post("/api/accounts/import")
+    def api_registered_accounts_import():
+        from core.import_formats import parse_registered_accounts
+
+        data = request.get_json(silent=True) or {}
+        text = str(data.get("text") or "")
+        if len(text) > 2_000_000:
+            return jsonify({"ok": False, "error": "导入内容超过 2 MB"}), 413
+        records, invalid = parse_registered_accounts(text)
+        if not records:
+            return jsonify({"ok": False, "error": "未解析到有效账号；需要 邮箱、GPT 密码、2FA 密钥、access token 四列"}), 400
+        inserted, skipped = db.import_registered_gpt_accounts(records)
+        return jsonify({"ok": True, "parsed": len(records), "invalid": invalid,
+                        "inserted": inserted, "skipped": skipped})
+
     @app.get("/api/accounts")
     def api_accounts():
         limit = request.args.get("limit", default=500, type=int)
@@ -1636,8 +1651,8 @@ def create_app(auth_code: str | None = None) -> Flask:
         """
         data = request.get_json(silent=True) or {}
         source = (data.get("source") or data.get("type") or "").strip()
-        if source not in ("outlook", "generic_api", "imap"):
-            return jsonify({"ok": False, "error": "导入时请选择具体类型：Outlook、通用 API 或通用 IMAP"}), 400
+        if source not in ("outlook", "generic_api", "imap", "forwarded_imap"):
+            return jsonify({"ok": False, "error": "导入时请选择具体邮箱类型"}), 400
         text = data.get("text") or ""
         as_registered = bool(data.get("as_registered", False))
         imap_server = str(data.get("imap_server") or "").strip()
@@ -1647,12 +1662,27 @@ def create_app(auth_code: str | None = None) -> Flask:
             imap_port = 0
         imap_ssl_raw = data.get("imap_ssl", True)
         imap_ssl = imap_ssl_raw if isinstance(imap_ssl_raw, bool) else str(imap_ssl_raw).strip().lower() not in {"0", "false", "no", "off"}
-        if source == "imap" and (not imap_server or not (1 <= imap_port <= 65535)):
+        if source in ("imap", "forwarded_imap") and (not imap_server or not (1 <= imap_port <= 65535)):
             return jsonify({"ok": False, "error": "通用 IMAP 导入必须填写有效的服务器和端口"}), 400
+        forwarded_inbox = str(data.get("forwarded_inbox") or "").strip()
+        if source == "forwarded_imap":
+            from core.import_formats import valid_email
+            if as_registered:
+                return jsonify({"ok": False, "error": "转发邮箱素材尚未注册，不能直接标记为已注册账号"}), 400
+            if not valid_email(forwarded_inbox):
+                return jsonify({"ok": False, "error": "请填写有效的转发收件箱地址"}), 400
         records = []
+        invalid = 0
         for line in text.splitlines():
             line = line.strip()
             if not line or line.startswith("#"):
+                continue
+            if source == "forwarded_imap":
+                from core.import_formats import valid_email
+                if valid_email(line):
+                    records.append({"email": line})
+                else:
+                    invalid += 1
                 continue
             if source == "imap":
                 if "----" in line:
@@ -1696,11 +1726,18 @@ def create_app(auth_code: str | None = None) -> Flask:
                 "totp_secret": parts[5] if len(parts) > 5 else "",
             })
         if not records:
-            need = ("2 段：邮箱----取码地址" if source == "generic_api" else
+            need = ("每行仅一个邮箱地址" if source == "forwarded_imap" else
+                    "2 段：邮箱----取码地址" if source == "generic_api" else
                     "邮箱----IMAP密码 或 邮箱:IMAP密码" if source == "imap" else
                     "4 段：email----password----clientId----refreshToken")
-            return jsonify({"ok": False, "error": f"未解析到有效邮箱行（需 {need}，---- 或 ==== 分隔）"}), 400
-        if as_registered:
+            suffix = "" if source == "forwarded_imap" else "，---- 或 ==== 分隔"
+            return jsonify({"ok": False, "error": f"未解析到有效邮箱行（需 {need}{suffix}）"}), 400
+        if source == "forwarded_imap":
+            inserted, skipped = db.import_forwarded_imap_emails(
+                records, inbox=forwarded_inbox, server=imap_server,
+                port=imap_port, use_ssl=imap_ssl,
+            )
+        elif as_registered:
             inserted, skipped = db.import_registered_email_accounts(records, source=source)
         elif source == "generic_api":
             inserted, skipped = db.import_generic_api_emails(records)
@@ -1713,6 +1750,7 @@ def create_app(auth_code: str | None = None) -> Flask:
             "inserted": inserted,
             "skipped": skipped,
             "parsed": len(records),
+            "invalid": invalid,
             "as_registered": as_registered,
         })
 

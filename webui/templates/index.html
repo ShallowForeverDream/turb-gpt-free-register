@@ -2572,7 +2572,7 @@
       <label class="outlook-import-field hidden" id="forwardedInboxSettingsV2">
         <span>接收转发邮件的邮箱（如 163 邮箱）</span>
         <input id="forwardedInboxV2" type="email" placeholder="your-inbox@163.com" autocomplete="off">
-        <span class="outlook-import-hint">这里只存收件箱地址；IMAP 客户端授权码请在“配置 → 邮箱 / OTP → 转发收件箱 IMAP 授权码”填写。</span>
+        <span class="outlook-import-hint">填写网页版顶部显示的完整邮箱地址，注意 @163.com 和 @yeah.net 不同；服务器会按域名匹配。授权码在“配置 → 邮箱 / OTP → 转发收件箱 IMAP 授权码”填写。</span>
       </label>
       <label class="outlook-import-check">
         <input id="importAsRegisteredV2" type="checkbox">
@@ -5394,6 +5394,7 @@ async function onOutlookBodyClick(e) {
   bindOutlookImportModal();
 })();
 
+{% include 'forwarded_imap_server.html' %}
 const IMPORT_SOURCE_LABELS = {
   outlook: 'Outlook 邮箱池',
   generic_api: '通用 API 取码邮箱',
@@ -5420,8 +5421,11 @@ function setImportSourceV2(val) {
   }
   const forwardedSettings = document.getElementById('forwardedInboxSettingsV2');
   if (forwardedSettings) forwardedSettings.classList.toggle('hidden', next !== 'forwarded_imap');
-  if (next === 'forwarded_imap')
-    document.getElementById('imapServerV2').value = 'imap.163.com';
+  if (next === 'forwarded_imap') {
+    suggestForwardedImapServer('forwardedInboxV2', 'imapServerV2');
+    if (!document.getElementById('imapServerV2').value.trim())
+      document.getElementById('imapServerV2').value = 'imap.163.com';
+  }
   const text = document.getElementById('importTextV2');
   if (text) text.placeholder = next === 'forwarded_imap'
     ? 'apple1@icloud.com\napple2@icloud.com'
@@ -5491,6 +5495,7 @@ function bindOutlookImportModal() {
     });
   }
   if (submitBtn) submitBtn.addEventListener('click', () => doImportOutlook());
+  $('#forwardedInboxV2')?.addEventListener('input', () => suggestForwardedImapServer('forwardedInboxV2', 'imapServerV2'));
 }
 async function doImportOutlook() {
   const textEl = $('#importTextV2');
@@ -5517,7 +5522,7 @@ async function doImportOutlook() {
     }
     const r = await api('/api/outlook/import', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
     const mode = r.as_registered ? '已注册账号' : '邮箱池素材';
-    const msg = `按 ${mode} 导入：解析 ${r.parsed} 行，新增 ${r.inserted}，跳过 ${r.skipped}，格式错误 ${r.invalid || 0}${r.as_registered ? '；可到“账号”页查看' : ''}`;
+    const msg = `按 ${mode} 导入：解析 ${r.parsed} 行，新增 ${r.inserted}，更新收件配置 ${r.updated || 0}，跳过 ${r.skipped}，格式错误 ${r.invalid || 0}${r.as_registered ? '；可到“账号”页查看' : ''}`;
     if (resultEl) resultEl.innerHTML = `<div class="banner info">${esc(msg)}</div>`;
     if (textEl) textEl.value = '';
     setPoolSourceV2(source === 'forwarded_imap' ? 'imap' : source);

@@ -156,6 +156,36 @@ class ForwardedImapTests(unittest.TestCase):
             self.assertEqual(pool["copy_line"], "new@icloud.com")
             self.assertNotIn("imap_password", pool)
 
+    def test_reimport_updates_shared_inbox_without_changing_registered_status(self):
+        with tempfile.TemporaryDirectory() as td, patch.multiple(db, **storage(Path(td))):
+            client = create_app(auth_code="test-auth").test_client()
+            headers = {"X-Auth-Code": "test-auth"}
+            body = {
+                "source": "forwarded_imap", "text": "one@icloud.com",
+                "forwarded_inbox": "shared@163.com", "imap_server": "imap.163.com",
+                "imap_port": 993, "imap_ssl": True, "as_registered": True,
+            }
+            self.assertEqual(client.post("/api/outlook/import", json=body, headers=headers).get_json()["inserted"], 1)
+            original = db.get_imap_email_by_email("one@icloud.com")
+            with patch.object(imap._email_cfg, "FORWARDED_IMAP_PASSWORD", "app-auth-code"):
+                self.assertEqual(imap.get_account_context("one@icloud.com").server, "imap.163.com")
+            body.update(forwarded_inbox="shared@yeah.net", imap_server="imap.yeah.net", as_registered=False)
+            corrected = client.post("/api/outlook/import", json=body, headers=headers)
+            self.assertEqual(corrected.status_code, 200)
+            self.assertEqual(corrected.get_json()["inserted"], 0)
+            self.assertEqual(corrected.get_json()["updated"], 1)
+            self.assertEqual(corrected.get_json()["skipped"], 0)
+            row = db.get_imap_email_by_email("one@icloud.com")
+            self.assertEqual(row["imap_username"], "shared@yeah.net")
+            self.assertEqual(row["imap_server"], "imap.yeah.net")
+            self.assertEqual(row["status"], "used")
+            self.assertEqual(row["registered_account_id"], original["registered_account_id"])
+            self.assertEqual(db.get_account_by_email("one@icloud.com")["email_source"], "imap")
+            with patch.object(imap._email_cfg, "FORWARDED_IMAP_PASSWORD", "app-auth-code"):
+                self.assertEqual(imap.get_account_context("one@icloud.com").server, "imap.yeah.net")
+            same = client.post("/api/outlook/import", json=body, headers=headers).get_json()
+            self.assertEqual((same["updated"], same["skipped"]), (0, 1))
+
     def test_recipient_matching_uses_original_address_not_shared_inbox(self):
         self.assertFalse(imap._matches_recipient({"to": "shared@163.com", "text": "To: other@icloud.com\nCode 111111"},
                                                  "one@icloud.com", forwarded=True))

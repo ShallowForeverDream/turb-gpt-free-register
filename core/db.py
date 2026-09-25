@@ -2714,19 +2714,38 @@ def import_imap_emails(records: list[dict]) -> tuple[int, int]:
 
 def import_forwarded_imap_emails(records: list[dict], *, inbox: str,
                                  server: str = "imap.163.com", port: int = 993,
-                                 use_ssl: bool = True) -> tuple[int, int]:
-    """Import address-only recipients routed into one shared IMAP inbox."""
+                                 use_ssl: bool = True) -> tuple[int, int, int]:
+    """Import recipients or update the mailbox connection of forwarded rows."""
     inbox = str(inbox or "").strip()
     server = str(server or "").strip()
     if not valid_email(inbox) or not server or not (1 <= int(port) <= 65535):
         raise ValueError("转发收件箱、IMAP 服务器或端口无效")
     with _LOCK:
         rows = _load_imap_emails()
-        inserted = skipped = 0
+        inserted = updated = skipped = 0
         for raw in records:
             email = str(raw.get("email") or "").strip()
-            if not valid_email(email) or email.lower() == inbox.lower() or _find_by_email(rows, email):
+            if not valid_email(email) or email.lower() == inbox.lower():
                 skipped += 1
+                continue
+            existing = _find_by_email(rows, email)
+            if existing is not None:
+                if not existing.get("imap_forwarded"):
+                    skipped += 1
+                    continue
+                changed = any((existing.get(key) != value) for key, value in {
+                    "imap_username": inbox,
+                    "imap_server": server,
+                    "imap_port": int(port),
+                    "imap_ssl": bool(use_ssl),
+                }.items())
+                if changed:
+                    existing.update(imap_username=inbox, imap_server=server,
+                                    imap_port=int(port), imap_ssl=bool(use_ssl))
+                    existing.pop("imap_password", None)
+                    updated += 1
+                else:
+                    skipped += 1
                 continue
             row = {
                 "id": _next_id(rows), "email": email,
@@ -2738,9 +2757,9 @@ def import_forwarded_imap_emails(records: list[dict], *, inbox: str,
             }
             rows.append(row)
             inserted += 1
-        if inserted:
+        if inserted or updated:
             _save_imap_emails(rows)
-        return inserted, skipped
+        return inserted, updated, skipped
 
 
 def claim_next_imap_email() -> dict | None:

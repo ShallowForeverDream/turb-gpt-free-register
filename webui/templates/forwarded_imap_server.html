@@ -1,0 +1,10 @@
+function suggestForwardedImapServer(inboxId, serverId) {
+  const inbox = document.getElementById(inboxId);
+  const server = document.getElementById(serverId);
+  if (!inbox || !server) return;
+  const domain = (inbox.value.trim().toLowerCase().split('@')[1] || '');
+  const suggestion = {'163.com': 'imap.163.com', 'yeah.net': 'imap.yeah.net', '126.com': 'imap.126.com'}[domain];
+  if (!suggestion) return;
+  const current = server.value.trim().toLowerCase();
+  if (!current || ['imap.163.com', 'imap.yeah.net', 'imap.126.com'].includes(current)) server.value = suggestion;
+}

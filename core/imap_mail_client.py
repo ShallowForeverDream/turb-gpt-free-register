@@ -69,9 +69,7 @@ def get_account_context(email: str) -> ImapEmailAccount | None:
     if not key:
         return None
     cached = _CONTEXT_CACHE.get(key)
-    if cached:
-        if cached.forwarded:
-            cached.password = str(getattr(_email_cfg, "FORWARDED_IMAP_PASSWORD", "") or "")
+    if cached and not cached.forwarded:
         return cached
     from core import db
     account = _account_from_row(db.get_imap_email_by_email(email))

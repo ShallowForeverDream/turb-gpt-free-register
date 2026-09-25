@@ -1749,14 +1749,19 @@ def create_app(auth_code: str | None = None, *, local_no_auth: bool = False) -> 
                     "4 段：email----password----clientId----refreshToken")
             suffix = "" if source == "forwarded_imap" else "，---- 或 ==== 分隔"
             return jsonify({"ok": False, "error": f"未解析到有效邮箱行（需 {need}{suffix}）"}), 400
-        if as_registered:
-            inserted, skipped = db.import_registered_email_accounts(
-                records, source="imap" if source == "forwarded_imap" else source,
-            )
-        elif source == "forwarded_imap":
-            inserted, skipped = db.import_forwarded_imap_emails(
+        updated = 0
+        if source == "forwarded_imap":
+            pool_inserted, updated, pool_skipped = db.import_forwarded_imap_emails(
                 records, inbox=forwarded_inbox, server=imap_server,
                 port=imap_port, use_ssl=imap_ssl,
+            )
+            if as_registered:
+                inserted, skipped = db.import_registered_email_accounts(records, source="imap")
+            else:
+                inserted, skipped = pool_inserted, pool_skipped
+        elif as_registered:
+            inserted, skipped = db.import_registered_email_accounts(
+                records, source="imap" if source == "forwarded_imap" else source,
             )
         elif source == "generic_api":
             inserted, skipped = db.import_generic_api_emails(records)
@@ -1767,6 +1772,7 @@ def create_app(auth_code: str | None = None, *, local_no_auth: bool = False) -> 
         return jsonify({
             "ok": True,
             "inserted": inserted,
+            "updated": updated,
             "skipped": skipped,
             "parsed": len(records),
             "invalid": invalid,

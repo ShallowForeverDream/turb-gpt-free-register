@@ -1,0 +1,24 @@
+function describeTotpBulkResult(result) {
+  const started = Number(result.started_count || 0);
+  const skipped = result.skipped || [];
+  const busy = Number(result.busy_count ?? (result.busy || []).length) || 0;
+  const failed = Number(result.failed_count ?? (result.failed || []).length) || 0;
+  const details = [];
+  if (skipped.length) {
+    const reasons = new Map();
+    for (const item of skipped) {
+      const reason = item.reason || '原因未知';
+      reasons.set(reason, (reasons.get(reason) || 0) + 1);
+    }
+    const summary = Array.from(reasons, ([reason, count]) => `${reason} ×${count}`).join('；');
+    details.push(`跳过 ${skipped.length} 个（${summary}）`);
+  }
+  if (busy) details.push(`进行中 ${busy} 个`);
+  if (failed) details.push(`失败 ${failed} 个`);
+  if (reasonsNeedAccessToken(skipped)) details.push('请先查活刷新 AT');
+  return `已入队 ${started} 个${details.length ? '，' + details.join('；') : ''}`;
+}
+
+function reasonsNeedAccessToken(skipped) {
+  return skipped.some(item => item.reason === '缺少 access_token');
+}

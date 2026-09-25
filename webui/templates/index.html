@@ -2817,7 +2817,7 @@ function jobsV2OpIcons() {
     del: `<svg viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>`,
   };
 }
-function showToast(t) { const el=$('#toast'); el.textContent=t; el.classList.add('show'); clearTimeout(showToast.t); showToast.t=setTimeout(()=>el.classList.remove('show'),1400); }
+function showToast(t, duration=1400) { const el=$('#toast'); el.textContent=t; el.classList.add('show'); clearTimeout(showToast.t); showToast.t=setTimeout(()=>el.classList.remove('show'),duration); }
 async function copyText(text) {
   if (!text) return;
   try {
@@ -4247,6 +4247,7 @@ async function setupAccountTotp(id, btn) {
   }
 }
 
+{% include 'totp_bulk_result.html' %}
 async function setupSelectedTotp() {
   const ids = Array.from(ACCOUNT_SELECTED).map(Number);
   if (!ids.length) { showToast('请先选择账号'); return; }
@@ -4264,14 +4265,7 @@ async function setupSelectedTotp() {
       body: JSON.stringify({account_ids: ids}),
     });
     (r.started || []).forEach(item => ACCOUNT_SELECTED.delete(Number(item.id)));
-    const skippedCount = Number(r.skipped_count ?? (r.skipped || []).length) || 0;
-    const busyCount = Number(r.busy_count ?? (r.busy || []).length) || 0;
-    const failedCount = Number(r.failed_count ?? (r.failed || []).length) || 0;
-    const details = [];
-    if (skippedCount) details.push(`跳过 ${skippedCount} 个`);
-    if (busyCount) details.push(`进行中 ${busyCount} 个`);
-    if (failedCount) details.push(`失败 ${failedCount} 个`);
-    showToast(`已入队 ${r.started_count || 0} 个${details.length ? '，' + details.join('，') : ''}`);
+    showToast(describeTotpBulkResult(r), (r.skipped || []).length ? 7000 : 1400);
     planStatusRevision = '';
     await loadAccounts();
     await pollAccountPlanStatuses();

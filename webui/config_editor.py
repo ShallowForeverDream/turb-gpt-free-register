@@ -339,7 +339,7 @@ EDITABLE_FIELDS = [
     },
     {
         "key": "GENERIC_API_PROXY", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
-        "label": "通用 API 取码代理", "help": "仅用于 generic_api 接口取码；默认直接走本地 HTTP 代理 http://127.0.0.1:7897，不读取代理池，也不套用代理池上游链式；留空则直连",
+        "label": "通用 API 取码代理", "help": "仅用于 generic_api 接口取码；默认直接走本地 HTTP 代理 http://127.0.0.1:21483，不读取代理池，也不套用代理池上游链式；留空则直连",
         "storage": "env",
     },
     {

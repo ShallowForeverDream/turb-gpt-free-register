@@ -18,7 +18,7 @@ from config.env_loader import apply_env_overrides
 # 本地代理入口；实际出口地区以代理/分流规则为准。
 # 推荐使用 socks5h://（DNS 在代理端解析），避免本地 DNS 与出口 IP 地区错配。
 PROXY_POOL = [
-    "socks5://127.0.0.1:7897",
+    "socks5h://127.0.0.1:21483",
 ]
 
 # 代理池使用的本地上游代理。填写后形成：本地上游 -> 代理池目标代理 -> ChatGPT；
@@ -37,7 +37,7 @@ PLAN_CHECK_PROXY_MODE = "auto"
 PLAN_CHECK_PROXY = []
 
 # 套餐查询 / Codex Agent Token 生成的上游代理。填写后形成：本地代理 -> 动态代理 -> ChatGPT。
-# 例如 http://127.0.0.1:7897；留空则直接连接 PLAN_CHECK_PROXY。
+# 例如 http://127.0.0.1:21483；留空则直接连接 PLAN_CHECK_PROXY。
 PLAN_CHECK_UPSTREAM_PROXY = ""
 
 # 查套餐 / 生成 Codex Agent Token 使用独立的短超时和有限重试，避免后台任务长时间卡住。

@@ -1,9 +1,12 @@
 function liveCheckNeedsManualLogin(row) {
-  if (row.live_check_status === 'blocked') return true;
+  if (['blocked', 'action_required'].includes(row.live_check_status)) return true;
   return row.live_check_status === 'failed' && /\bHTTP(?:\s+Error)?\s+(403|429)\b/i.test(row.live_check_error || '');
 }
 
 function liveCheckBlockedText(row) {
+  if (row.live_check_error_code === 'workspace_selection_required') {
+    return '查活: 待完成工作区选择，请网页登录；AT 尚未获取';
+  }
   return row.live_check_stage === 'login_preflight'
     ? '查活: 登录入口被拒绝/限流，尚未发码，请网页登录'
     : '查活: 访问被拒绝/限流，请网页登录核验';

@@ -9,6 +9,46 @@ from webui.app import create_app
 
 
 class LiveCheckBlockedStatusTests(unittest.TestCase):
+    def test_otp_workspace_result_does_not_fetch_session_or_repeat_otp(self):
+        with patch.object(liveness, "_validate_with_retry", return_value={
+            "page": {"type": "workspace"},
+            "continue_url": "https://auth.openai.com/workspace",
+        }) as validate, patch.object(liveness, "follow_oauth_callback") as callback, \
+             patch.object(liveness, "fetch_session") as fetch:
+            with self.assertRaises(liveness.WorkspaceSelectionRequiredError):
+                liveness._login_via_email_otp(object(), "test@example.test", 123.0, email_source="imap")
+        validate.assert_called_once()
+        callback.assert_not_called()
+        fetch.assert_not_called()
+
+    def test_workspace_redirect_stops_before_fetching_session(self):
+        with patch.object(liveness, "follow_oauth_callback", return_value="https://auth.openai.com/workspace?state=test") as callback, \
+             patch.object(liveness, "fetch_session") as fetch:
+            with self.assertRaises(liveness.WorkspaceSelectionRequiredError):
+                liveness._follow_continue_and_fetch(object(), "https://auth.openai.com/authorize/continue", referer="https://auth.openai.com/email-verification")
+        callback.assert_called_once()
+        fetch.assert_not_called()
+
+    def test_completed_callback_still_fetches_session(self):
+        with patch.object(liveness, "follow_oauth_callback", return_value="https://chatgpt.com/") as callback, \
+             patch.object(liveness, "fetch_session", return_value={"accessToken": "test-token"}) as fetch:
+            result = liveness._follow_continue_and_fetch(object(), "https://auth.openai.com/authorize/continue", referer="https://auth.openai.com/email-verification")
+        self.assertEqual(result["accessToken"], "test-token")
+        callback.assert_called_once()
+        fetch.assert_called_once()
+
+    def test_workspace_selection_has_distinct_status(self):
+        with tempfile.TemporaryDirectory() as tmp, \
+             patch.object(liveness, "_LOG_DIR", Path(tmp)), \
+             patch.object(liveness, "_stored_access_token", return_value=""), \
+             patch.object(liveness, "_account_totp_secret", return_value=""), \
+             patch.object(liveness, "_login_via_full_web_flow", side_effect=liveness.WorkspaceSelectionRequiredError()):
+            result = liveness.check_account_liveness("test@example.test", proxy="")
+        self.assertEqual(result["status"], "action_required")
+        self.assertEqual(result["stage"], "workspace_selection")
+        self.assertEqual(result["error_code"], "workspace_selection_required")
+        self.assertNotIn("access_token", result)
+
     def test_preflight_denial_is_not_account_deactivation(self):
         with tempfile.TemporaryDirectory() as tmp, \
              patch.object(liveness, "_LOG_DIR", Path(tmp)), \

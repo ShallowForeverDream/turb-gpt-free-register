@@ -87,6 +87,8 @@ def _run_live_check(*, account_id: int, email: str, proxy: str | None, trigger: 
             _append_log(email, f"[查活] 完成：账号已废 {result.get('error') or ''}")
         elif result.get("status") == "blocked":
             _append_log(email, f"[查活] 已停止：{result.get('error') or ''}")
+        elif result.get("status") == "action_required":
+            _append_log(email, f"[查活] 等待用户操作：{result.get('error') or ''}")
         else:
             _append_log(email, f"[查活] 完成：失败 {result.get('error') or ''}")
         result.update({

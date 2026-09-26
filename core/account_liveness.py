@@ -8,6 +8,7 @@ import time
 import uuid
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from core import db
 from core.session import BrowserSession, close_browser_session
@@ -49,6 +50,16 @@ class LoginPreflightBlockedError(RuntimeError):
         self.status_code = status_code
         message = ("登录入口拒绝访问" if status_code == 403 else "登录入口限流")
         super().__init__(f"{message}（HTTP {status_code}）；尚未发送邮箱验证码，账号状态未判定。请通过正常网页登录处理。")
+
+
+class WorkspaceSelectionRequiredError(RuntimeError):
+    def __init__(self):
+        super().__init__("认证已进入工作区选择页面，但 OAuth 回调尚未完成，未获取 AT。请在正常网页登录中选择工作区并完成登录。")
+
+
+def _requires_workspace_selection(url: str) -> bool:
+    parsed = urlsplit(str(url or ""))
+    return parsed.hostname in (None, "auth.openai.com") and parsed.path.rstrip("/") == "/workspace"
 
 
 def _access_refusal_status(exc: BaseException) -> int | None:
@@ -303,10 +314,14 @@ def _mfa_verify(session: BrowserSession, factor_id: str, code: str) -> dict:
 
 def _follow_continue_and_fetch(session: BrowserSession, continue_url: str, *, referer: str) -> dict:
     """完成 callback/session；仅临时传输错误重试，403/429 交由上层报告。"""
+    if _requires_workspace_selection(continue_url):
+        raise WorkspaceSelectionRequiredError()
     max_attempts = 3
     for attempt in range(1, max_attempts + 1):
         try:
-            follow_oauth_callback(session, continue_url, referer=referer)
+            final_url = follow_oauth_callback(session, continue_url, referer=referer)
+            if _requires_workspace_selection(final_url):
+                raise WorkspaceSelectionRequiredError()
             break
         except Exception as exc:
             if attempt >= max_attempts or not _is_retryable_network_error(exc):
@@ -496,6 +511,9 @@ def _login_via_email_otp(
     page = validate_result.get("page") if isinstance(validate_result, dict) else {}
     page = page if isinstance(page, dict) else {}
     page_type = str(page.get("type") or "")
+    if page_type == "workspace":
+        logger.info("[查活] 邮箱 OTP 验证成功；等待工作区选择，OAuth 回调尚未完成")
+        raise WorkspaceSelectionRequiredError()
     continue_url = _extract_continue_url(validate_result)
     if not continue_url:
         raise RuntimeError(f"OTP 登录成功但没有 OAuth continue_url: {validate_result}")
@@ -781,6 +799,11 @@ def check_account_liveness(
             "fingerprint": fp,
             "fingerprint_text": _safe_fingerprint_text_for_account(session),
         }
+    except WorkspaceSelectionRequiredError as exc:
+        logger.info("[查活] 需要完成网页登录：%s", exc)
+        return {"ok": False, "status": "action_required", "checked_at": checked_at,
+                "stage": "workspace_selection", "error_code": "workspace_selection_required",
+                "error": str(exc)}
     except LoginPreflightBlockedError as exc:
         logger.warning("[查活] 停止：%s", exc)
         return {"ok": False, "status": "blocked", "checked_at": checked_at,

@@ -784,6 +784,14 @@
   <img id="qrImage" alt="支付二维码">
   <a id="qrOpenLink" class="qr-link" href="#" target="_blank" rel="noopener noreferrer"></a>
 </div>
+<div id="workspaceModal" class="body hidden" style="position:fixed;z-index:30;left:50%;top:18%;transform:translateX(-50%);width:min(560px,calc(100% - 32px));background:#fff;border-radius:12px;padding:20px;box-shadow:0 12px 45px #0003;">
+  <h3>登录工作区 <button class="btn" id="btnCloseWorkspace" style="float:right;min-height:28px;">关闭</button></h3>
+  <p class="muted">默认选择组织工作区；首次查活会缓存该账号的组织/个人工作区清单。</p>
+  <input type="hidden" id="workspaceAccountId">
+  <label>工作区<select id="workspacePreference" style="display:block;width:100%;margin-top:8px;padding:8px;"><option value="organization">组织工作区（默认）</option><option value="personal">个人工作区</option></select></label>
+  <p class="muted" id="workspaceOptionsHint" style="margin-top:10px;"></p>
+  <div style="text-align:right;margin-top:16px;"><button class="btn" id="btnSaveWorkspace">保存</button></div>
+</div>
 
 <script>
 const $ = (s) => document.querySelector(s);
@@ -894,6 +902,35 @@ async function api(url, opts) {
   if (!r.ok) throw new Error(j.error || ('HTTP '+r.status));
   return j;
 }
+function closeWorkspaceModal() { $('#workspaceModal').classList.add('hidden'); updateModalScrollLock(); }
+async function openWorkspaceModal(id) {
+  try {
+    const data = await api(`/api/accounts/${encodeURIComponent(id)}/workspace`);
+    $('#workspaceAccountId').value = String(id);
+    const select = $('#workspacePreference');
+    select.innerHTML = '<option value="organization">组织工作区（默认）</option><option value="personal">个人工作区</option>';
+    const options = Array.isArray(data.options) ? data.options : [];
+    for (const kind of ['organization', 'personal']) {
+      const list = options.filter(x => x.kind === kind);
+      if (!list.length) continue;
+      const group = document.createElement('optgroup'); group.label = kind === 'organization' ? '组织工作区' : '个人工作区';
+      list.forEach(x => { const o = document.createElement('option'); o.value = `id:${x.id}`; o.textContent = `${x.name || '未命名'} (${x.id})`; group.appendChild(o); });
+      select.appendChild(group);
+    }
+    select.value = data.preference || 'organization';
+    if (select.value !== (data.preference || 'organization')) select.value = 'organization';
+    $('#workspaceOptionsHint').textContent = options.length ? '组织工作区与个人工作区已分开显示。' : '首次查活会自动读取并缓存工作区清单。';
+    $('#workspaceModal').classList.remove('hidden'); updateModalScrollLock();
+  } catch (e) { showToast('读取工作区失败：' + e.message); }
+}
+async function saveWorkspaceModal() {
+  const id = Number($('#workspaceAccountId').value || 0); if (!id) return;
+  try { await api(`/api/accounts/${encodeURIComponent(id)}/workspace`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({preference:$('#workspacePreference').value})}); closeWorkspaceModal(); showToast('工作区选择已保存'); loadAccounts(); }
+  catch (e) { showToast('保存工作区失败：' + e.message); }
+}
+$('#btnCloseWorkspace').addEventListener('click', closeWorkspaceModal);
+$('#btnSaveWorkspace').addEventListener('click', saveWorkspaceModal);
+
 function debounce(fn, wait=250) {
   let t = null;
   return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), wait); };
@@ -1046,7 +1083,7 @@ async function refreshJobs() {
 
 let modalScrollY = 0;
 function updateModalScrollLock() {
-  const opened = !$('#logPanel').classList.contains('hidden') || !$('#retryLogPanel').classList.contains('hidden') || !$('#liveLogPanel').classList.contains('hidden') || !$('#totpLogPanel').classList.contains('hidden') || !$('#emailChangeLogPanel').classList.contains('hidden') || !$('#qrPanel').classList.contains('hidden');
+  const opened = !$('#logPanel').classList.contains('hidden') || !$('#retryLogPanel').classList.contains('hidden') || !$('#liveLogPanel').classList.contains('hidden') || !$('#totpLogPanel').classList.contains('hidden') || !$('#emailChangeLogPanel').classList.contains('hidden') || !$('#qrPanel').classList.contains('hidden') || !$('#workspaceModal').classList.contains('hidden');
   const locked = document.body.classList.contains('modal-open');
   if (opened && !locked) {
     modalScrollY = window.scrollY || document.documentElement.scrollTop || 0;
@@ -1587,7 +1624,7 @@ function renderAccounts() {
       <td class="actions actions-cell">
         <div class="account-row-actions">
           <div class="account-action-group"><button class="primary" data-account-copy-secret="access_token" data-account-id="${esc(r.id)}" ${r.has_access_token ? '' : 'disabled'}>复制Token</button> <button class="good" data-account-copy-secret="copy_line" data-account-id="${esc(r.id)}">复制整行</button></div>
-          <div class="account-action-group"><button data-account-note="${esc(r.id)}" title="设置/清空该账号备注">备注</button> <button data-account-change-email="${esc(r.id)}">换绑邮箱</button> <button data-account-change-email-log="${esc(r.id)}">换绑日志</button> <button data-account-live-check="${esc(r.id)}" title="重新登录该账号，成功则刷新最新 AT/accessToken">查活</button> <button data-account-live-log="${esc(r.email)}" title="查看该账号最近一次查活日志">查活日志</button> <button data-account-totp-log="${esc(r.email)}" title="查看该账号最近一次 2FA 设置日志">2FA日志</button> ${_planAction(r)} ${_extractLinkAction(r)}</div>
+          <div class="account-action-group"><button data-account-note="${esc(r.id)}" title="设置/清空该账号备注">备注</button> <button data-account-workspace="${esc(r.id)}">登录工作区</button> <button data-account-change-email="${esc(r.id)}">换绑邮箱</button> <button data-account-change-email-log="${esc(r.id)}">换绑日志</button> <button data-account-live-check="${esc(r.id)}" title="重新登录该账号，成功则刷新最新 AT/accessToken">查活</button> <button data-account-live-log="${esc(r.email)}" title="查看该账号最近一次查活日志">查活日志</button> <button data-account-totp-log="${esc(r.email)}" title="查看该账号最近一次 2FA 设置日志">2FA日志</button> ${_planAction(r)} ${_extractLinkAction(r)}</div>
           <div class="account-action-group">${_codexAction(r)} <button data-codex-log="${esc(r.email)}" title="查看该账号最近一次 Codex 补跑日志">补跑日志</button></div>
           <div class="account-action-group danger-zone"><button data-account-archive="${esc(r.id)}" data-archived="${r.archived ? '0' : '1'}" title="${r.archived ? '恢复到默认账号列表' : '归档后默认账号列表不再显示'}">${r.archived ? '恢复' : '归档'}</button> <button class="danger" data-account-delete="${esc(r.id)}" data-email="${esc(r.email)}">删除</button></div>
         </div>
@@ -1788,6 +1825,9 @@ document.addEventListener('click', async (e) => {
 
 // 账号操作按钮（事件委托）
 $('#accountsBody').addEventListener('click', async (e) => {
+  const workspaceBtn = e.target.closest('[data-account-workspace]');
+  if (workspaceBtn) { await openWorkspaceModal(Number(workspaceBtn.dataset.accountWorkspace)); return; }
+
   const copySecretBtn = e.target.closest('[data-account-copy-secret]');
   if (copySecretBtn) {
     const id = Number(copySecretBtn.dataset.accountId);

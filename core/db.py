@@ -777,6 +777,8 @@ def _decorate_account(row: dict) -> dict:
     out = dict(row)
     out["note"] = out.get("note") or ""
     out["note_updated_at"] = out.get("note_updated_at") or ""
+    out["workspace_preference"] = out.get("workspace_preference") or "organization"
+    out["workspace_options"] = _normalize_workspace_options(out.get("workspace_options"))
     plan_status = out.get("plan_check_status")
     if plan_status in {"queued", "running"}:
         try:
@@ -1784,6 +1786,66 @@ def update_account_note(acc_id: int, note: str) -> bool:
         return True
 
 
+_WORKSPACE_PREFERENCES = {"organization", "personal"}
+
+
+def _normalize_workspace_options(options: Any) -> list[dict]:
+    """只保留 Auth 返回的工作区公开标识，避免把整段认证响应写入账号记录。"""
+    if not isinstance(options, list):
+        return []
+    out: list[dict] = []
+    seen: set[str] = set()
+    for raw in options[:20]:
+        if not isinstance(raw, dict):
+            continue
+        wid = str(raw.get("id") or raw.get("workspace_id") or "").strip()
+        kind = str(raw.get("kind") or raw.get("type") or "").strip().lower()
+        if kind not in {"organization", "personal"}:
+            continue
+        wid = wid[:200]
+        if not wid or wid in seen:
+            continue
+        seen.add(wid)
+        name = str(raw.get("name") or "").strip()[:160]
+        out.append({"id": wid, "name": name, "kind": kind})
+    return out
+
+
+def update_account_workspace_preference(acc_id: int, preference: str) -> bool:
+    """保存查活时的工作区选择策略；默认 organization。"""
+    value = str(preference or "organization").strip()
+    if len(value) > 200:
+        return False
+    with _LOCK:
+        rows = _load_accounts()
+        row = next((r for r in rows if int(r.get("id") or 0) == int(acc_id)), None)
+        if row is None:
+            return False
+        options = _normalize_workspace_options(row.get("workspace_options"))
+        if value not in _WORKSPACE_PREFERENCES and value not in {f"id:{opt['id']}" for opt in options}:
+            return False
+        row["workspace_preference"] = value
+        row["updated_at"] = _now()
+        _save_accounts(rows)
+        return True
+
+
+def update_account_workspace_options(email: str, options: Any) -> bool:
+    """缓存最近一次 Auth 工作区清单，仅供账号页选择器展示。"""
+    normalized = _normalize_workspace_options(options)
+    with _LOCK:
+        rows = _load_accounts()
+        row = _find_by_email(rows, str(email or "").strip())
+        if row is None:
+            return False
+        row["workspace_options"] = normalized
+        row["workspace_options_updated_at"] = _now()
+        row.setdefault("workspace_preference", "organization")
+        row["updated_at"] = _now()
+        _save_accounts(rows)
+        return True
+
+
 def claim_account_email_change(acc_id: int, source: str, trigger: str = "manual") -> bool:
     """原子占用账号邮箱换绑任务。"""
     with _LOCK:
@@ -1900,6 +1962,9 @@ def update_account_liveness(acc_id: int, result: dict | None = None) -> bool:
         row["updated_at"] = now
 
         if ok:
+            selected = _normalize_workspace_options([result.get("workspace_selected")])[0:1]
+            if selected:
+                row["workspace_selected"] = selected[0]
             token = str(result.get("access_token") or "").strip()
             if token:
                 row["access_token"] = token

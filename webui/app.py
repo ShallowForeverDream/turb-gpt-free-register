@@ -146,6 +146,7 @@ def _compact_account_for_list(row: dict) -> dict:
         "totp_setup_error", "totp_setup_message", "totp_setup_started_at", "totp_setup_completed_at",
         "email_change_status", "email_change_error", "email_change_new_email",
         "email_change_started_at", "email_change_completed_at",
+        "workspace_preference", "workspace_selected",
     )
     for key in optional_keys:
         value = row.get(key)
@@ -624,6 +625,29 @@ def create_app(auth_code: str | None = None, *, local_no_auth: bool = False) -> 
         if not updated:
             return jsonify({"ok": False, "error": "账号不存在"}), 404
         return jsonify({"ok": True, "updated": True, "id": acc_id, "note": note})
+
+    @app.get("/api/accounts/<int:acc_id>/workspace")
+    def api_account_workspace_get(acc_id: int):
+        acc = db.get_account(acc_id)
+        if not acc:
+            return jsonify({"ok": False, "error": "账号不存在"}), 404
+        return jsonify({
+            "ok": True,
+            "id": acc_id,
+            "preference": acc.get("workspace_preference") or "organization",
+            "options": acc.get("workspace_options") or [],
+            "selected": acc.get("workspace_selected"),
+        })
+
+    @app.post("/api/accounts/<int:acc_id>/workspace")
+    def api_account_workspace_set(acc_id: int):
+        data = request.get_json(silent=True) or {}
+        preference = str(data.get("preference") or "organization").strip()
+        if preference not in {"organization", "personal"} and not preference.startswith("id:"):
+            return jsonify({"ok": False, "error": "工作区选择无效"}), 400
+        if not db.update_account_workspace_preference(acc_id, preference):
+            return jsonify({"ok": False, "error": "账号不存在，或该工作区不是此账号最近登录返回的选项"}), 400
+        return jsonify({"ok": True, "id": acc_id, "preference": preference})
 
     @app.post("/api/accounts/<int:acc_id>/totp-setup")
     def api_account_totp_setup(acc_id: int):

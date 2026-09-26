@@ -8,11 +8,11 @@ import time
 import uuid
 from datetime import datetime
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
 from core import db
 from core.session import BrowserSession, close_browser_session
-from core.codex_oauth import _account_registration_password, _account_totp_secret, _account_totp_code
+from core.codex_oauth import _account_registration_password, _account_totp_secret, _account_totp_code, _decode_auth_session_metadata
 from core.humanize import delay as human_delay
 from core.chatgpt_auth import get_csrf_token, get_providers, probe_auth_session, signin_openai
 from core.openai_auth import (
@@ -53,8 +53,8 @@ class LoginPreflightBlockedError(RuntimeError):
 
 
 class WorkspaceSelectionRequiredError(RuntimeError):
-    def __init__(self):
-        super().__init__("认证已进入工作区选择页面，但 OAuth 回调尚未完成，未获取 AT。请在正常网页登录中选择工作区并完成登录。")
+    def __init__(self, reason: str = "未取得可选工作区"):
+        super().__init__(f"认证已进入工作区选择页面，但{reason}；OAuth 回调尚未完成，未获取 AT。请在账号页的“登录工作区”中选择后重新查活。")
 
 
 def _requires_workspace_selection(url: str) -> bool:
@@ -312,16 +312,87 @@ def _mfa_verify(session: BrowserSession, factor_id: str, code: str) -> dict:
     return resp.json()
 
 
-def _follow_continue_and_fetch(session: BrowserSession, continue_url: str, *, referer: str) -> dict:
+def _auth_workspaces(session: BrowserSession, result: dict | None = None) -> list[dict]:
+    """从本次认证响应或同一会话 Cookie 读取工作区，不复用上次缓存决定本次选择。"""
+    values = []
+    if isinstance(result, dict):
+        values.append(result.get("oai-client-auth-session") or result.get("auth_session"))
+    try:
+        values.extend(c.value for c in session.session.cookies.jar if c.name == "oai-client-auth-session")
+    except (AttributeError, TypeError):
+        pass
+    for value in values:
+        payload = _decode_auth_session_metadata(value)
+        options = db._normalize_workspace_options(payload.get("workspaces"))
+        if options:
+            return options
+    return []
+
+
+def _select_workspace_and_fetch(session: BrowserSession, email: str, result: dict | None = None) -> dict:
+    options = _auth_workspaces(session, result)
+    if not options:
+        raise WorkspaceSelectionRequiredError()
+    db.update_account_workspace_options(email, options)
+    account = db.get_account_by_email(email) or {}
+    preference = str(account.get("workspace_preference") or "organization")
+    if preference.startswith("id:"):
+        selected = next((w for w in options if w["id"] == preference[3:]), None)
+        if selected is None:
+            raise WorkspaceSelectionRequiredError("之前指定的工作区已不在本次登录清单中")
+    else:
+        kind = preference if preference in {"organization", "personal"} else "organization"
+        matches = [w for w in options if w["kind"] == kind]
+        if len(matches) != 1:
+            reason = "没有组织工作区" if kind == "organization" and not matches else (
+                "没有个人工作区" if kind == "personal" and not matches else "存在多个同类工作区，需指定其中一个"
+            )
+            raise WorkspaceSelectionRequiredError(reason)
+        selected = matches[0]
+    logger.info("[查活] 选择%s工作区：%s", "组织" if selected["kind"] == "organization" else "个人", selected["name"] or selected["id"])
+    resp = session.post(
+        "https://auth.openai.com/api/accounts/workspace/select",
+        headers=session.get_auth_headers(referer="https://auth.openai.com/workspace"),
+        data=json.dumps({"workspace_id": selected["id"]}),
+        allow_redirects=False,
+    )
+    resp.raise_for_status()
+    try:
+        payload = resp.json()
+    except (ValueError, TypeError):
+        payload = {}
+    payload = payload if isinstance(payload, dict) else {}
+    next_url = str(
+        resp.headers.get("location") or payload.get("redirect_url") or
+        payload.get("continue_url") or payload.get("external_url") or
+        payload.get("url") or payload.get("next") or ""
+    ).strip()
+    if not next_url:
+        raise WorkspaceSelectionRequiredError("工作区选择接口未返回下一跳地址")
+    next_url = urljoin("https://auth.openai.com", next_url)
+    if urlsplit(next_url).hostname not in {"auth.openai.com", "chatgpt.com"}:
+        raise RuntimeError("工作区选择后返回了非预期回调域名")
+    if _requires_workspace_selection(next_url):
+        raise WorkspaceSelectionRequiredError("工作区选择后仍停留在选择页面")
+    session_info = _follow_continue_and_fetch(session, next_url, referer="https://auth.openai.com/workspace")
+    session._live_workspace_selected = selected
+    return session_info
+
+
+def _follow_continue_and_fetch(session: BrowserSession, continue_url: str, *, referer: str, email: str = "", auth_result: dict | None = None) -> dict:
     """完成 callback/session；仅临时传输错误重试，403/429 交由上层报告。"""
     if _requires_workspace_selection(continue_url):
-        raise WorkspaceSelectionRequiredError()
+        if email:
+            return _select_workspace_and_fetch(session, email, auth_result)
+        raise WorkspaceSelectionRequiredError("工作区选择后仍停留在选择页面")
     max_attempts = 3
     for attempt in range(1, max_attempts + 1):
         try:
             final_url = follow_oauth_callback(session, continue_url, referer=referer)
             if _requires_workspace_selection(final_url):
-                raise WorkspaceSelectionRequiredError()
+                if email:
+                    return _select_workspace_and_fetch(session, email, auth_result)
+                raise WorkspaceSelectionRequiredError("工作区选择后仍停留在选择页面")
             break
         except Exception as exc:
             if attempt >= max_attempts or not _is_retryable_network_error(exc):
@@ -492,6 +563,7 @@ def _login_via_reauth(
         session,
         continue_url,
         referer="https://auth.openai.com/email-verification",
+        email=email,
     )
 
 
@@ -512,15 +584,15 @@ def _login_via_email_otp(
     page = page if isinstance(page, dict) else {}
     page_type = str(page.get("type") or "")
     if page_type == "workspace":
-        logger.info("[查活] 邮箱 OTP 验证成功；等待工作区选择，OAuth 回调尚未完成")
-        raise WorkspaceSelectionRequiredError()
+        logger.info("[查活] 邮箱 OTP 验证成功；进入工作区选择")
+        return _select_workspace_and_fetch(session, email, validate_result)
     continue_url = _extract_continue_url(validate_result)
     if not continue_url:
         raise RuntimeError(f"OTP 登录成功但没有 OAuth continue_url: {validate_result}")
     if "about-you" in str(continue_url) or page_type in {"about_you", "about-you"}:
         raise RuntimeError(f"该邮箱登录后进入资料页，疑似不是完整已注册账号: page_type={page_type}, continue_url={continue_url}")
     logger.info("[查活] 邮箱 OTP 验证完成，开始跟随 OAuth callback")
-    return _follow_continue_and_fetch(session, continue_url, referer="https://auth.openai.com/email-verification")
+    return _follow_continue_and_fetch(session, continue_url, referer="https://auth.openai.com/email-verification", email=email, auth_result=validate_result)
 
 
 def _login_via_password_or_otp(
@@ -567,6 +639,7 @@ def _login_via_password_or_otp(
             session,
             mfa_continue_url,
             referer=f"https://auth.openai.com/mfa-challenge/{factor_id}",
+            email=email, auth_result=mfa_result,
         )
 
     if "email-verification" in continue_url or page_type in {"email_verification", "email_otp_send"}:
@@ -580,7 +653,7 @@ def _login_via_password_or_otp(
 
     if continue_url:
         logger.info("[查活] 密码登录直接给出回调地址，继续完成回调：%s", email)
-        return _follow_continue_and_fetch(session, continue_url, referer="https://auth.openai.com/log-in/password")
+        return _follow_continue_and_fetch(session, continue_url, referer="https://auth.openai.com/log-in/password", email=email, auth_result=password_result)
 
     raise RuntimeError(f"密码登录成功但没有可用 continue_url: {password_result}")
 
@@ -795,6 +868,7 @@ def check_account_liveness(
             "checked_at": checked_at,
             "access_token": access_token,
             "session": session_info,
+            "workspace_selected": getattr(session, "_live_workspace_selected", None),
             "proxy_used": session.proxy or None,
             "fingerprint": fp,
             "fingerprint_text": _safe_fingerprint_text_for_account(session),

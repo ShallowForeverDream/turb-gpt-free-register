@@ -2604,6 +2604,17 @@
     <div class="outlook-import-foot"><button type="button" class="jobs-tb-btn" id="btnCancelEmailChangeV2">取消</button><button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnSubmitEmailChangeV2">开始换绑</button></div>
   </div>
 </div>
+<div id="workspaceModalV2" class="hidden" role="dialog" aria-modal="true" aria-labelledby="workspaceModalTitle">
+  <div class="outlook-import-dialog" role="document" style="max-width:560px;">
+    <div class="outlook-import-head"><div class="outlook-import-head-main"><h3 id="workspaceModalTitle">登录工作区</h3><p id="workspaceModalHint">查活成功前会按此选项完成 ChatGPT 工作区选择；默认使用组织工作区。</p></div><button type="button" class="outlook-import-close" id="btnCloseWorkspaceV2">×</button></div>
+    <div class="outlook-import-body">
+      <input type="hidden" id="workspaceAccountIdV2">
+      <label class="outlook-import-field"><span>工作区</span><select id="workspacePreferenceV2"><option value="organization">组织工作区（默认）</option><option value="personal">个人工作区</option></select></label>
+      <div class="outlook-import-hint" id="workspaceOptionsHintV2">尚未缓存工作区清单；首次查活会自动读取并保存。</div>
+    </div>
+    <div class="outlook-import-foot"><button type="button" class="jobs-tb-btn" id="btnCancelWorkspaceV2">取消</button><button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnSaveWorkspaceV2">保存</button></div>
+  </div>
+</div>
 <div class="body hidden" id="logPanel">
   <h3>任务 #<span id="logJobId"></span> 日志 <button class="btn" id="btnCloseLog" style="float:right;min-height:28px;">关闭</button></h3>
   {% include 'job_log_toolbar.html' %}
@@ -3081,7 +3092,8 @@ function updateModalScrollLock() {
     || !$('#emailChangeLogPanel').classList.contains('hidden')
     || !$('#qrPanel').classList.contains('hidden')
     || !$('#outlookImportModal').classList.contains('hidden')
-    || !$('#emailChangeModalV2').classList.contains('hidden');
+    || !$('#emailChangeModalV2').classList.contains('hidden')
+    || !$('#workspaceModalV2').classList.contains('hidden');
   const locked = document.body.classList.contains('modal-open');
   if (opened && !locked) {
     modalScrollY = window.scrollY || document.documentElement.scrollTop || 0;
@@ -3589,6 +3601,7 @@ function _accountsV2MoreMenu(r) {
     `<button type="button" data-account-copy-secret="copy_line" data-account-id="${esc(r.id)}">复制整行</button>`,
     `<button type="button" data-account-copy-secret="login_credentials" data-account-id="${esc(r.id)}" title="复制邮箱、注册密码和 2FA 密钥">复制登录凭据</button>`,
     `<button type="button" data-account-note="${esc(r.id)}" title="设置/清空该账号备注">备注</button>`,
+    `<button type="button" data-account-workspace="${esc(r.id)}" title="选择查活登录的组织/个人工作区">登录工作区</button>`,
     `<button type="button" data-account-change-email="${esc(r.id)}" title="从指定邮箱来源领取新邮箱并换绑">换绑邮箱</button>`,
     `<button type="button" data-account-change-email-log="${esc(r.id)}" title="查看最近一次邮箱换绑日志">换绑日志</button>`,
     `<button type="button" onclick="checkSelectedLive([Number('${esc(r.id)}')], this); return false;" title="重新登录该账号，成功则刷新最新 AT/accessToken">查活刷新AT</button>`,
@@ -3698,6 +3711,61 @@ function updateAccountSelectionUi(pageRows = null) {
     cbAll.disabled = pageIds.length === 0;
   }
 }
+function closeWorkspaceModalV2() {
+  const modal = $('#workspaceModalV2');
+  if (modal) modal.classList.add('hidden');
+  updateModalScrollLock();
+}
+function _workspaceOptionLabel(option) {
+  const kind = option.kind === 'personal' ? '个人' : '组织';
+  return `${kind}：${option.name || '未命名'} (${option.id})`;
+}
+async function openWorkspaceModalV2(id) {
+  const modal = $('#workspaceModalV2');
+  if (!modal) return;
+  try {
+    const data = await api(`/api/accounts/${encodeURIComponent(id)}/workspace`);
+    $('#workspaceAccountIdV2').value = String(id);
+    const select = $('#workspacePreferenceV2');
+    select.innerHTML = '<option value="organization">组织工作区（默认）</option><option value="personal">个人工作区</option>';
+    const options = Array.isArray(data.options) ? data.options : [];
+    const groups = [['organization', '组织工作区'], ['personal', '个人工作区']];
+    for (const [kind, label] of groups) {
+      const list = options.filter(x => x.kind === kind);
+      if (!list.length) continue;
+      const group = document.createElement('optgroup');
+      group.label = label;
+      for (const option of list) {
+        const item = document.createElement('option');
+        item.value = `id:${option.id}`;
+        item.textContent = _workspaceOptionLabel(option);
+        group.appendChild(item);
+      }
+      select.appendChild(group);
+    }
+    select.value = data.preference || 'organization';
+    if (select.value !== (data.preference || 'organization')) select.value = 'organization';
+    $('#workspaceOptionsHintV2').textContent = options.length
+      ? '组织工作区与个人工作区已分开显示；多个组织时请选择具体组织。'
+      : '尚未缓存工作区清单；首次查活会自动读取并保存。';
+    modal.classList.remove('hidden');
+    updateModalScrollLock();
+  } catch (err) { showToast(`读取工作区失败：${err.message}`); }
+}
+async function saveWorkspaceModalV2() {
+  const id = Number($('#workspaceAccountIdV2').value || 0);
+  const preference = $('#workspacePreferenceV2').value;
+  if (!id) return;
+  try {
+    await api(`/api/accounts/${encodeURIComponent(id)}/workspace`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({preference})});
+    closeWorkspaceModalV2();
+    showToast('工作区选择已保存');
+    loadAccounts();
+  } catch (err) { showToast(`保存工作区失败：${err.message}`); }
+}
+$('#btnCloseWorkspaceV2')?.addEventListener('click', closeWorkspaceModalV2);
+$('#btnCancelWorkspaceV2')?.addEventListener('click', closeWorkspaceModalV2);
+$('#btnSaveWorkspaceV2')?.addEventListener('click', saveWorkspaceModalV2);
 
 // ---------- 补跑日志面板 ----------
 let retryLogEmail = null, retryLogTimer = null;
@@ -3927,6 +3995,12 @@ async function onAccountsBodyClick(e) {
   const noteBtn = e.target.closest('[data-account-note]');
   if (noteBtn) {
     await editAccountNote(Number(noteBtn.dataset.accountNote), noteBtn);
+    return;
+  }
+
+  const workspaceBtn = e.target.closest('[data-account-workspace]');
+  if (workspaceBtn) {
+    await openWorkspaceModalV2(Number(workspaceBtn.dataset.accountWorkspace));
     return;
   }
 

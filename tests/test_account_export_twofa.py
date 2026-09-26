@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import core.account_export as account_export
 
@@ -18,6 +18,32 @@ class _CircuitSession:
 
 
 class AccountExportTwofaTests(unittest.TestCase):
+    def test_reauth_callback_without_workspace_still_fetches_session(self):
+        session = Mock()
+        with patch.object(account_export, "follow_oauth_callback", return_value="https://chatgpt.com/") as callback, \
+             patch.object(account_export, "fetch_session", return_value={"accessToken": "fresh-at"}) as fetch:
+            token = account_export._exchange_new_token(
+                session, "https://auth.openai.com/authorize/continue?state=test", email="a@example.test"
+            )
+        self.assertEqual(token, "fresh-at")
+        callback.assert_called_once()
+        fetch.assert_called_once_with(session)
+
+    def test_reauth_otp_keeps_workspace_metadata_for_2fa(self):
+        session = Mock()
+        payload = {
+            "continue_url": "https://auth.openai.com/workspace",
+            "oai-client-auth-session": {"workspaces": [
+                {"id": "org-1", "kind": "organization", "name": "团队"},
+            ]},
+        }
+        session.post.return_value.json.return_value = payload
+        self.assertEqual(
+            account_export._validate_reauth_otp(session, "123456"),
+            "https://auth.openai.com/workspace",
+        )
+        self.assertIs(session._reauth_validate_result, payload)
+
     def test_authorize_403_reuses_cf_cookie_and_retries(self):
         session = _CircuitSession()
         calls = []

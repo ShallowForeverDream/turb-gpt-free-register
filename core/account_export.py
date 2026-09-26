@@ -14,7 +14,7 @@ import random
 import time
 from datetime import datetime
 from pathlib import Path
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 
 import pyotp
 
@@ -355,7 +355,7 @@ def fetch_session(session: BrowserSession) -> dict:
     data = resp.json()
 
     if not data.get("accessToken"):
-        logger.error(f"[Session] 响应中没有 accessToken: {data}")
+        logger.error("[Session] 响应中没有 accessToken: keys=%s", sorted(data)[:20])
         raise RuntimeError("未拿到 accessToken，登录态可能未建立")
 
     user = data.get("user") or {}
@@ -430,29 +430,47 @@ def _validate_reauth_otp(session: BrowserSession, code: str) -> str:
     headers = session.get_auth_headers(referer="https://auth.openai.com/email-verification")
     body = json.dumps({"code": code})
 
-    logger.info(f"[2FA] 提交重认证 OTP: {code}")
+    logger.info("[2FA] 提交重认证 OTP")
     resp = session.post(url, headers=headers, data=body)
     resp.raise_for_status()
     data = resp.json()
+    session._reauth_validate_result = data
     continue_url = data.get("continue_url")
     if not continue_url:
         raise RuntimeError(f"OTP 验证响应缺少 continue_url: {data}")
     return continue_url
 
 
-def _exchange_new_token(session: BrowserSession, continue_url: str) -> str:
+def _exchange_new_token(session: BrowserSession, continue_url: str, *, email: str = "") -> str:
     """
     步骤5: 跟随 continue_url 完成回调，再次拉 /api/auth/session 拿到新 accessToken
     （此时 token 内嵌的 pwd_auth_time 是新鲜的，2FA enroll 才会接受）。
     """
-    headers = session.get_auth_navigate_headers(referer="https://auth.openai.com/email-verification")
-    logger.info("[2FA] 跟随 continue_url，刷新 session-token cookie...")
-    session.get(continue_url, headers=headers, allow_redirects=True)
+    # OTP 验证后的下一页不一定直接是 OAuth callback；已有组织/个人工作区的
+    # 账号会先到 /workspace。必须在同一会话中完成选择，才能得到新的 Session。
+    from core.account_liveness import _requires_workspace_selection, _select_workspace_and_fetch
 
-    # 拿新的 accessToken
-    new_session = fetch_session(session)
+    logger.info("[2FA] 跟随 continue_url，完成工作区选择及 OAuth 回调...")
+    if _requires_workspace_selection(continue_url):
+        if not email:
+            raise RuntimeError("2FA 重认证需要账号邮箱才能选择工作区")
+        new_session = _select_workspace_and_fetch(
+            session, email, getattr(session, "_reauth_validate_result", None)
+        )
+    else:
+        final_url = follow_oauth_callback(
+            session, continue_url, referer="https://auth.openai.com/email-verification"
+        )
+        if _requires_workspace_selection(final_url):
+            if not email:
+                raise RuntimeError("2FA 重认证需要账号邮箱才能选择工作区")
+            new_session = _select_workspace_and_fetch(
+                session, email, getattr(session, "_reauth_validate_result", None)
+            )
+        else:
+            new_session = fetch_session(session)
     new_token = new_session["accessToken"]
-    logger.info(f"[2FA] 新 accessToken（含新鲜 pwd_auth_time）: {new_token[:40]}...")
+    logger.info("[2FA] 已取得重认证后的新 accessToken")
     return new_token
 
 
@@ -478,7 +496,7 @@ def _enroll_totp(session: BrowserSession, access_token: str) -> tuple[str, str]:
     session_id = data.get("session_id")
     if not secret or not session_id:
         raise RuntimeError(f"enroll 响应字段缺失: {data}")
-    logger.info(f"[2FA] TOTP secret 已获取: {secret[:4]}...{secret[-4:]}")
+    logger.info("[2FA] TOTP secret 已获取")
     return secret, session_id
 
 
@@ -504,7 +522,7 @@ def _activate_totp(
         "session_id": session_id,
     })
 
-    logger.info(f"[2FA] 激活 enrollment, code={totp_code}")
+    logger.info("[2FA] 激活 enrollment")
     resp = session.post(url, headers=headers, data=body)
     if resp.status_code != 200:
         logger.error(f"[2FA] activate 失败 {resp.status_code}: {resp.text}")
@@ -625,15 +643,15 @@ def setup_2fa(
             settle_seconds=retry_settle,
         )
         if fresh_otp == otp_code:
-            logger.warning("[2FA] 重试仍获取到相同 OTP=%s，继续提交以保留原始错误信息", fresh_otp)
+            logger.warning("[2FA] 重试仍获取到相同 OTP，继续提交以保留原始错误信息")
         else:
-            logger.info("[2FA] 已获取新的 OTP=%s，替换首次候选", fresh_otp)
+            logger.info("[2FA] 已获取新的 OTP，替换首次候选")
         otp_code = fresh_otp
         continue_url = _validate_reauth_otp(session, otp_code)
-    logger.info("[2FA] 邮箱重认证 OTP 验证通过，continue_url=%s", continue_url)
+    logger.info("[2FA] 邮箱重认证 OTP 验证通过，下一步=%s", urlsplit(continue_url).path)
     human_delay("api")
     logger.info("[2FA] 正在交换新 token...")
-    new_token = _exchange_new_token(session, continue_url)
+    new_token = _exchange_new_token(session, continue_url, email=email)
     logger.info("[2FA] 已拿到新 token")
     human_delay("api")
 
@@ -647,7 +665,7 @@ def setup_2fa(
     logger.info("[2FA] TOTP 激活完成")
 
     logger.info("=" * 60)
-    logger.info(f"✅ 2FA 设置完成! Secret: {secret[:4]}...{secret[-4:]}")
+    logger.info("✅ 2FA 设置完成")
     logger.info("=" * 60)
     return secret
 

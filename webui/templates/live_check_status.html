@@ -5,7 +5,7 @@ function liveCheckNeedsManualLogin(row) {
 
 function liveCheckBlockedText(row) {
   if (row.live_check_error_code === 'workspace_selection_required') {
-    return '查活: 待选择工作区，请点“登录工作区”；AT 尚未获取';
+    return '查活: 待完成工作区选择，请点“登录工作区”；AT 尚未获取';
   }
   return row.live_check_stage === 'login_preflight'
     ? '查活: 登录入口被拒绝/限流，尚未发码，请网页登录'

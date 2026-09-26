@@ -32,6 +32,27 @@ class _Session:
 
 
 class WorkspaceSelectionTests(unittest.TestCase):
+    def test_password_workspace_response_uses_selector(self):
+        response = {"page": {"type": "workspace"}, "oai-client-auth-session": {"workspaces": []}}
+        with patch.object(liveness, "_account_registration_password", return_value="password"), \
+             patch.object(liveness, "_password_verify", return_value=response), \
+             patch.object(liveness, "_select_workspace_and_fetch", return_value={"accessToken": "at"}) as select:
+            self.assertEqual(liveness._login_via_password_or_otp(object(), "a@example.test", 0)["accessToken"], "at")
+        select.assert_called_once()
+
+    def test_mfa_workspace_response_uses_selector(self):
+        password = {"page": {"type": "mfa_challenge", "payload": {"factor_id": "factor-1"}}, "continue_url": "https://auth.openai.com/mfa-challenge/factor-1"}
+        verified = {"page": {"type": "workspace"}, "oai-client-auth-session": {"workspaces": []}}
+        with patch.object(liveness, "_account_registration_password", return_value="password"), \
+             patch.object(liveness, "_password_verify", return_value=password), \
+             patch.object(liveness, "_account_totp_secret", return_value="secret"), \
+             patch.object(liveness, "_account_totp_code", return_value="123456"), \
+             patch.object(liveness, "_mfa_issue_challenge"), \
+             patch.object(liveness, "_mfa_verify", return_value=verified), \
+             patch.object(liveness, "_select_workspace_and_fetch", return_value={"accessToken": "at"}) as select:
+            self.assertEqual(liveness._login_via_password_or_otp(object(), "a@example.test", 0)["accessToken"], "at")
+        select.assert_called_once()
+
     def test_default_organization_and_personal_are_distinct(self):
         with tempfile.TemporaryDirectory() as tmp, patch.multiple(db, **storage(Path(tmp))), \
              patch.object(liveness, "_follow_continue_and_fetch", return_value={"accessToken": "at"}):

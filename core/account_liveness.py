@@ -632,6 +632,9 @@ def _login_via_password_or_otp(
         if not code:
             raise RuntimeError(f"无法生成 TOTP 验证码：{email}")
         mfa_result = _mfa_verify(session, factor_id, code)
+        mfa_page = mfa_result.get("page") if isinstance(mfa_result, dict) else {}
+        if isinstance(mfa_page, dict) and mfa_page.get("type") == "workspace":
+            return _select_workspace_and_fetch(session, email, mfa_result)
         mfa_continue_url = _extract_continue_url(mfa_result) or continue_url
         if not mfa_continue_url:
             raise RuntimeError(f"MFA 验证成功但没有 continue_url: {mfa_result}")
@@ -650,6 +653,9 @@ def _login_via_password_or_otp(
             otp_after_ts,
             email_source=email_source,
         )
+
+    if page_type == "workspace":
+        return _select_workspace_and_fetch(session, email, password_result)
 
     if continue_url:
         logger.info("[查活] 密码登录直接给出回调地址，继续完成回调：%s", email)

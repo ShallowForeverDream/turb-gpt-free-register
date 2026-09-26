@@ -2,6 +2,7 @@
 """已注册账号查活：优先复用已有 AT 预热后走 reauth OTP，成功刷新 AT 即视为正常。"""
 import logging
 import json
+import re
 import threading
 import time
 import uuid
@@ -35,13 +36,27 @@ _LOG_DIR = Path(__file__).resolve().parent.parent / "注册日志"
 _RUNNING: set[str] = set()
 _RUNNING_LOCK = threading.Lock()
 
-# 查活网络预检失败（403/429/代理/超时等）多为出口 IP 被 CF 标记或代理池抖动，
-# 视为可换新 IP 重试；账号本身问题（废号/邮箱错误等）不重试。
+# 仅重试临时传输错误。访问拒绝和限流应停止，不能当作网络抖动重放。
 _RETRYABLE_NETWORK_HINTS = (
-    "403", "429", "502", "503", "504",
+    "502", "503", "504",
     "proxy", "socks", "timeout", "timed out",
     "connection", "closed", "reset",
 )
+
+
+class LoginPreflightBlockedError(RuntimeError):
+    def __init__(self, status_code: int):
+        self.status_code = status_code
+        message = ("登录入口拒绝访问" if status_code == 403 else "登录入口限流")
+        super().__init__(f"{message}（HTTP {status_code}）；尚未发送邮箱验证码，账号状态未判定。请通过正常网页登录处理。")
+
+
+def _access_refusal_status(exc: BaseException) -> int | None:
+    status = getattr(exc, "status_code", None) or _exception_status_code(exc)
+    if status in (403, 429):
+        return status
+    match = re.search(r"\bHTTP(?:\s+Error)?\s+(403|429)\b", str(exc), flags=re.IGNORECASE)
+    return int(match.group(1)) if match else None
 
 _SESSION_FINGERPRINT_KEYS = {
     "device_id",
@@ -57,7 +72,7 @@ _SESSION_FINGERPRINT_KEYS = {
 
 
 def _is_retryable_network_error(exc: BaseException) -> bool:
-    if isinstance(exc, AccountUnusableError):
+    if isinstance(exc, AccountUnusableError) or _access_refusal_status(exc):
         return False
     text = str(exc or "").lower()
     return any(h in text for h in _RETRYABLE_NETWORK_HINTS)
@@ -135,21 +150,11 @@ def _network_preflight_with_retry(
     max_attempts: int = 4,
     fingerprint_state: dict | None = None,
 ) -> tuple[BrowserSession, str]:
-    """CSRF → Signin 备用预检；失败时保留同一会话重试。
-
-    `/api/auth/providers` 只是 NextAuth 的发现接口，signin 端点并不依赖它返回的
-    内容。实际运行中该接口很容易先被 Cloudflare 拦截，如果把它作为硬门槛，后续
-    本来可用的 CSRF/授权链永远不会执行。因此查活备用链不再把 providers 当作
-    必经步骤。
-
-    这里必须原样传递 ``proxy``：``None`` 表示按配置选代理，空字符串表示明确
-    直连。之前用 ``proxy if proxy else None`` 把直连兜底误变成了再次抽取代理。
-    """
+    """登录页到 Signin 的预检；403/429 立即停止，仅临时传输错误重试。"""
     session: BrowserSession | None = None
     last_exc: BaseException | None = None
     state = fingerprint_state if fingerprint_state is not None else {}
-    # 一次网络预检只创建一个 BrowserSession。403 响应下发的新 __cf_bm、
-    # OAuth/设备上下文都保留在同一 Cookie Jar 中供下一轮使用。
+    # 临时传输错误重试时复用会话，访问拒绝时释放会话。
     session = _new_fingerprint_pinned_session(email, proxy, state)
     for attempt in range(1, max_attempts + 1):
         logger.info(
@@ -168,6 +173,13 @@ def _network_preflight_with_retry(
             return session, authorize_url
         except Exception as exc:
             last_exc = exc
+            refusal = _access_refusal_status(exc)
+            if refusal and not isinstance(exc, AccountUnusableError):
+                try:
+                    close_browser_session(session)
+                except Exception:
+                    pass
+                raise LoginPreflightBlockedError(refusal) from exc
             if attempt >= max_attempts or not _is_retryable_network_error(exc):
                 try:
                     close_browser_session(session)
@@ -290,12 +302,7 @@ def _mfa_verify(session: BrowserSession, factor_id: str, code: str) -> dict:
 
 
 def _follow_continue_and_fetch(session: BrowserSession, continue_url: str, *, referer: str) -> dict:
-    """完成 callback/session，并对 403 保留同会话 Cookie 做阶段内重试。
-
-    callback 与 session 分开重试：callback 一旦成功就不重复消费 OAuth code；
-    只有 callback 本身失败时才重放 continue_url。重试耗尽后抛给上层，由
-    live_check_service 按既有策略换成独立直连会话完整兜底。
-    """
+    """完成 callback/session；仅临时传输错误重试，403/429 交由上层报告。"""
     max_attempts = 3
     for attempt in range(1, max_attempts + 1):
         try:
@@ -774,6 +781,11 @@ def check_account_liveness(
             "fingerprint": fp,
             "fingerprint_text": _safe_fingerprint_text_for_account(session),
         }
+    except LoginPreflightBlockedError as exc:
+        logger.warning("[查活] 停止：%s", exc)
+        return {"ok": False, "status": "blocked", "checked_at": checked_at,
+                "stage": "login_preflight", "error_code": f"http_{exc.status_code}",
+                "error": str(exc)}
     except AccountUnusableError as exc:
         code = getattr(exc, "error_code", "") or detect_account_unusable_text(str(exc)) or "account_deactivated"
         logger.warning("[查活] 已废号：%s %s", email, code)
@@ -783,6 +795,12 @@ def check_account_liveness(
         if code:
             logger.warning("[查活] 已废号：%s %s", email, code)
             return {"ok": False, "status": "deactivated", "checked_at": checked_at, "error": code}
+        refusal = _access_refusal_status(exc)
+        if refusal:
+            message = f"认证请求被拒绝或限流（HTTP {refusal}），已停止；账号状态未判定。请通过正常网页登录处理。"
+            logger.warning("[查活] 停止：%s", message)
+            return {"ok": False, "status": "blocked", "checked_at": checked_at,
+                    "stage": "authentication", "error_code": f"http_{refusal}", "error": message}
         logger.warning("[查活] 失败：%s %s: %s", email, type(exc).__name__, str(exc)[:260])
         return {"ok": False, "status": "failed", "checked_at": checked_at, "error": f"{type(exc).__name__}: {str(exc)[:500]}"}
     finally:

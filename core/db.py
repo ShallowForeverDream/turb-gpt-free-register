@@ -1594,6 +1594,8 @@ def list_account_plan_check_statuses(
         "plan_check_completed_at", "plan_checked_at", "plan_last_success_at",
         "plan_check_network_route", "plan_check_proxy_used", "plan_check_proxy_fallback_reason",
         "live_check_proxy_used", "live_check_fingerprint_text",
+        "live_check_status", "live_check_ok", "live_check_error", "live_checked_at",
+        "live_check_stage", "live_check_error_code",
         "expires_at", "plan_expires_at", "plan_renews_at", "renews_at",
         "billing_period", "billing_currency", "discount_amount", "discount_type",
         "discount_expires_at", "discount_promo_campaign_id",
@@ -1657,6 +1659,10 @@ def list_account_plan_check_statuses(
                 {
                     "id": row.get("id"),
                     "updated_at": row.get("updated_at"),
+                    "live_check_status": row.get("live_check_status"),
+                    "live_check_error": row.get("live_check_error"),
+                    "live_check_stage": row.get("live_check_stage"),
+                    "live_check_error_code": row.get("live_check_error_code"),
                     "plan_check_status": row.get("plan_check_status"),
                     "plan_check_ok": row.get("plan_check_ok"),
                     "plan_check_error": row.get("plan_check_error"),
@@ -1889,6 +1895,8 @@ def update_account_liveness(acc_id: int, result: dict | None = None) -> bool:
         row["live_check_ok"] = ok
         row["live_checked_at"] = result.get("checked_at") or now
         row["live_check_error"] = None if ok else result.get("error")
+        row["live_check_stage"] = result.get("stage")
+        row["live_check_error_code"] = result.get("error_code")
         row["updated_at"] = now
 
         if ok:
@@ -2028,6 +2036,8 @@ def claim_account_live_check(acc_id: int, trigger: str = "manual") -> bool:
                 pass
         now = _now()
         row["live_check_status"] = "queued"
+        row["live_check_stage"] = None
+        row["live_check_error_code"] = None
         row["live_check_ok"] = False
         row["live_check_trigger"] = str(trigger or "manual")
         row["live_check_queued_at"] = now

@@ -2298,6 +2298,7 @@
         </div>
       </div>
       {% include 'registered_import_panel.html' %}
+      {% include 'live_check_guidance.html' %}
       <div class="accounts-table-v2-wrap">
         <table class="accounts-table-v2">
           <colgroup>
@@ -3565,6 +3566,7 @@ function _codexAction(r) {
   const label = s === 'success' ? '重新补跑 Codex' : '补跑 Codex';
   return `<button data-codex-retry="${esc(r.email)}" title="重新跑一次 Codex 授权（会消耗 1 封邮箱 OTP + 1 个接码短信）">${label}</button>`;
 }
+{% include 'live_check_status.html' %}
 function _tokenCellV2(r) {
   const live = r.live_check_status || '';
   const liveErr = r.live_check_error || '';
@@ -3575,6 +3577,7 @@ function _tokenCellV2(r) {
   else if (live === 'queued') liveHtml = `<div class="acc-v2-sub" title="${esc(liveAt)}" style="color:#e6a23c">查活: 排队</div>`;
   else if (live === 'running') liveHtml = `<div class="acc-v2-sub" title="${esc(liveAt)}" style="color:#e6a23c">查活: 运行中</div>`;
   else if (live === 'deactivated') liveHtml = `<div class="acc-v2-sub" title="${esc(liveErr || liveAt)}" style="color:#f56c6c">查活: 已废</div>`;
+  else if (liveCheckNeedsManualLogin(r)) liveHtml = `<div class="acc-v2-sub" title="${esc(liveErr || liveAt)}" style="color:#b45309;white-space:normal;">${esc(liveCheckBlockedText(r))}</div>`;
   else if (live === 'failed') liveHtml = `<div class="acc-v2-sub" title="${esc(liveErr || liveAt)}" style="color:#e6a23c">查活: 失败</div>`;
   if (r.has_access_token) {
     return `<button type="button" class="acc-v2-token-copy" data-account-copy-secret="access_token" data-account-id="${esc(r.id)}" title="复制完整 Token">复制</button>${liveHtml}`;
@@ -4822,12 +4825,11 @@ async function checkSelectedPlans() {
 async function checkSelectedLive(idsArg = null, btnArg = null) {
   const ids = idsArg || Array.from(ACCOUNT_SELECTED);
   if (ids.length === 0) { showToast('请先选择账号'); return; }
-  const workers = getCodexBulkWorkers();
   const msg = idsArg ? `确定查活这个账号并刷新最新 AT/accessToken 吗？` : `确定查活选中的 ${ids.length} 个账号吗？
 
 会重新登录邮箱 OTP；登录成功且未封号则标记正常，并刷新最新 AT/accessToken。
 
-并发线程数：${workers}`;
+按队列逐个执行；遇到 403/429 会停止该账号的查活。`;
   if (!confirm(msg)) return;
   const firstAcc = ACCOUNTS.find(a => Number(a.id) === Number(ids[0]));
   const btn = btnArg || $('#btnCheckSelectedLiveV2');
@@ -4840,7 +4842,7 @@ async function checkSelectedLive(idsArg = null, btnArg = null) {
     const r = await api('/api/accounts/check-live-bulk', {
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({account_ids: ids, workers}),
+      body: JSON.stringify({account_ids: ids}),
     });
     const skipped = (r.skipped || []).length;
     showToast(`查活已入队 ${r.started_count || 0} 个，忙碌 ${r.busy_count || 0} 个，失败 ${r.failed_count || 0}${skipped ? `，跳过 ${skipped}` : ''}`);

@@ -2,6 +2,8 @@
 
 > 本 fork 补充 Windows 管理入口（`webui.ps1` / `webui.cmd`）及任务日志复制、下载、暂停跟随。迁移对照与使用方法见 [旧项目功能迁移记录](docs/fork-migration.md)。
 
+> 按顺序配置、导入和处理登录错误，见 [本地操作说明](docs/local-operations.md)。查活遇到 HTTP 403/429 会停止并说明阶段，不会自动切换直连重复请求。
+
 ChatGPT / OpenAI 账号自动注册与 Codex OAuth 授权工具。当前项目支持三套注册驱动：
 
 - **protocol**：原纯协议注册，基于 `curl_cffi` + Sentinel/PoW。

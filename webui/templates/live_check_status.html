@@ -1,0 +1,10 @@
+function liveCheckNeedsManualLogin(row) {
+  if (row.live_check_status === 'blocked') return true;
+  return row.live_check_status === 'failed' && /\bHTTP(?:\s+Error)?\s+(403|429)\b/i.test(row.live_check_error || '');
+}
+
+function liveCheckBlockedText(row) {
+  return row.live_check_stage === 'login_preflight'
+    ? '查活: 登录入口被拒绝/限流，尚未发码，请网页登录'
+    : '查活: 访问被拒绝/限流，请网页登录核验';
+}

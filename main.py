@@ -16,7 +16,7 @@ from config import twofa as _twofa_cfg
 from config import email as _email_cfg
 from config import roxybrowser as _roxy_cfg
 from config import openai_protocol as _protocol_cfg
-from core.session import BrowserSession
+from core.session import BrowserSession, close_browser_session
 from core.chatgpt_auth import get_providers, get_csrf_token, signin_openai
 from core.openai_auth import (
     follow_authorize,
@@ -51,6 +51,16 @@ logger = logging.getLogger(__name__)
 
 _FINALIZE_SESSION_MAX_ATTEMPTS = 5
 _FINALIZE_SESSION_BACKOFF_BASE = 2.0
+
+
+def _is_preflight_access_refusal(exc: BaseException) -> bool:
+    response = getattr(exc, "response", None)
+    try:
+        status = int(getattr(response, "status_code", 0) or 0)
+    except (TypeError, ValueError):
+        status = 0
+    text = str(exc or "").lower()
+    return status in (403, 429) or any(x in text for x in ("http error 403", "http 403", "http error 429", "http 429", "熔断冷却"))
 
 
 def configure_logging(verbose: bool = False) -> None:
@@ -272,7 +282,17 @@ def run_registration(
     existing_account_detected = False
     try:
         # 网络预检必须在 signin/follow_authorize 之前完成；预检不带邮箱，不会触发 OTP。
-        network_preflight(session)
+        try:
+            network_preflight(session)
+        except Exception as preflight_exc:
+            # 同一会话重试不会改变代理出口；403/429 时安全重建一次会话，
+            # 让本地代理池有机会分配新上游。此时尚未发送邮箱验证码。
+            if not _is_preflight_access_refusal(preflight_exc):
+                raise
+            logger.warning("[预检] 登录入口拒绝访问，关闭当前会话并复用代理建立新会话重试一次")
+            close_browser_session(session)
+            session = BrowserSession(proxy=proxy)
+            network_preflight(session)
         human_delay("navigate")
 
         # 根据 2026-07-19 HAR 补齐匿名态 ChatGPT 首屏/模型预热链路。

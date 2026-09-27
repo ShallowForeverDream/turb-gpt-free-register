@@ -339,7 +339,7 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                 result_email = (result or {}).get("email") if isinstance(result, dict) else None
                 db.update_job(
                     job_id,
-                    status="failed",
+                    status="blocked" if isinstance(result, dict) and result.get("status") == "blocked" else "failed",
                     email=result_email,
                     account_id=(result or {}).get("account_id") if isinstance(result, dict) else None,
                     network_traffic=(result or {}).get("network_traffic") if isinstance(result, dict) else None,
@@ -351,7 +351,7 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                     _disable_job_email(email_to_handle, str(err))
                 else:
                     _release_unconsumed_job_email(email_to_handle, str(err))
-                log_logger.error(f"[Job {job_id}] 失败: {err}")
+                log_logger.error(f"[Job {job_id}] {'入口受阻' if isinstance(result, dict) and result.get('status') == 'blocked' else '失败'}: {err}")
     except StopRequested as exc:
         _release_unconsumed_job_email(email, str(exc))
         log_logger.warning(f"[Job {job_id}] 已停止: {exc}")

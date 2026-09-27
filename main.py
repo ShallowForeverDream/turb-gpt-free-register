@@ -586,7 +586,21 @@ def run_registration(
                     logger.info(f"[邮箱:{src}] {email} 已恢复 available")
         except Exception:
             pass
-        return {"success": False, "email": email, "error": str(e)}
+        error_text = str(e)
+        preflight_blocked = (
+            not create_acknowledged
+            and any(marker in error_text.lower() for marker in (
+                "http error 403", "http 403", "http error 429", "http 429", "熔断冷却",
+            ))
+        )
+        if preflight_blocked:
+            message = "登录入口被代理/Cloudflare 拒绝（HTTP 403/429），尚未发送邮箱验证码；请更换代理出口后再重试。"
+            logger.warning("[注册] %s", message)
+            return {
+                "success": False, "status": "blocked", "error_code": "login_preflight_blocked",
+                "email": email, "error": message,
+            }
+        return {"success": False, "email": email, "error": error_text}
 
 
 def main():

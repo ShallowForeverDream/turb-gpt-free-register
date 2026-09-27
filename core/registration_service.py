@@ -298,6 +298,13 @@ def _run_one_job(job_id: int, log_file: str) -> None:
             log_logger.info(f"[Job {job_id}] 开始注册任务")
             email, name, birthday = _prepare_registration_args(str(current.get("email") or "").strip() or None)
             db.update_job(job_id, email=email)
+            # 重试/指定邮箱任务可能已经把邮箱放回 available；再次执行前精确领取，
+            # 防止成功后邮箱池仍显示可用。
+            if email and current.get("email_source"):
+                try:
+                    db.claim_pool_email(email, str(current.get("email_source")), note="注册任务执行")
+                except Exception:
+                    pass
             check_stop_requested()
             def _on_email_acquired(acquired_email: str) -> None:
                 nonlocal email
@@ -326,7 +333,7 @@ def _run_one_job(job_id: int, log_file: str) -> None:
             if isinstance(result, dict) and result.get("success"):
                 db.update_job(
                     job_id,
-                    status="success",
+                    status="already_registered" if isinstance(result, dict) and result.get("status") == "already_registered" else "success",
                     email=result.get("email"),
                     account_id=result.get("account_id"),
                     network_traffic=result.get("network_traffic"),
@@ -506,7 +513,7 @@ def get_retry_info(job: dict) -> dict:
         "retry_reason": None,
         "display_status": status,
     }
-    if status not in ("failed", "stopped", "cancelled"):
+    if status not in ("failed", "blocked", "stopped", "cancelled"):
         return info
 
     successful_retry = db.get_successful_retry_for_job(int(job.get("id") or 0))
@@ -570,7 +577,7 @@ def retry_job(job_id: int, workers: int | None = None) -> dict:
             int(job_id),
             job_type="codex_retry" if action == "codex" else "registration",
             email_source=str(source.get("email_source") or "outlook"),
-            email=email if action == "codex" else None,
+            email=email if action == "codex" else str(source.get("email") or "").strip() or None,
             account_id=account_id if action == "codex" else None,
         )
     except LookupError as exc:

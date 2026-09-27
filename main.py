@@ -269,6 +269,7 @@ def run_registration(
     logger.debug(f"[注册] 设备ID={session.device_id}，会话日志ID={session.auth_session_logging_id}")
 
     create_acknowledged = False
+    existing_account_detected = False
     try:
         # 网络预检必须在 signin/follow_authorize 之前完成；预检不带邮箱，不会触发 OTP。
         network_preflight(session)
@@ -385,7 +386,29 @@ def run_registration(
                 or page_type == "external_url"
             )
         )
-        if page_type == "external_url" or direct_oauth_after_otp:
+        if page_type == "workspace" or str(otp_continue_url or "").rstrip("/") == "https://auth.openai.com/workspace":
+            # OTP 已验证且返回 workspace，说明邮箱对应的 ChatGPT 账号已经存在。
+            # 不再盲目调用 create_account；选择默认组织工作区后保存登录态。
+            from core.account_liveness import _select_workspace_and_fetch
+            logger.info("[注册] 检测到已有账号工作区页面，跳过创建账号：%s", email)
+            session_info = _select_workspace_and_fetch(session, email, validate_result)
+            access_token = str(session_info.get("accessToken") or "")
+            if not access_token:
+                raise RuntimeError("已注册账号工作区选择后未拿到 accessToken")
+            existing_account_detected = True
+            from core.email_provider import resolve_email_source
+            account_id = save_account_data(
+                email=email,
+                access_token=access_token,
+                totp_secret=None,
+                email_source=resolve_email_source(email),
+                proxy_used=session.proxy or None,
+                batch_dir=batch_dir,
+                extra={"user": session_info.get("user"), "account": session_info.get("account"), "expires": session_info.get("expires"), "existing_account_detected": True},
+            )
+            logger.info("[完成] 已注册账号已登记：%s，账号ID=%s", email, account_id)
+            return {"success": True, "status": "already_registered", "existing_account": True, "email": email, "account_id": account_id, "access_token": access_token}
+        elif page_type == "external_url" or direct_oauth_after_otp:
             if not otp_continue_url:
                 raise RuntimeError(f"OTP external_url 响应缺少可跟随 URL，无法继续: {validate_result}")
             logger.info(f"[注册] OTP 后进入 OAuth 回调分支，跳过 create_account：{email}")
@@ -575,7 +598,7 @@ def run_registration(
                         note=f"账号已废弃，邮箱不可用: {str(e)[:180]}",
                     )
                     logger.warning(f"[邮箱:{src}] {email} 账号已废弃，标记为 failed，不再重新注册")
-                elif create_acknowledged:
+                elif create_acknowledged or existing_account_detected:
                     src = release_email(
                         email, status="failed",
                         note=f"创建接口已通过但后续失败，已废弃: {str(e)[:180]}",

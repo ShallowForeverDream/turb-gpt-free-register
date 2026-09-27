@@ -886,7 +886,7 @@ function formatTraffic(t) {
 function copyId(v) { if (!v) return ''; const id = 'c'+(++copySeq); copyStore.set(id, v); return id; }
 function cbtn(label, value, cls='') { const id = copyId(value); return `<button class="${cls}" data-copy-id="${id}" ${id?'':'disabled'}>${label}</button>`; }
 function pill(status) {
-  const map = { available:'可用', used:'已用', failed:'失败', blocked:'入口受阻', partial_success:'部分成功', disabled:'已停用', pending:'排队', running:'运行中', stopping:'停止中', stopped:'已停止', success:'成功', cancelled:'已取消' };
+  const map = { available:'可用', used:'已用', failed:'失败', blocked:'入口受阻', already_registered:'已注册账号', partial_success:'部分成功', disabled:'已停用', pending:'排队', running:'运行中', stopping:'停止中', stopped:'已停止', success:'成功', cancelled:'已取消' };
   return `<span class="pill status-${esc(status)}">${esc(map[status]||status||'-')}</span>`;
 }
 function showToast(t, duration=1400) { const el=$('#toast'); el.textContent=t; el.classList.add('show'); clearTimeout(showToast.t); showToast.t=setTimeout(()=>el.classList.remove('show'),duration); }

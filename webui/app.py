@@ -2671,7 +2671,10 @@ def create_app(auth_code: str | None = None, *, local_no_auth: bool = False) -> 
                 if skipped:
                     return jsonify({"ok": False, "error": "部分所选邮箱不可用", "skipped": skipped}), 409
                 selected = [{"email": x["email"], "source": x["source"]} for x in claimed]
-            jobs = svc.submit_registration(count=count, workers=workers, selected_emails=selected or None)
+            submit_kwargs = {"count": count, "workers": workers}
+            if selected:
+                submit_kwargs["selected_emails"] = selected
+            jobs = svc.submit_registration(**submit_kwargs)
             return jsonify({
                 "ok": True,
                 "submitted": len(jobs),
@@ -2802,7 +2805,10 @@ def create_app(auth_code: str | None = None, *, local_no_auth: bool = False) -> 
             if skipped:
                 return jsonify({"ok": False, "error": "部分所选邮箱不可用", "skipped": skipped}), 409
             selected = [{"email": x["email"], "source": x["source"]} for x in claimed]
-        jobs = svc.submit_registration(count=count, workers=workers, selected_emails=selected or None)
+        submit_kwargs = {"count": count, "workers": workers}
+        if selected:
+            submit_kwargs["selected_emails"] = selected
+        jobs = svc.submit_registration(**submit_kwargs)
         return jsonify({"ok": True, "submitted": len(jobs), "jobs": jobs, "warning": warning, "workers": workers})
 
     @app.get("/api/manual-otp/waiting")

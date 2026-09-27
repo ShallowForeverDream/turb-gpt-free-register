@@ -486,6 +486,7 @@
           </div>
           <div class="action-cell">
             <button class="btn primary" id="btnStart">开始注册</button>
+            <button class="btn" id="btnStartSelectedPool">使用选中邮箱注册</button>
           </div>
         </div>
       </div>
@@ -574,7 +575,8 @@
         <div class="accounts-actionbar">
           <div class="btn-group">
             <span class="btn-group-title">套餐/提链</span>
-            <button class="btn primary" id="btnCheckSelectedLive" data-live-check-selected="1" title="重新登录选中账号；成功且未封号则标记正常，并刷新最新 AT/accessToken">查活</button>
+             <button class="btn primary" id="btnCheckSelectedLive" data-live-check-selected="1" title="重新登录选中账号；成功且未封号则标记正常，并刷新最新 AT/accessToken">查活</button>
+             <button class="btn" id="btnImportSelectedPool" title="把邮箱池页当前选中的邮箱登记到账号页">导入选中邮箱</button>
             <button class="btn primary" id="btnCheckSelectedPlans" disabled title="查询选中账号当前套餐；free 账号会检查 Plus 试用资格">查套餐</button>
             <button class="btn good" id="btnExtractSelectedLinks" disabled title="给选中的 free(可Plus试用) 账号批量提链，类型按配置 PIX/UPI/KAKAO_PAY/IDEAL">提链</button>
           </div>
@@ -986,6 +988,31 @@ $('#btnStart').addEventListener('click', async () => {
   } catch(e) { $('#regWarn').innerHTML = `<div class="banner warn">${esc(e.message)}</div>`; }
   finally { setTimeout(restoreBtn, 3000); }
 });
+function selectedPoolItems() {
+  return Array.from(OUTLOOK_SELECTED || []).map(key => { const [source, ...rest] = key.split('|'); return {source, email: rest.join('|')}; });
+}
+async function startRegistrationFromSelectedPool(btn) {
+  const items = selectedPoolItems();
+  if (!items.length) { showToast('请先到“邮箱池”选择邮箱'); return; }
+  if (!confirm(`确定使用选中的 ${items.length} 个邮箱注册吗？`)) return;
+  btn.disabled = true;
+  try {
+    const workers = Math.max(1, Math.min(16, Number($('#regWorkers').value || 3)));
+    const r = await api('/api/jobs', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({count:items.length, workers, selected_emails:items})});
+    showToast(`已提交 ${r.submitted || 0} 个指定邮箱注册任务`); refreshJobs();
+  } catch (e) { showToast('指定邮箱注册失败：' + e.message); }
+  finally { btn.disabled = false; }
+}
+async function importSelectedPoolAsAccounts() {
+  const items = selectedPoolItems();
+  if (!items.length) { showToast('请先到“邮箱池”选择邮箱'); return; }
+  try {
+    const r = await api('/api/accounts/import-pool', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({items})});
+    showToast(`已导入 ${r.imported_count || 0} 个账号，跳过 ${(r.skipped || []).length} 个`); loadAccounts(); loadOutlook(); loadSummary();
+  } catch (e) { showToast('导入账号失败：' + e.message); }
+}
+$('#btnStartSelectedPool')?.addEventListener('click', (e) => startRegistrationFromSelectedPool(e.currentTarget));
+$('#btnImportSelectedPool')?.addEventListener('click', importSelectedPoolAsAccounts);
 $('#btnRefreshJobs').addEventListener('click', refreshJobs);
 $('#jobsSelectAll').addEventListener('change', (e) => {
   const pageRows = JOBS.filter(j => !['running','stopping'].includes(j.status));

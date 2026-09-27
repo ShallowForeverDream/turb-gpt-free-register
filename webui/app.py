@@ -430,6 +430,14 @@ def create_app(auth_code: str | None = None, *, local_no_auth: bool = False) -> 
         return jsonify({"ok": True, "parsed": len(records), "invalid": invalid,
                         "inserted": inserted, "skipped": skipped})
 
+    @app.post("/api/accounts/import-pool")
+    def api_registered_accounts_import_pool():
+        """把账号页/邮箱池页选中的邮箱直接登记到账号页。"""
+        data = request.get_json(silent=True) or {}
+        items = data.get("items") or data.get("selected_emails") or []
+        imported, skipped = db.import_pool_emails_as_registered(items)
+        return jsonify({"ok": True, "imported": imported, "imported_count": len(imported), "skipped": skipped})
+
     @app.get("/api/accounts")
     def api_accounts():
         limit = request.args.get("limit", default=500, type=int)
@@ -2613,12 +2621,28 @@ def create_app(auth_code: str | None = None, *, local_no_auth: bool = False) -> 
     def api_jobs_create():
         """启动批量注册：body {count, workers}。"""
         data = request.get_json(silent=True) or {}
+        selected = data.get("selected_emails") or data.get("emails") or []
+        normalized_selected = None
+        if selected and not isinstance(selected, list):
+            return jsonify({"ok": False, "error": "selected_emails 必须是数组"}), 400
         try:
             count = int(data.get("count", 1))
         except (TypeError, ValueError):
             return jsonify({"ok": False, "error": "count 非法"}), 400
         if count < 1 or count > 200:
             return jsonify({"ok": False, "error": "count 需在 1~200 之间"}), 400
+        if selected:
+            if len(selected) > 200:
+                return jsonify({"ok": False, "error": "一次最多选择 200 个邮箱"}), 400
+            count = len(selected)
+            from core.import_formats import valid_email
+            normalized = []
+            for item in selected:
+                if not isinstance(item, dict) or not valid_email(str(item.get("email") or "")):
+                    return jsonify({"ok": False, "error": "所选邮箱条目无效"}), 400
+                normalized.append({"email": str(item["email"]).strip(), "source": str(item.get("source") or "").strip().lower()})
+            normalized_selected = normalized
+            selected = normalized
 
         # workers 控制本次新提交任务使用的线程池；若和上次不同，服务层会为新任务切换到新池。
         try:
@@ -2630,7 +2654,7 @@ def create_app(auth_code: str | None = None, *, local_no_auth: bool = False) -> 
         from config import email as _email_cfg
         from config import register as _register_cfg
         from core.email_provider import parse_email_sources
-        if not bool(getattr(_email_cfg, "USE_EMAIL_SERVICE", True)):
+        if not bool(getattr(_email_cfg, "USE_EMAIL_SERVICE", True)) and not normalized_selected:
             reg_email = str(getattr(_register_cfg, "REGISTER_EMAIL", "") or "").strip()
             if not reg_email:
                 return jsonify({
@@ -2642,7 +2666,12 @@ def create_app(auth_code: str | None = None, *, local_no_auth: bool = False) -> 
                     "ok": False,
                     "error": "手动模式建议每次只跑 1 个任务（同一 REGISTER_EMAIL）。请把数量设为 1。",
                 }), 400
-            jobs = svc.submit_registration(count=count, workers=workers)
+            if normalized_selected:
+                claimed, skipped = db.claim_pool_emails(normalized_selected, note="注册页手动选择")
+                if skipped:
+                    return jsonify({"ok": False, "error": "部分所选邮箱不可用", "skipped": skipped}), 409
+                selected = [{"email": x["email"], "source": x["source"]} for x in claimed]
+            jobs = svc.submit_registration(count=count, workers=workers, selected_emails=selected or None)
             return jsonify({
                 "ok": True,
                 "submitted": len(jobs),
@@ -2768,7 +2797,12 @@ def create_app(auth_code: str | None = None, *, local_no_auth: bool = False) -> 
             warning = ""
             if pool.get("available", 0) < count:
                 warning = f"可用邮箱仅 {pool.get('available', 0)} 个，少于任务数 {count}，不足的会失败"
-        jobs = svc.submit_registration(count=count, workers=workers)
+        if normalized_selected:
+            claimed, skipped = db.claim_pool_emails(normalized_selected, note="注册页手动选择")
+            if skipped:
+                return jsonify({"ok": False, "error": "部分所选邮箱不可用", "skipped": skipped}), 409
+            selected = [{"email": x["email"], "source": x["source"]} for x in claimed]
+        jobs = svc.submit_registration(count=count, workers=workers, selected_emails=selected or None)
         return jsonify({"ok": True, "submitted": len(jobs), "jobs": jobs, "warning": warning, "workers": workers})
 
     @app.get("/api/manual-otp/waiting")

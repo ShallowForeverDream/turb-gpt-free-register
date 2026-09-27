@@ -97,13 +97,13 @@ def _random_display_name() -> str:
     return random_display_name()
 
 
-def _prepare_registration_args() -> tuple[str | None, str, str]:
+def _prepare_registration_args(email_override: str | None = None) -> tuple[str | None, str, str]:
     """复用 CLI 的默认规则，为旧 Web 任务入口补齐注册参数。"""
     # 用模块属性读，支持 WebUI 热加载
     from config import register as _r, email as _e
     from core.profile_utils import generate_random_birthday
 
-    email = str(getattr(_r, "REGISTER_EMAIL", "") or "").strip()
+    email = str(email_override or getattr(_r, "REGISTER_EMAIL", "") or "").strip()
     name = str(getattr(_r, "REGISTER_NAME", "") or "").strip()
     # WebUI/配置里有时会把空值存成 "-"，这不是合法 OpenAI 显示名，按空处理并自动生成
     if name in {"-", "—", "无", "空", "none", "None", "null", "NULL"}:
@@ -296,7 +296,7 @@ def _run_one_job(job_id: int, log_file: str) -> None:
         with _JobLogContext(log_file):
             from main import run_registration
             log_logger.info(f"[Job {job_id}] 开始注册任务")
-            email, name, birthday = _prepare_registration_args()
+            email, name, birthday = _prepare_registration_args(str(current.get("email") or "").strip() or None)
             db.update_job(job_id, email=email)
             check_stop_requested()
             def _on_email_acquired(acquired_email: str) -> None:
@@ -440,7 +440,12 @@ def _run_codex_retry_job(job_id: int, log_file: str, email: str, account_id: int
 # 公共接口
 # ============================================================
 
-def submit_registration(count: int = 1, email_source: str | None = None, workers: int | None = None) -> list[dict]:
+def submit_registration(
+    count: int = 1,
+    email_source: str | None = None,
+    workers: int | None = None,
+    selected_emails: list[dict] | None = None,
+) -> list[dict]:
     """
     创建 N 个注册任务并提交到线程池。
     email_source 仅记录到 DB；实际邮箱来源固定为 Outlook 账号池。
@@ -458,8 +463,11 @@ def submit_registration(count: int = 1, email_source: str | None = None, workers
         executor = get_executor(max_workers=workers)
         effective_workers = get_executor_workers()
         jobs = []
-        for _ in range(count):
-            job = db.create_job(email_source=email_source)
+        chosen = selected_emails if isinstance(selected_emails, list) and selected_emails else [None] * count
+        for selected in chosen:
+            fixed_email = str((selected or {}).get("email") or "").strip() if isinstance(selected, dict) else None
+            fixed_source = str((selected or {}).get("source") or email_source).strip() if isinstance(selected, dict) else email_source
+            job = db.create_job(email_source=fixed_source, email=fixed_email or None)
             try:
                 executor.submit(_run_one_job, job["id"], job["log_file"])
             except Exception as exc:

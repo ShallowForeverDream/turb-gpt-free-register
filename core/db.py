@@ -2534,11 +2534,148 @@ def import_registered_gpt_accounts(records: list[dict]) -> tuple[int, int]:
         return inserted, skipped
 
 
+def _pool_rows_for_source(source: str) -> tuple[list[dict], Any, str]:
+    """返回邮箱池行、保存函数和内部来源名，供选中邮箱的原子操作复用。"""
+    source = str(source or "").strip().lower()
+    if source == "outlook":
+        return _load_outlook(), _save_outlook, "outlook"
+    if source == "generic_api":
+        return _load_generic_api_emails(), _save_generic_api_emails, "generic_api"
+    if source == "imap":
+        return _load_imap_emails(), _save_imap_emails, "imap"
+    if source == "cloudflare_domain":
+        return _load_domain_pool(), _save_domain_pool, "cloudflare_domain"
+    raise ValueError(f"不支持的邮箱池来源: {source}")
+
+
+def claim_pool_email(email: str, source: str, *, note: str | None = None) -> dict | None:
+    """按邮箱精确领取一个可用邮箱，避免注册页只能按池中顺序领取。"""
+    email = str(email or "").strip()
+    with _LOCK:
+        rows, saver, normalized = _pool_rows_for_source(source)
+        row = _find_by_email(rows, email)
+        if row is None or str(row.get("status") or "") != "available" or _find_by_email(_load_accounts(), email):
+            return None
+        row["status"] = "used"
+        row["used_at"] = _now()
+        row["note"] = note
+        saver(rows)
+        out = dict(row)
+        out["source"] = normalized
+        return out
+
+
+def claim_pool_emails(items: list[dict], *, note: str | None = None) -> tuple[list[dict], list[dict]]:
+    """整批校验后原子领取；有一项不可用就不消耗任何邮箱。"""
+    with _LOCK:
+        pools: dict[str, tuple[list[dict], Any]] = {}
+        selected: list[tuple[str, dict]] = []
+        skipped: list[dict] = []
+        seen: set[tuple[str, str]] = set()
+        registered = {str(r.get("email") or "").lower() for r in _load_accounts()}
+        active_jobs = {str(r.get("email") or "").lower() for r in _load_jobs() if r.get("status") in {"pending", "running", "stopping"}}
+        for item in items if isinstance(items, list) else []:
+            if not isinstance(item, dict):
+                skipped.append({"reason": "条目格式非法"})
+                continue
+            source = str(item.get("source") or "").strip().lower()
+            email = str(item.get("email") or "").strip()
+            key = (source, email.lower())
+            if key in seen:
+                skipped.append({"email": email, "source": source, "reason": "重复选择"})
+                continue
+            seen.add(key)
+            if source not in pools:
+                try:
+                    rows, saver, _ = _pool_rows_for_source(source)
+                    pools[source] = (rows, saver)
+                except ValueError:
+                    skipped.append({"email": email, "source": source, "reason": "来源无效"})
+                    continue
+            row = _find_by_email(pools[source][0], email)
+            reason = (
+                "邮箱格式无效" if not valid_email(email) else
+                "账号页已存在，请勿重复注册" if email.lower() in registered else
+                "已有同邮箱注册任务在执行" if email.lower() in active_jobs else
+                "邮箱不存在或不是可用状态" if row is None or row.get("status") != "available" else ""
+            )
+            if reason:
+                skipped.append({"email": email, "source": source, "reason": reason})
+            else:
+                selected.append((source, row))
+        if skipped:
+            return [], skipped
+        claimed: list[dict] = []
+        now = _now()
+        for source, row in selected:
+            row["status"], row["used_at"], row["note"] = "used", now, note
+            claimed.append({**row, "source": source})
+        for rows, saver in pools.values():
+            saver(rows)
+        return claimed, []
+
+
+def import_pool_emails_as_registered(items: list[dict]) -> tuple[list[dict], list[dict]]:
+    """把选中的邮箱池地址登记为已注册账号（邮箱/OTP 模式，无凭据伪造）。"""
+    with _LOCK:
+        accounts = _load_accounts()
+        pools: dict[str, tuple[list[dict], Any]] = {}
+        for source in {str(x.get("source") or "").strip().lower() for x in items if isinstance(x, dict)}:
+            try:
+                rows, saver, _ = _pool_rows_for_source(source)
+                pools[source] = (rows, saver)
+            except ValueError:
+                continue
+        imported: list[dict] = []
+        skipped: list[dict] = []
+        seen: set[tuple[str, str]] = set()
+        for item in items if isinstance(items, list) else []:
+            if not isinstance(item, dict):
+                skipped.append({"reason": "条目格式非法"})
+                continue
+            source = str(item.get("source") or "").strip().lower()
+            email = str(item.get("email") or "").strip()
+            key = (source, email.lower())
+            if key in seen:
+                continue
+            seen.add(key)
+            if not valid_email(email) or source not in pools:
+                skipped.append({"email": email, "source": source, "reason": "邮箱或来源无效"})
+                continue
+            if _find_by_email(accounts, email):
+                skipped.append({"email": email, "source": source, "reason": "账号页已存在"})
+                continue
+            rows, _saver = pools[source]
+            pool_row = _find_by_email(rows, email)
+            if pool_row is None:
+                skipped.append({"email": email, "source": source, "reason": "邮箱池中不存在"})
+                continue
+            now = _now()
+            account = {
+                "id": _next_id(accounts), "email": email, "created_at": now, "updated_at": now,
+                "access_token": "", "totp_secret": None, "user_name": "Imported Registered Email",
+                "email_source": source, "original_email_line": pool_row.get("copy_line") or email,
+                "extra_json": json.dumps({"imported_registered": True, "imported_from_pool": True}, ensure_ascii=False),
+            }
+            accounts.append(account)
+            pool_row["status"] = "used"
+            pool_row["used_at"] = pool_row.get("used_at") or now
+            pool_row["registered_account_id"] = account["id"]
+            pool_row["note"] = "已从邮箱池导入账号页"
+            imported.append({"id": account["id"], "email": email, "source": source})
+        if imported:
+            _save_accounts(accounts)
+            for rows, saver in pools.values():
+                saver(rows)
+        return imported, skipped
+
+
 def claim_next_outlook() -> dict | None:
     """原子领取一个可用 Outlook 账号并标记为 used。"""
     with _LOCK:
         rows = sorted(_load_outlook(), key=lambda x: int(x.get("id") or 0))
-        row = next((r for r in rows if r.get("status") == "available"), None)
+        registered = {str(r.get("email") or "").lower() for r in _load_accounts()}
+        row = next((r for r in rows if r.get("status") == "available" and str(r.get("email") or "").lower() not in registered), None)
         if row is None:
             return None
         row["status"] = "used"
@@ -2685,7 +2822,8 @@ def claim_next_generic_api_email() -> dict | None:
     """原子领取一个可用通用 API 邮箱并标记为 used。"""
     with _LOCK:
         rows = sorted(_load_generic_api_emails(), key=lambda x: int(x.get("id") or 0))
-        row = next((r for r in rows if r.get("status") == "available"), None)
+        registered = {str(r.get("email") or "").lower() for r in _load_accounts()}
+        row = next((r for r in rows if r.get("status") == "available" and str(r.get("email") or "").lower() not in registered), None)
         if row is None:
             return None
         row["status"] = "used"
@@ -2840,7 +2978,8 @@ def import_forwarded_imap_emails(records: list[dict], *, inbox: str,
 def claim_next_imap_email() -> dict | None:
     with _LOCK:
         rows = sorted(_load_imap_emails(), key=lambda x: int(x.get("id") or 0))
-        row = next((r for r in rows if r.get("status") == "available"), None)
+        registered = {str(r.get("email") or "").lower() for r in _load_accounts()}
+        row = next((r for r in rows if r.get("status") == "available" and str(r.get("email") or "").lower() not in registered), None)
         if row is None:
             return None
         row["status"], row["used_at"], row["note"] = "used", _now(), None
@@ -3183,11 +3322,11 @@ def _new_job_row(
     }
 
 
-def create_job(email_source: str) -> dict:
+def create_job(email_source: str, email: str | None = None) -> dict:
     """创建一个首次执行的 pending 注册任务。"""
     with _LOCK:
         rows = _load_jobs()
-        row = _new_job_row(rows, email_source=email_source)
+        row = _new_job_row(rows, email_source=email_source, email=email)
         rows.append(row)
         _save_jobs(rows)
         return dict(row)

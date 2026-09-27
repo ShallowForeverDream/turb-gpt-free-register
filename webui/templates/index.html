@@ -2177,6 +2177,7 @@
           </span>
         </label>
         <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnStartV2">开始注册</button>
+        <button type="button" class="jobs-tb-btn" id="btnStartSelectedPoolV2" title="使用邮箱池页当前选中的邮箱注册">使用选中邮箱注册</button>
       </div>
       <div id="regWarnV2"></div>
       <div class="jobs-table-v2-wrap">
@@ -2266,7 +2267,8 @@
       <div class="jobs-toolbar-v2" id="accountsToolbarV2">
         <div class="acc-v2-btn-group">
           <span class="acc-v2-btn-group-title">套餐/提链</span>
-          <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnCheckSelectedLiveV2" onclick="checkSelectedLive()" title="重新登录选中账号；成功且未封号则标记正常，并刷新最新 AT/accessToken">查活</button>
+           <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnCheckSelectedLiveV2" onclick="checkSelectedLive()" title="重新登录选中账号；成功且未封号则标记正常，并刷新最新 AT/accessToken">查活</button>
+           <button type="button" class="jobs-tb-btn" id="btnImportSelectedPoolV2" title="把邮箱池页当前选中的邮箱登记到账号页">导入选中邮箱</button>
           <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnCheckSelectedPlansV2" disabled title="查询选中账号当前套餐；free 账号会检查 Plus 试用资格">查套餐</button>
           <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnExtractSelectedLinksV2" disabled title="给选中的 free(可Plus试用) 账号批量提链，类型按配置 PIX/UPI/KAKAO_PAY/IDEAL">提链</button>
         </div>
@@ -2907,6 +2909,33 @@ async function startRegistrationFromInputs(countEl, workersEl, startBtn) {
   }
   finally { setTimeout(restoreBtn, 3000); }
 }
+function selectedPoolItems() {
+  return Array.from(OUTLOOK_SELECTED || []).map(key => {
+    const [source, ...rest] = key.split('|');
+    return {source, email: rest.join('|')};
+  });
+}
+async function startRegistrationFromSelectedPool(btn) {
+  const items = selectedPoolItems();
+  if (!items.length) { showToast('请先到“邮箱池”选择邮箱'); return; }
+  if (!confirm(`确定使用选中的 ${items.length} 个邮箱注册吗？\n\n这些邮箱会按选择顺序入队。`)) return;
+  if (btn) btn.disabled = true;
+  try {
+    const workers = Math.max(1, Math.min(16, Number($('#regWorkersV2')?.value || 3)));
+    const r = await api('/api/jobs', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({count:items.length, workers, selected_emails:items})});
+    showToast(`已提交 ${r.submitted || 0} 个指定邮箱注册任务`); refreshJobs();
+  } catch (e) { showToast(`指定邮箱注册失败：${e.message}`); }
+  finally { if (btn) btn.disabled = false; }
+}
+async function importSelectedPoolAsAccounts() {
+  const items = selectedPoolItems();
+  if (!items.length) { showToast('请先到“邮箱池”选择邮箱'); return; }
+  try {
+    const r = await api('/api/accounts/import-pool', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({items})});
+    showToast(`已导入 ${r.imported_count || 0} 个账号，跳过 ${(r.skipped || []).length} 个`);
+    loadAccounts(); loadOutlook(); loadSummary();
+  } catch (e) { showToast(`导入账号失败：${e.message}`); }
+}
 async function cancelAllPendingJobs(btn) {
   const pendingCount = Number(JOB_STATUS_COUNTS.pending || 0);
   const msg = pendingCount > 0
@@ -2976,6 +3005,8 @@ function bindJobsBodyEvents(bodyEl) {
 (() => {
   const startV2 = $('#btnStartV2');
   if (startV2) startV2.addEventListener('click', () => startRegistrationFromInputs($('#regCountV2'), $('#regWorkersV2'), startV2));
+  $('#btnStartSelectedPoolV2')?.addEventListener('click', (e) => startRegistrationFromSelectedPool(e.currentTarget));
+  $('#btnImportSelectedPoolV2')?.addEventListener('click', importSelectedPoolAsAccounts);
   const delV2 = $('#btnDeleteSelectedJobsV2');
   if (delV2) delV2.addEventListener('click', deleteSelectedJobs);
   const retryV2 = $('#btnRetrySelectedJobsV2');

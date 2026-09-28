@@ -212,6 +212,10 @@ class RoxyBrowserClient:
         self._proxy_pool_relay = None
         self._proxy_pool_target = ""
         self.http = requests.Session()
+        # The Roxy control plane is a local API.  Do not route requests to
+        # 127.0.0.1 through the account's upstream proxy (or Windows
+        # HTTP(S)_PROXY), otherwise a healthy Roxy service can appear as 502.
+        self.http.trust_env = False
         if self.token:
             # 官方文档要求所有接口请求头必须加 token。这里同时兼容 token / Authorization。
             self.http.headers.update({

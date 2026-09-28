@@ -1,7 +1,10 @@
 """所有账号流程共用的驱动选择。外部邮件/CPA/支付服务保留各自的 API 客户端。"""
 from contextvars import ContextVar
+from contextvars import copy_context
 import importlib.util
 import logging
+import socket
+from urllib.parse import urlsplit
 
 _ACTIVE = ContextVar("workflow_driver", default=None)
 logger = logging.getLogger(__name__)
@@ -47,6 +50,15 @@ def require_driver_ready(driver=None):
             raise RuntimeError("Roxy 工作区未配置；请使用“获取团队”选择自己的工作区")
         if not cfg.ROXY_ONE_PROFILE_PER_ACCOUNT:
             raise RuntimeError("统一账号流程要求开启 Roxy 一号一环境，避免账号共用登录态")
+        parsed = urlsplit(str(cfg.ROXY_API_BASE or ""))
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            raise RuntimeError("Roxy API 地址无效，请检查 ROXY_API_BASE")
+        if parsed.hostname in {"127.0.0.1", "localhost", "::1"}:
+            try:
+                with socket.create_connection((parsed.hostname, parsed.port or 80), timeout=0.8):
+                    pass
+            except OSError as exc:
+                raise RuntimeError(f"Roxy 本地服务未启动：{parsed.hostname}:{parsed.port or 80}") from exc
     elif driver == "cloak":
         from config import cloakbrowser as cfg
         if str(cfg.CLOAK_USER_DATA_DIR or "").strip():
@@ -87,7 +99,7 @@ def create_account_session(*, proxy=None, protocol_factory=None, **kwargs):
             protocol_factory = BrowserSession
         return protocol_factory(proxy=proxy, **kwargs)
     from core.browser_workflows import BrowserAccountSession
-    return BrowserAccountSession(driver, proxy=proxy)
+    return BrowserAccountSession(driver, proxy=proxy, **kwargs)
 
 
 def unified_workflow(operation):
@@ -105,3 +117,14 @@ def unified_workflow(operation):
                 _ACTIVE.reset(token)
         return wrapped
     return decorate
+
+
+def submit_with_driver(executor, fn, *args, **kwargs):
+    """提交后台任务时锁定当前统一驱动，避免排队期间热更新配置改变行为。"""
+    driver = require_driver_ready()
+    token = _ACTIVE.set(driver)
+    try:
+        context = copy_context()
+        return executor.submit(context.run, fn, *args, **kwargs)
+    finally:
+        _ACTIVE.reset(token)

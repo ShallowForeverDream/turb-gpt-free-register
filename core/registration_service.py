@@ -460,6 +460,8 @@ def submit_registration(
     Returns:
         N 个新创建的 job dict
     """
+    from core.workflow_driver import require_driver_ready
+    require_driver_ready()
     if email_source is None:
         from config import email as _email_cfg
         email_source = _email_cfg.EMAIL_SOURCE
@@ -476,7 +478,8 @@ def submit_registration(
             fixed_source = str((selected or {}).get("source") or email_source).strip() if isinstance(selected, dict) else email_source
             job = db.create_job(email_source=fixed_source, email=fixed_email or None)
             try:
-                executor.submit(_run_one_job, job["id"], job["log_file"])
+                from core.workflow_driver import submit_with_driver
+                submit_with_driver(executor, _run_one_job, job["id"], job["log_file"])
             except Exception as exc:
                 db.update_job(
                     int(job["id"]),
@@ -551,6 +554,11 @@ def get_retry_info(job: dict) -> dict:
 
 def retry_job(job_id: int, workers: int | None = None) -> dict:
     """智能重试终态任务：未生成账号则重新注册，已有账号则仅补跑 Codex。"""
+    from core.workflow_driver import require_driver_ready
+    try:
+        require_driver_ready()
+    except (ValueError, RuntimeError) as exc:
+        return {"ok": False, "error": str(exc), "status": 409}
     source = db.get_job(job_id)
     if source is None:
         return {"ok": False, "error": "任务不存在", "status": 404}
@@ -608,9 +616,11 @@ def retry_job(job_id: int, workers: int | None = None) -> dict:
         with _executor_lock:
             executor = get_executor(max_workers=workers)
             if action == "codex":
-                executor.submit(_run_codex_retry_job, job["id"], job["log_file"], email, int(account_id))
+                from core.workflow_driver import submit_with_driver
+                submit_with_driver(executor, _run_codex_retry_job, job["id"], job["log_file"], email, int(account_id))
             else:
-                executor.submit(_run_one_job, job["id"], job["log_file"])
+                from core.workflow_driver import submit_with_driver
+                submit_with_driver(executor, _run_one_job, job["id"], job["log_file"])
     except Exception as exc:
         if reserved_codex:
             codex_retry_service.release(email)

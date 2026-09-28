@@ -166,9 +166,9 @@ def enqueue_account_plan_check(
         return {"accepted": False, "busy": True, "error": "该账号正在查询套餐"}
 
     try:
-        from contextvars import copy_context
-        _EXECUTOR.submit(
-            copy_context().run, _run_plan_check,
+        from core.workflow_driver import submit_with_driver
+        submit_with_driver(
+            _EXECUTOR, _run_plan_check,
             account_id=account_id,
             email=email,
             access_token=access_token,

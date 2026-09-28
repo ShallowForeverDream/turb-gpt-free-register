@@ -319,7 +319,9 @@ def enqueue_account_codex_agent(*, account_id: int, email: str, access_token: st
         if not db.claim_account_codex_agent(account_id, trigger=trigger):
             _QUEUE_SLOTS.release()
             return {"accepted": False, "busy": True, "error": "该账号正在生成 Codex Agent Token"}
-        fut = _EXECUTOR.submit(
+        from core.workflow_driver import submit_with_driver
+        fut = submit_with_driver(
+            _EXECUTOR,
             _run_generate,
             account_id=account_id,
             email=email,

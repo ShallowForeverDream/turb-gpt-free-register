@@ -90,6 +90,12 @@ def _local_proxy_status(proxy: str) -> tuple[bool, bool, str | None]:
 def open_plan_check_proxy(route: dict, selected_proxy: str, *, timeout: float):
     """返回实际请求代理；配置了上游时启动本地 HTTP CONNECT 中继。"""
     selected_proxy = str(selected_proxy or "").strip()
+    from core.workflow_driver import resolve_driver
+    if resolve_driver() == "roxy":
+        # Roxy 在 create_profile 内部为该浏览器创建并持有代理链。
+        return selected_proxy, None
+    if resolve_driver() in {"browser_use", "skyvern"}:
+        return "", None
     upstream = str(route.get("upstream_proxy") or "").strip()
     if selected_proxy and upstream:
         from core.proxy_chain import ProxyChainRelay

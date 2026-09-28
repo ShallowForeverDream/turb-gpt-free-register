@@ -22,7 +22,19 @@ class BrowserHTTPError(RuntimeError):
     def __init__(self, response):
         self.response = response
         self.status_code = response.status_code
-        super().__init__(f"浏览器请求 HTTP {self.status_code}: {urlsplit(response.url).path}")
+        code = ""
+        try:
+            data = response.json()
+            error = data.get("error") if isinstance(data, dict) else None
+            if isinstance(error, dict):
+                code = str(error.get("code") or error.get("message") or "")[:120]
+            elif isinstance(error, str):
+                code = error[:120]
+        except (ValueError, TypeError, AttributeError):
+            pass
+        self.error_code = code
+        detail = f" ({code})" if code else ""
+        super().__init__(f"浏览器请求 HTTP {self.status_code}: {urlsplit(response.url).path}{detail}")
 
 
 class BrowserResponse:
@@ -87,7 +99,15 @@ def _open_browser(stack, kind, proxy):
 class BrowserAccountSession:
     is_browser_workflow = True
 
-    def __init__(self, kind, proxy=None, *, driver=None, opened=None):
+    def __init__(self, kind, proxy=None, *, driver=None, opened=None, **_session_options):
+        """Create an isolated browser-backed account session.
+
+        ``create_account_session`` is also used by the protocol-backed plan,
+        2FA and Agent code, which passes options such as ``fingerprint_seed``
+        and ``detect_exit_geo``.  Browser providers own those settings, so we
+        deliberately accept (and ignore) them here rather than making each
+        workflow branch its own constructor call.
+        """
         self.kind = kind
         self.proxy = proxy
         self._stack = ExitStack()

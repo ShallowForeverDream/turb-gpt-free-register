@@ -220,9 +220,9 @@ def enqueue_account_totp_setup(
 
     _append_log(email, f"[2FA] 已入队 account_id={account_id} trigger={trigger}", clear=True)
     try:
-        from contextvars import copy_context
-        future = _EXECUTOR.submit(
-            copy_context().run, _run_twofa,
+        from core.workflow_driver import submit_with_driver
+        future = submit_with_driver(
+            _EXECUTOR, _run_twofa,
             account_id=account_id,
             email=email,
             access_token=access_token,

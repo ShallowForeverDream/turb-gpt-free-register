@@ -539,7 +539,8 @@ def enqueue(account_id: int, source: str, trigger: str = "manual") -> dict:
         return {"accepted": False, "busy": True, "error": "账号正在换绑或不存在"}
     _append_log(account_id, f"换绑任务已入队：source={source} trigger={trigger}", clear=True)
     try:
-        future = _EXECUTOR.submit(_run, account_id, source)
+        from core.workflow_driver import submit_with_driver
+        future = submit_with_driver(_EXECUTOR, _run, account_id, source)
         return {"accepted": True, "future": future}
     except Exception as exc:
         _SLOTS.release()

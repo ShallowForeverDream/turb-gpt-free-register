@@ -142,9 +142,9 @@ def enqueue_account_live_check(*, account_id: int, email: str, trigger: str = "m
 
     _append_log(email, f"[查活] 已入队 account_id={account_id} trigger={trigger}", clear=True)
     try:
-        from contextvars import copy_context
-        _EXECUTOR.submit(
-            copy_context().run, _run_live_check,
+        from core.workflow_driver import submit_with_driver
+        submit_with_driver(
+            _EXECUTOR, _run_live_check,
             account_id=account_id,
             email=email,
             proxy=proxy,

@@ -99,6 +99,30 @@ class AccountLivenessTests(unittest.TestCase):
         self.assertFalse(_DummyBrowserSession.created[0].session.closed)
         self.assertIsNone(_DummyBrowserSession.created[0].received_proxy)
 
+    def test_preflight_rebuilds_transport_on_boringssl_reset(self):
+        state = {}
+        with patch.object(liveness, "BrowserSession", _DummyBrowserSession), \
+             patch.object(liveness, "_warm_login_fingerprint_context", side_effect=[
+                 RuntimeError("curl: (35) BoringSSL SSL_connect: Connection closed abruptly"),
+                 None,
+             ]), \
+             patch.object(liveness, "probe_auth_session"), \
+             patch.object(liveness, "get_csrf_token", return_value="csrf"), \
+             patch.object(liveness, "signin_openai", return_value="authorize"), \
+             patch.object(liveness.time, "sleep"):
+            session, _ = liveness._network_preflight_with_retry(
+                "user@example.com", "proxy", max_attempts=2, fingerprint_state=state
+            )
+
+        self.assertIs(_DummyBrowserSession.created[-1], session)
+        self.assertEqual(len(_DummyBrowserSession.created), 2)
+        self.assertTrue(_DummyBrowserSession.created[0].session.closed)
+        self.assertFalse(_DummyBrowserSession.created[1].session.closed)
+        self.assertEqual(
+            _DummyBrowserSession.created[0].kwargs["fingerprint_seed"],
+            _DummyBrowserSession.created[1].kwargs["fingerprint_seed"],
+        )
+
     def test_callback_403_stops_before_fetching_token(self):
         session = _DummyBrowserSession(proxy="proxy")
         with patch.object(

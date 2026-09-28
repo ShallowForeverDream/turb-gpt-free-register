@@ -45,6 +45,13 @@ _RETRYABLE_NETWORK_HINTS = (
     "proxy", "socks", "timeout", "timed out",
     "connection", "closed", "reset",
 )
+# curl_cffi/BoringSSL may keep a half-open tunnel after the local proxy closes
+# the CONNECT stream.  Reusing that BrowserSession only repeats the same TLS
+# failure; rebuild the transport while retaining the task's fingerprint state.
+_REBUILD_SESSION_NETWORK_HINTS = (
+    "ssl_error_syscall", "curl: (35)", "ssl_connect",
+    "connection closed abruptly",
+)
 
 
 class LoginPreflightBlockedError(RuntimeError):
@@ -89,6 +96,11 @@ def _is_retryable_network_error(exc: BaseException) -> bool:
         return False
     text = str(exc or "").lower()
     return any(h in text for h in _RETRYABLE_NETWORK_HINTS)
+
+
+def _requires_fresh_transport_session(exc: BaseException) -> bool:
+    text = str(exc or "").lower()
+    return any(h in text for h in _REBUILD_SESSION_NETWORK_HINTS)
 
 
 def _new_fingerprint_pinned_session(
@@ -199,10 +211,22 @@ def _network_preflight_with_retry(
                 except Exception:
                     pass
                 raise
+            rebuilt = False
+            if _requires_fresh_transport_session(exc):
+                # Preserve device/session/profile values in ``state`` but do
+                # not reuse a curl connection that already failed TLS.
+                try:
+                    close_browser_session(session)
+                except Exception:
+                    pass
+                session = _new_fingerprint_pinned_session(email, proxy, state)
+                rebuilt = True
             _clear_optional_bootstrap_circuit(session)
             logger.warning(
-                "[查活] 网络预检失败（%s/%s），保留当前 session/deviceId/CF Cookie 重试：%s",
-                attempt, max_attempts, str(exc)[:200],
+                "[查活] 网络预检失败（%s/%s），%s重试：%s",
+                attempt, max_attempts,
+                "重建同一指纹会话" if rebuilt else "保留当前 session/deviceId/CF Cookie",
+                str(exc)[:200],
             )
             time.sleep(2)
     raise RuntimeError(f"网络预检多次失败：{last_exc}")

@@ -25,17 +25,18 @@ def _latest_chrome_major(default: str = "146") -> str:
     return default
 
 
-CHROME_MAJOR = "146"
-CHROME_FULL_VERSION = "146.0.0.0"
+CHROME_MAJOR = "142"
+CHROME_FULL_VERSION = "142.0.0.0"
 
 SAFARI_VERSION = ""
 SAFARI_WEBKIT_VERSION = "537.36"
 MAC_OS_UA_VERSION = "10_15_7"
 
 # ---------- curl_cffi 模拟浏览器 ----------
-# curl_cffi 0.15 当前最高内置到 chrome146。UA、Client Hints、JS navigator
-# 必须同步为 146；不能出现 TLS=146、HTTP/JS=149 的跨版本拼接指纹。
-IMPERSONATE = "chrome146"
+# curl_cffi 0.16.x 的 chrome146 指纹在当前 ChatGPT 边缘节点会被直接拒绝
+# （HTTP 403），而 chrome142 仍能完成登录页握手。UA、Client Hints、JS
+# navigator 必须与 TLS impersonate 使用同一主版本，不能跨版本拼接指纹。
+IMPERSONATE = "chrome142"
 
 # ---------- 桌面 Chrome 画像 ----------
 BROWSER_FAMILY = "chrome"
@@ -50,8 +51,8 @@ USER_AGENT = (
     f"Chrome/{CHROME_FULL_VERSION} Safari/{SAFARI_WEBKIT_VERSION}"
 )
 
-SEC_CH_UA = '"Google Chrome";v="146", "Chromium";v="146", "Not)A;Brand";v="24"'
-SEC_CH_UA_FULL_VERSION_LIST = '"Google Chrome";v="146.0.0.0", "Chromium";v="146.0.0.0", "Not)A;Brand";v="24.0.0.0"'
+SEC_CH_UA = '"Google Chrome";v="142", "Chromium";v="142", "Not)A;Brand";v="24"'
+SEC_CH_UA_FULL_VERSION_LIST = '"Google Chrome";v="142.0.0.0", "Chromium";v="142.0.0.0", "Not)A;Brand";v="24.0.0.0"'
 SEC_CH_UA_PLATFORM = '"macOS"'
 SEC_CH_UA_PLATFORM_VERSION = '"15.7.0"'
 SEC_CH_UA_MOBILE = "?0"

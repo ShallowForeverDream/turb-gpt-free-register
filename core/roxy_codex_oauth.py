@@ -1408,7 +1408,7 @@ def _run_roxy_codex_oauth_once(
     if otp_provider is None:
         otp_provider = wait_for_otp
 
-    client = None if reuse_existing_profile else RoxyBrowserClient()
+    client = None if reuse_existing_profile else RoxyBrowserClient(proxy=proxy)
     opened = existing_opened if reuse_existing_profile else client.open_profile()
     browser_kind_token = _CODEX_BROWSER_KIND.set(_detect_browser_kind(opened))
     driver = existing_driver if reuse_existing_profile else None
@@ -1495,7 +1495,9 @@ def _run_roxy_codex_oauth_once(
 
         if not code_verifier:
             raise RuntimeError("[Codex][Browser] local 模式缺少 code_verifier")
-        session = proto.BrowserSession(proxy=proxy, fingerprint_seed=f"account:{email.lower()}")
+        from core.browser_workflows import BrowserAccountSession
+        # OAuth code 交换仍由当前浏览器发出，不新建 curl 会话。
+        session = BrowserAccountSession(_detect_browser_kind(opened), proxy=proxy, driver=driver, opened=opened)
         token_resp = proto.exchange_codex_token(session, code, code_verifier)
         id_claims = proto._parse_id_token(token_resp.get("id_token", ""))
         effective_email = id_claims.get("email") or email

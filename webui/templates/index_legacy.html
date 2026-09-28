@@ -781,6 +781,7 @@
 </main>
 
 <div id="toast"></div>
+<div id="workflowDriverSummary" role="status" style="position:fixed;bottom:8px;left:16px;max-width:310px;z-index:3;background:var(--surface,#fff);padding:10px;border:1px solid var(--line,#ddd);border-radius:8px;font-size:12px;"></div>
 <div id="qrPanel" class="body hidden">
   <h3>支付二维码 <button class="btn" onclick="closeQrModal()">关闭</button></h3>
   <img id="qrImage" alt="支付二维码">
@@ -3812,6 +3813,7 @@ activateTab(localStorage.getItem('gpt_console_active_tab') || 'register', false)
 jobsTimer = setInterval(() => { if (!$('#tab-register').classList.contains('hidden')) refreshJobs(); }, 10000);
 setInterval(loadSummary, 30000);
 setInterval(() => { if (!$('#tab-accounts').classList.contains('hidden')) pollAccountPlanStatuses(); }, 10000);
+{% include 'workflow_driver_status.html' %}
 </script>
 {% include 'promo_details.html' %}
 </body>

@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import ipaddress
 import json
+from core.workflow_driver import unified_workflow
 import logging
 import random
 import socket
@@ -103,6 +104,17 @@ def resolve_plan_check_route(explicit_proxy: Optional[str] = None) -> dict:
 
     explicit_proxy 不是 None 时表示 API 调用方明确覆盖配置；空字符串代表直连。
     """
+    from core.workflow_driver import resolve_driver
+    driver_kind = resolve_driver()
+    if driver_kind != "protocol":
+        from config import proxy as proxy_cfg
+        cloud = driver_kind in {"browser_use", "skyvern"}
+        selected = "" if cloud else str(explicit_proxy if explicit_proxy else proxy_cfg.pick_proxy() or "")
+        return {"proxy": selected, "proxy_mode": "unified",
+                "network_route": "cloud_browser" if cloud else "proxy" if selected else "direct",
+                "proxy_used": _mask_proxy(selected) or None,
+                "upstream_proxy": "" if cloud or explicit_proxy is not None else proxy_cfg.PROXY_POOL_UPSTREAM_PROXY,
+                "upstream_proxy_used": None, "proxy_fallback_reason": None}
     if explicit_proxy is not None:
         selected = str(explicit_proxy or "").strip()
         return {
@@ -377,6 +389,7 @@ def _retry_wait_seconds(resp: Any, base_delay: float, attempt: int) -> float:
     return max(0.0, min(30.0, base_delay * attempt))
 
 
+@unified_workflow("plan")
 def check_account_plan(
     token: str,
     *,
@@ -438,8 +451,10 @@ def check_account_plan(
         effective_proxy, relay = open_plan_check_proxy(
             route, route["proxy"], timeout=timeout_seconds,
         )
-        env = BrowserSession(
-            proxy=effective_proxy, detect_exit_geo=True, fingerprint_seed=task_seed,
+        from core.workflow_driver import create_account_session
+        env = create_account_session(
+            proxy=effective_proxy, protocol_factory=BrowserSession,
+            detect_exit_geo=True, fingerprint_seed=task_seed,
         )
         effective_tz = str(timezone_offset_min or "").strip()
         if not effective_tz or effective_tz == "-":
@@ -457,6 +472,8 @@ def check_account_plan(
         )
         _warm_plan_session(env)
 
+        if getattr(env, "is_browser_workflow", False) is True:
+            attempts = 1
         for attempt in range(1, attempts + 1):
             resp = None
             try:

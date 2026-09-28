@@ -2505,7 +2505,7 @@
         <div class="config-cards-v2" id="configCardsV2" aria-label="配置概览卡片">
           <div class="config-card-v2" id="configCardRegistrationV2">
             <div class="config-card-v2-top">
-              <div class="config-card-v2-label">注册方式</div>
+              <div class="config-card-v2-label">统一运行方式</div>
               <span class="config-card-v2-icon" aria-hidden="true">
                 <svg viewBox="0 0 24 24"><path d="M4 6h7"/><path d="M4 12h7"/><path d="M4 18h7"/><path d="M15 6l5 6-5 6"/></svg>
               </span>
@@ -2536,6 +2536,7 @@
 </main>
 
 <div id="toast"></div>
+<div id="workflowDriverSummary" role="status" style="position:fixed;bottom:8px;left:16px;max-width:310px;z-index:3;background:var(--surface,#fff);padding:10px;border:1px solid var(--line,#ddd);border-radius:8px;font-size:12px;"></div>
 <div id="outlookImportModal" class="hidden" role="dialog" aria-modal="true" aria-labelledby="outlookImportTitle">
   <div class="outlook-import-dialog" role="document">
     <div class="outlook-import-head">
@@ -6348,8 +6349,8 @@ function renderRegistrationDriverCard() {
 function renderRegistrationDriverField(f) {
   return `
     <label class="fld config-select-v2-field">
-      注册方式
-      <span class="hint">选择注册所用的自动化方式</span>
+      统一运行方式
+      <span class="hint">所有账号操作共用此方式；保存后新的任务生效</span>
       <div class="config-ep-select" id="configRegistrationSelectV2"></div>
     </label>
   `;
@@ -7009,6 +7010,7 @@ activateTab(localStorage.getItem('gpt_console_active_tab') || 'register', false)
 jobsTimer = setInterval(() => { if (!$('#tab-register').classList.contains('hidden')) refreshJobs(); }, 10000);
 setInterval(loadSummary, 30000);
 setInterval(() => { if (!$('#tab-accounts').classList.contains('hidden')) pollAccountPlanStatuses(); }, 10000);
+{% include 'workflow_driver_status.html' %}
 </script>
 {% include 'promo_details.html' %}
 </body>

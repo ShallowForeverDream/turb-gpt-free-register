@@ -135,7 +135,7 @@ def run_cloak_registration(
         logger.info("[Cloak注册] 已拿到 accessToken：%s", email)
 
         if _twofa_cfg.ENABLE_2FA:
-            logger.warning("[Cloak注册] 当前 CloakBrowser 自动化路径暂不执行 2FA 设置，已跳过")
+            logger.warning("[Cloak注册] 2FA 将在账号保存后使用统一浏览器驱动入队执行")
         totp_secret = None
 
         codex_result = {

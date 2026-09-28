@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from core.workflow_driver import unified_workflow
 import logging
 import threading
 import time
@@ -65,7 +66,8 @@ def _new_session(account_id: int, proxy, *, email: str = "") -> BrowserSession:
     # 与 2FA/查活统一使用账号级种子。同一账号做敏感操作时保持 device_id、
     # Sentinel sid、浏览器画像稳定，而不是为“换绑”另造一套新设备指纹。
     seed = f"account:{email.lower()}" if email else f"email-change:{account_id}"
-    return BrowserSession(proxy=proxy, fingerprint_seed=seed)
+    from core.workflow_driver import create_account_session
+    return create_account_session(proxy=proxy, protocol_factory=BrowserSession, fingerprint_seed=seed)
 
 
 def _response_error(resp) -> str:
@@ -104,6 +106,9 @@ def _post_with_network_retry(
     fingerprint_email: str = "",
 ) -> tuple[dict, BrowserSession]:
     """TLS reset/超时等传输故障时换会话重试，最后一次明确直连兜底。"""
+    if getattr(session, "is_browser_workflow", False) is True:
+        # 浏览器会话内的变更请求不在失败后切换协议/网络重复提交。
+        return _post(session, path, token, payload), session
     last_exc: Exception | None = None
     current = session
     for attempt in range(1, 4):
@@ -184,6 +189,9 @@ def _refresh_recent_login(
     注册密码。这里改为复用查活的备用登录链：优先密码（以及 TOTP），仅在
     登录页确实要求邮箱验证时才读取原邮箱 OTP。
     """
+    if getattr(session, "is_browser_workflow", False) is True:
+        token = session.reauthenticate(email, email_source)
+        return session, token
     # 延迟导入，避免 account_liveness 初始化时形成模块循环。
     from core.account_liveness import (
         _login_via_password_or_otp,
@@ -334,6 +342,13 @@ def _check_live_in_current_session(
     email_source: str,
 ) -> dict:
     """换绑后复用当前已通过 CF/reauth 的会话重新登录并刷新 AT。"""
+    if getattr(session, "is_browser_workflow", False) is True:
+        info = session.login(email, email_source=email_source)
+        result = {"ok": True, "status": "live", "access_token": info["accessToken"],
+                  "session": info, "driver": session.kind}
+        db.update_account_liveness(account_id, result)
+        return result
+
     from core.account_liveness import (
         _login_via_password_or_otp,
         _safe_fingerprint_for_account,
@@ -380,8 +395,10 @@ def _check_live_in_current_session(
     return result
 
 
+@unified_workflow("email_change")
 def _run(account_id: int, source: str) -> dict:
     new_email = ""
+    session = None
     task_started = time.monotonic()
     stage = "初始化"
     with _LOCK:
@@ -395,6 +412,8 @@ def _run(account_id: int, source: str) -> dict:
         token = str(account.get("access_token") or "").strip()
         if not token:
             raise RuntimeError("账号缺少 access_token，请先查活刷新 AT")
+        from core.workflow_driver import require_driver_ready
+        require_driver_ready()
         stage = "领取新邮箱"
         acquire_started = time.monotonic()
         new_email = acquire_email_from_source(source)
@@ -405,7 +424,8 @@ def _run(account_id: int, source: str) -> dict:
             raise RuntimeError("换绑任务状态已失效")
 
         stage = "创建网络会话"
-        saved_proxy = _proxy(account.get("proxy_used"))
+        from core.workflow_driver import resolve_driver
+        saved_proxy = _proxy(account.get("proxy_used")) if resolve_driver() == "protocol" else ""
         # 账号没有可复用的真实代理 URL 时，先按全局代理池选路，而不是直接裸连。
         current_email = str(account.get("email") or "").strip()
         current_source = str(account.get("email_source") or "").strip().lower()
@@ -416,6 +436,9 @@ def _run(account_id: int, source: str) -> dict:
             f"proxy={_proxy_label(getattr(session, 'proxy', None))}",
         )
         _append_log(account_id, f"指纹摘要：{session.fingerprint_summary_text()}")
+        if getattr(session, "is_browser_workflow", False) is True:
+            info = session.login(current_email, email_source=current_source)
+            token = info["accessToken"]
 
         logger.info("[邮箱换绑] begin account_id=%s old=%s new=%s source=%s", account_id, account.get("email"), new_email, source)
         _append_log(account_id, f"开始换绑：原邮箱={account.get('email') or '-'}，新邮箱={new_email}，来源={source}")
@@ -494,12 +517,19 @@ def _run(account_id: int, source: str) -> dict:
         logger.exception("[邮箱换绑] 失败 account_id=%s", account_id)
         return {"ok": False, "id": account_id, "error": error}
     finally:
+        if session is not None:
+            close_browser_session(session)
         with _LOCK:
             _RUNNING.discard(account_id)
         _SLOTS.release()
 
 
 def enqueue(account_id: int, source: str, trigger: str = "manual") -> dict:
+    from core.workflow_driver import require_driver_ready
+    try:
+        require_driver_ready()
+    except (ValueError, RuntimeError) as exc:
+        return {"accepted": False, "busy": False, "error": str(exc), "stage": "driver_configuration"}
     account_id = int(account_id)
     source = str(source or "").strip().lower()
     if not _SLOTS.acquire(blocking=False):

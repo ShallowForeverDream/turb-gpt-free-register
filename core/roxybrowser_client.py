@@ -205,7 +205,8 @@ def _random_roxy_profile_name() -> str:
 
 
 class RoxyBrowserClient:
-    def __init__(self, api_base: str | None = None, token: str | None = None):
+    def __init__(self, api_base: str | None = None, token: str | None = None, *, proxy: str | None = None):
+        self._explicit_proxy = proxy
         self.api_base = (api_base or _cfg.ROXY_API_BASE).strip()
         self.token = (token if token is not None else _cfg.ROXY_API_TOKEN).strip()
         self._proxy_pool_relay = None
@@ -471,11 +472,13 @@ class RoxyBrowserClient:
         project_id = _project_id_value()
         if project_id:
             body.setdefault("projectId", project_id)
-        if bool(getattr(_cfg, "ROXY_CREATE_USE_PROXY_POOL", False)) and not body.get("proxyInfo"):
+        from core.workflow_driver import resolve_driver
+        unified = resolve_driver() == "roxy"
+        if (unified or self._explicit_proxy is not None or bool(getattr(_cfg, "ROXY_CREATE_USE_PROXY_POOL", False))) and not body.get("proxyInfo"):
             from config import proxy as _proxy_cfg
             from core.proxy_chain import open_proxy_pool_proxy
 
-            target_proxy = _proxy_cfg.pick_proxy()
+            target_proxy = self._explicit_proxy or _proxy_cfg.pick_proxy()
             proxy_url, relay = open_proxy_pool_proxy(target_proxy)
             self._proxy_pool_relay = relay
             self._proxy_pool_target = str(target_proxy or "").strip()
@@ -484,7 +487,7 @@ class RoxyBrowserClient:
                 body["proxyInfo"] = proxy_info
                 logger.info(
                     "[Roxy] 创建环境启用代理池：target=%s transport=%s type=%s host=%s port=%s",
-                    str(target_proxy or "").strip(), str(proxy_url or "").strip(),
+                    _mask_proxy(str(target_proxy or "")), _mask_proxy(str(proxy_url or "")),
                     proxy_info.get("protocol") or proxy_info.get("proxyCategory"),
                     proxy_info.get("host"),
                     proxy_info.get("port"),

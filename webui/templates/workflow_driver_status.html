@@ -1,0 +1,14 @@
+async function refreshWorkflowDriverStatus() {
+  const box = document.getElementById('workflowDriverSummary');
+  try {
+    const r = await api('/api/workflow-driver');
+    const names = {protocol:'协议', roxy:'RoxyBrowser', cloak:'CloakBrowser', browser_use:'Browser Use', skyvern:'Skyvern'};
+    box.textContent = '统一运行方式：' + (names[r.driver] || r.driver) +
+      (r.ready ? ' · 配置检查通过（未测试远端连接）' : ' · ' + r.error);
+  } catch (error) { box.textContent = '统一运行方式检查失败：' + error.message; }
+}
+refreshWorkflowDriverStatus();
+document.addEventListener('click', () => {
+  clearTimeout(refreshWorkflowDriverStatus.timer);
+  refreshWorkflowDriverStatus.timer = setTimeout(refreshWorkflowDriverStatus, 1500);
+});

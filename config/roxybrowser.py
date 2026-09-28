@@ -10,7 +10,7 @@ RoxyBrowser 指纹浏览器自动化注册配置。
 from config.env_loader import env_str, apply_env_overrides
 
 
-# 注册驱动：
+# 统一账号运行驱动（注册、查活、2FA、换绑、Codex、套餐、Agent）：
 #   "protocol"     = 原有 curl_cffi 纯协议注册（容易封号，不建议）
 #   "roxy"         = 调用 RoxyBrowser 指纹浏览器 + Selenium 自动化注册
 #   "cloak"        = 调用 CloakBrowser + Playwright/Selenium 适配层注册

@@ -2815,7 +2815,7 @@ def run_browser_use_registration(
             logger.info("[BrowserUse] 已拿到 accessToken：%s", email)
 
             if _twofa_cfg.ENABLE_2FA:
-                logger.warning("[BrowserUse] 当前路径暂不自动设置 2FA，已跳过")
+                logger.warning("[BrowserUse] 2FA 将在账号保存后使用统一浏览器驱动入队执行")
             totp_secret = None
 
             codex_result = {
@@ -2826,7 +2826,8 @@ def run_browser_use_registration(
             try:
                 from config import codex as _codex_cfg
                 codex_auto_enabled = bool(getattr(_codex_cfg, "ENABLE_CODEX_AUTO", False))
-                oauth_driver = str(getattr(_codex_cfg, "CODEX_OAUTH_DRIVER", "") or "").strip() or "same_as_registration"
+                from core.workflow_driver import resolve_driver
+                oauth_driver = resolve_driver()
                 if codex_auto_enabled:
                     logger.info(
                         "[BrowserUse][Codex] ENABLE_CODEX_AUTO=True，注册成功后自动执行 Codex OAuth：driver=%s",

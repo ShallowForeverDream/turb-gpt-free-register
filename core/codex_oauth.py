@@ -19,6 +19,7 @@ build_codex_storage / save_codex_credential）沿用原流程。
 import base64
 import hashlib
 import json
+from core.workflow_driver import unified_workflow
 import logging
 import random
 import secrets
@@ -1670,6 +1671,7 @@ def _save_sub2_local_record(
 # 入口
 # ============================================================
 
+@unified_workflow("codex")
 def run_codex_oauth(
     email: str,
     otp_provider=None,
@@ -1700,11 +1702,9 @@ def run_codex_oauth(
     # Codex OAuth 支持多种驱动：
     # protocol：原纯协议；roxy/cloak/browser_use：用真实浏览器跑页面并捕获 localhost callback。
     try:
-        from config import codex as _codex_cfg
-        from config import roxybrowser as _roxy_cfg
-        oauth_driver = str(getattr(_codex_cfg, "CODEX_OAUTH_DRIVER", "protocol") or "protocol").strip().lower()
-        if oauth_driver == "same_as_registration":
-            oauth_driver = str(getattr(_roxy_cfg, "REGISTRATION_DRIVER", "protocol") or "protocol").strip().lower()
+        from core.workflow_driver import require_driver_ready
+        oauth_driver = require_driver_ready()
+        logger.info("[统一流程] operation=codex driver=%s", oauth_driver)
         if oauth_driver in ("roxy", "roxybrowser", "fingerprint", "browser"):
             from core.roxy_codex_oauth import run_roxy_codex_oauth
             return run_roxy_codex_oauth(email, otp_provider=otp_provider, proxy=proxy, force=True)
@@ -1738,9 +1738,8 @@ def run_codex_oauth(
                         pass
         if oauth_driver not in ("protocol", "api", "http"):
             raise RuntimeError(f"[Codex] 不支持的 CODEX_OAUTH_DRIVER={oauth_driver!r}，可选 protocol / roxy / cloak / browser_use / skyvern")
-    except ImportError:
-        # 没装 selenium / 未提供 roxy 配置时继续走协议模式，保持旧行为。
-        pass
+    except ImportError as exc:
+        raise RuntimeError("所选统一驱动缺少浏览器依赖，请先安装；不会回退协议模式") from exc
 
     if otp_provider is None:
         from core.email_provider import wait_for_otp as otp_provider

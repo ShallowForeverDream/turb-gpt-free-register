@@ -416,7 +416,7 @@ REMAIL_SUPPLY_POLICY=public_only
 
 编辑 `config/roxybrowser.py`，或直接在 WebUI「配置」页修改。
 
-#### 使用 RoxyBrowser 注册
+#### 统一使用 RoxyBrowser
 
 ```python
 REGISTRATION_DRIVER = "roxy"  # 可选 protocol / roxy / cloak
@@ -428,6 +428,8 @@ ROXY_ONE_PROFILE_PER_ACCOUNT = True
 ROXY_DELETE_PROFILE_AFTER_RUN = True
 ROXY_CREATE_USE_PROXY_POOL = True
 ```
+
+`REGISTRATION_DRIVER` 现在是所有账号操作共用的驱动：注册、查活、2FA、换绑、Codex、套餐查询和 Codex Agent Token 都读取同一个设置。浏览器驱动未配置好时，任务会在入队前停止，不会回退到 `protocol`。
 
 如要无头：
 

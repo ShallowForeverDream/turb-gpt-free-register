@@ -2,6 +2,7 @@
 """账号 2FA/TOTP 后台设置队列。"""
 from __future__ import annotations
 
+from core.workflow_driver import unified_workflow
 import logging
 import threading
 from datetime import datetime
@@ -58,6 +59,12 @@ def _normalize_proxy(proxy: str | None) -> str | None:
 
 def _resolve_twofa_proxy(proxy: str | None):
     """按 TWOFA_PROXY_MODE 解析传输代理。"""
+    from core.workflow_driver import resolve_driver
+    if resolve_driver() != "protocol":
+        from core.chatgpt_plan import resolve_plan_check_route, open_plan_check_proxy
+        route = resolve_plan_check_route()
+        transport, relay = open_plan_check_proxy(route, route["proxy"], timeout=30)
+        return transport, relay, "unified"
     mode = str(getattr(_twofa_cfg, "TWOFA_PROXY_MODE", "saved") or "saved").strip().lower()
     if mode not in {"saved", "pool"}:
         raise ValueError(f"TWOFA_PROXY_MODE={mode!r} 无效，可选 saved / pool")
@@ -90,6 +97,7 @@ def _append_log(email: str, line: str, *, clear: bool = False) -> None:
         f.write(f"{stamp} [INFO] {line}\n")
 
 
+@unified_workflow("twofa")
 def _run_twofa(
     *, account_id: int, email: str, access_token: str, proxy: str | None,
     trigger: str,
@@ -115,7 +123,8 @@ def _run_twofa(
         logger.info("[2FA] 开始后台设置：email=%s trigger=%s", email, trigger)
         real_proxy, relay, proxy_source = _resolve_twofa_proxy(proxy)
         identity = email.strip().lower()
-        session = BrowserSession(proxy=real_proxy, fingerprint_seed=f"account:{identity}")
+        from core.workflow_driver import create_account_session
+        session = create_account_session(proxy=real_proxy, protocol_factory=BrowserSession, fingerprint_seed=f"account:{identity}")
         target_label = mask_proxy_url(getattr(session, "proxy_target", None) or session.proxy or "direct") or "direct"
         transport_label = mask_proxy_url(session.proxy or "direct") or "direct"
         _append_log(
@@ -124,7 +133,12 @@ def _run_twofa(
             f"source={proxy_source} device_id={session.device_id}",
         )
         _append_log(email, f"[2FA] 指纹摘要：{session.fingerprint_summary_text()}")
-        secret = setup_2fa(session, email, access_token=access_token)
+        logger.info("[统一流程] operation=twofa driver=%s", getattr(session, "kind", "protocol"))
+        if getattr(session, "is_browser_workflow", False) is True:
+            source = (db.get_account(account_id) or {}).get("email_source")
+            secret = session.setup_twofa(email, email_source=source)
+        else:
+            secret = setup_2fa(session, email, access_token=access_token)
         db.update_account_totp_secret(
             account_id,
             {"ok": True, "status": "success", "totp_secret": secret, "message": "2FA 设置完成"},
@@ -184,6 +198,11 @@ def enqueue_account_totp_setup(
     trigger: str = "manual",
     proxy: str | None = None,
 ) -> dict:
+    from core.workflow_driver import require_driver_ready
+    try:
+        require_driver_ready()
+    except (ValueError, RuntimeError) as exc:
+        return {"accepted": False, "busy": False, "error": str(exc), "stage": "driver_configuration"}
     account_id = int(account_id)
     email = str(email or "").strip()
     access_token = str(access_token or "").strip()
@@ -201,8 +220,9 @@ def enqueue_account_totp_setup(
 
     _append_log(email, f"[2FA] 已入队 account_id={account_id} trigger={trigger}", clear=True)
     try:
+        from contextvars import copy_context
         future = _EXECUTOR.submit(
-            _run_twofa,
+            copy_context().run, _run_twofa,
             account_id=account_id,
             email=email,
             access_token=access_token,

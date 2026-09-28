@@ -2,6 +2,7 @@
 """Codex Agent Identity 生成后台队列。"""
 from __future__ import annotations
 
+from core.workflow_driver import unified_workflow
 import logging
 import random
 import threading
@@ -108,6 +109,7 @@ def _safe_email_filename(email: str) -> str:
     return "".join(ch if ch.isalnum() or ch in ("@", ".", "-", "_") else "_" for ch in (email or "account"))
 
 
+@unified_workflow("codex_agent")
 def _run_generate(*, account_id: int, email: str, access_token: str, trigger: str, verify_task: bool) -> dict:
     env = None
     relay = None
@@ -136,8 +138,9 @@ def _run_generate(*, account_id: int, email: str, access_token: str, trigger: st
                 effective_proxy, relay = open_plan_check_proxy(
                     route, route["proxy"], timeout=timeout_seconds,
                 )
-                env = BrowserSession(
-                    proxy=effective_proxy,
+                from core.workflow_driver import create_account_session
+                env = create_account_session(
+                    proxy=effective_proxy, protocol_factory=BrowserSession,
                     detect_exit_geo=False,
                     fingerprint_seed=f"account:{email.lower()}:attempt:{attempt}",
                 )
@@ -170,7 +173,8 @@ def _run_generate(*, account_id: int, email: str, access_token: str, trigger: st
                 if relay is not None:
                     relay.close()
                     relay = None
-                if attempt >= attempts or not _retryable_agent_error(exc):
+                from core.workflow_driver import resolve_driver
+                if resolve_driver() != "protocol" or attempt >= attempts or not _retryable_agent_error(exc):
                     raise
                 wait_seconds = min(30.0, retry_delay * attempt)
                 logger.warning(
@@ -304,6 +308,11 @@ def _run_generate(*, account_id: int, email: str, access_token: str, trigger: st
 
 
 def enqueue_account_codex_agent(*, account_id: int, email: str, access_token: str, trigger: str = "manual", verify_task: bool = True) -> dict:
+    from core.workflow_driver import require_driver_ready
+    try:
+        require_driver_ready()
+    except (ValueError, RuntimeError) as exc:
+        return {"accepted": False, "busy": False, "error": str(exc), "stage": "driver_configuration"}
     if not _QUEUE_SLOTS.acquire(blocking=False):
         return {"accepted": False, "busy": False, "error": "Codex Agent 队列已满"}
     try:

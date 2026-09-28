@@ -346,6 +346,32 @@ def create_app(auth_code: str | None = None, *, local_no_auth: bool = False) -> 
     if recovered_email_changes:
         logger.warning("已恢复 %s 个因 WebUI 重启中断的邮箱换绑状态", recovered_email_changes)
 
+    @app.get("/api/workflow-driver")
+    def api_workflow_driver():
+        from core.workflow_driver import driver_status
+        try:
+            return jsonify({"ok": True, **driver_status()})
+        except ValueError as exc:
+            return jsonify({"ok": False, "ready": False, "error": str(exc)}), 400
+
+    @app.before_request
+    def check_workflow_configuration():
+        # 入队前检查，避免缺失浏览器配置时先占用邮箱/任务。
+        import re
+        paths = (
+            r"/api/jobs", r"/api/jobs/[^/]+/retry", r"/api/jobs/retry-bulk",
+            r"/api/accounts/check-live-bulk", r"/api/accounts/(?:[0-9]+/)?totp-setup(?:-bulk)?",
+            r"/api/accounts/(?:[0-9]+/)?change-email(?:-bulk)?",
+            r"/api/accounts/check-plan(?:-bulk)?", r"/api/accounts/codex-agent(?:-bulk)?",
+            r"/api/codex/retry(?:-bulk)?",
+        )
+        if request.method == "POST" and any(re.fullmatch(p, request.path) for p in paths):
+            from core.workflow_driver import require_driver_ready
+            try:
+                require_driver_ready()
+            except (ValueError, RuntimeError) as exc:
+                return jsonify({"ok": False, "error": str(exc), "stage": "driver_configuration"}), 409
+
     # ----------------------------------------------------------
     # 页面
     # ----------------------------------------------------------

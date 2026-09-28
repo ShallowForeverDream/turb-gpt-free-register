@@ -125,6 +125,11 @@ def _run_live_check(*, account_id: int, email: str, proxy: str | None, trigger: 
 
 
 def enqueue_account_live_check(*, account_id: int, email: str, trigger: str = "manual", proxy: str | None = None) -> dict:
+    from core.workflow_driver import require_driver_ready
+    try:
+        require_driver_ready()
+    except (ValueError, RuntimeError) as exc:
+        return {"accepted": False, "busy": False, "error": str(exc), "stage": "driver_configuration"}
     account_id = int(account_id)
     email = str(email or "").strip()
     if not email:
@@ -137,8 +142,9 @@ def enqueue_account_live_check(*, account_id: int, email: str, trigger: str = "m
 
     _append_log(email, f"[查活] 已入队 account_id={account_id} trigger={trigger}", clear=True)
     try:
+        from contextvars import copy_context
         _EXECUTOR.submit(
-            _run_live_check,
+            copy_context().run, _run_live_check,
             account_id=account_id,
             email=email,
             proxy=proxy,

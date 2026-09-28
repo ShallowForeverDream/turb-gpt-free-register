@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 """已注册账号查活：优先复用已有 AT 预热后走 reauth OTP，成功刷新 AT 即视为正常。"""
+from core.workflow_driver import unified_workflow
 import logging
 import json
 import re
@@ -11,6 +12,7 @@ from pathlib import Path
 from urllib.parse import urljoin, urlsplit
 
 from core import db
+from core.browser_workflows import BrowserActionRequired
 from core.session import BrowserSession, close_browser_session
 from core.codex_oauth import _account_registration_password, _account_totp_secret, _account_totp_code, _decode_auth_session_metadata
 from core.humanize import delay as human_delay
@@ -751,6 +753,7 @@ def _validate_with_retry(
     raise last_exc if last_exc else RuntimeError("OTP 验证失败")
 
 
+@unified_workflow("live_check")
 def check_account_liveness(
     email: str,
     proxy: str | None = None,
@@ -802,6 +805,23 @@ def check_account_liveness(
 
         logger.info("[查活] 日志文件：%s", path)
         logger.info("[查活] 开始重新登录：%s", email)
+        from core.workflow_driver import require_driver_ready
+        driver_kind = require_driver_ready()
+        logger.info("[统一流程] operation=live_check driver=%s", driver_kind)
+        if driver_kind != "protocol":
+            from core.browser_workflows import BrowserAccountSession
+            try:
+                with BrowserAccountSession(driver_kind, proxy=proxy) as browser:
+                    info = browser.login(email, email_source=email_source)
+                    return {"ok": True, "status": "live", "checked_at": checked_at,
+                            "access_token": info["accessToken"], "session": info,
+                            "workspace_selected": getattr(browser, "_live_workspace_selected", None),
+                            "fingerprint": browser.fingerprint_summary(),
+                            "fingerprint_text": browser.fingerprint_summary_text(),
+                            "proxy_used": browser.proxy, "driver": driver_kind}
+            except BrowserActionRequired as exc:
+                return {"ok": False, "status": "action_required", "checked_at": checked_at,
+                        "stage": "browser_login", "error": str(exc), "driver": driver_kind}
         existing_access_token = _stored_access_token(email)
         has_totp = bool(_account_totp_secret(email))
         if existing_access_token and not has_totp:
@@ -879,6 +899,10 @@ def check_account_liveness(
             "fingerprint": fp,
             "fingerprint_text": _safe_fingerprint_text_for_account(session),
         }
+    except BrowserActionRequired as exc:
+        logger.info("[查活] 浏览器需要用户操作：%s", exc)
+        return {"ok": False, "status": "action_required", "checked_at": checked_at,
+                "stage": "browser_login", "error_code": "browser_action_required", "error": str(exc)}
     except WorkspaceSelectionRequiredError as exc:
         logger.info("[查活] 需要完成网页登录：%s", exc)
         return {"ok": False, "status": "action_required", "checked_at": checked_at,

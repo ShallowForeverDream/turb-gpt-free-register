@@ -1575,9 +1575,13 @@ def _run_browser_use_codex_oauth_once(email: str, otp_provider=None, proxy: str 
                     message=str(msg),
                 )
 
-            token_payload = proto._exchange_codex_token(code, code_verifier)
-            storage = proto._build_codex_storage(token_payload)
-            path = proto._save_codex_credential(email, storage)
+            from core.browser_workflows import BrowserAccountSession
+            from core.cloakbrowser_driver import CloakSeleniumDriver
+            session = BrowserAccountSession(provider, driver=CloakSeleniumDriver(browser, context, page))
+            token_payload = proto.exchange_codex_token(session, code, code_verifier)
+            claims = proto._parse_id_token(token_payload.get("id_token", ""))
+            storage = proto.build_codex_storage(token_payload, claims)
+            path = proto.save_codex_credential(storage, claims.get("email") or email, claims.get("plan_type", ""))
             _t_all.done("success")
             return proto._codex_result(status="success", ok=True, email=email, file_path=str(path), callback_url=callback_url)
     except AccountUnusableError as exc:
@@ -1643,7 +1647,9 @@ def _run_in_isolated_thread(fn, *args, **kwargs):
         except BaseException as exc:  # noqa: BLE001 - 需要跨线程回传
             error_box["error"] = exc
 
-    t = threading.Thread(target=_target, name=parent_thread_name, daemon=False)
+    from contextvars import copy_context
+    execution_context = copy_context()
+    t = threading.Thread(target=lambda: execution_context.run(_target), name=parent_thread_name, daemon=False)
     t.start()
     t.join()
     if "error" in error_box:

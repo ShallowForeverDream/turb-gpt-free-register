@@ -2303,7 +2303,7 @@ def run_roxy_registration(
     on_email_acquired: Callable[[str], None] | None = None,
 ) -> dict:
     """Roxy 指纹浏览器自动化注册入口。"""
-    client = RoxyBrowserClient()
+    client = RoxyBrowserClient(proxy=proxy)
     opened = client.open_profile()
     driver = None
     create_acknowledged = False
@@ -2516,7 +2516,7 @@ def run_roxy_registration(
             logger.debug("[Roxy注册] 深度省流量阶段跳过：%s", exc)
 
         if _twofa_cfg.ENABLE_2FA:
-            logger.warning("[Roxy注册] 当前 Roxy 自动化路径暂不执行 2FA 设置，已跳过")
+            logger.warning("[Roxy注册] 2FA 将在账号保存后使用统一浏览器驱动入队执行")
         totp_secret = None
 
         codex_result = {

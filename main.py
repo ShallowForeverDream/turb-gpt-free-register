@@ -5,6 +5,7 @@ ChatGPT 协议注册全流程入口
 """
 import sys
 import argparse
+from core.workflow_driver import unified_workflow
 import logging
 import time
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
@@ -165,6 +166,7 @@ def prepare_registration_inputs() -> tuple[str | None, str, str]:
     return email, name, birthday
 
 
+@unified_workflow("registration")
 def run_registration(
     email: str | None,
     name: str,
@@ -194,7 +196,9 @@ def run_registration(
     #   cloak        = CloakBrowser + Playwright/Selenium 适配层
     #   browser_use  = Browser Use Cloud stealth Chromium + Playwright
     #   skyvern      = Skyvern Browser Sessions + Playwright
-    driver_mode = str(getattr(_roxy_cfg, "REGISTRATION_DRIVER", "protocol") or "protocol").strip().lower()
+    from core.workflow_driver import require_driver_ready
+    driver_mode = require_driver_ready()
+    logger.info("[统一流程] operation=registration driver=%s", driver_mode)
     if driver_mode in ("roxy", "roxybrowser", "fingerprint", "browser"):
         from core.roxy_registration import run_roxy_registration
         return run_roxy_registration(

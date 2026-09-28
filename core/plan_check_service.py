@@ -148,6 +148,11 @@ def enqueue_account_plan_check(
     timezone_offset_min: str = "-",
 ) -> dict:
     """把查询放入统一线程池；重复查询或队列满时不提交。"""
+    from core.workflow_driver import require_driver_ready
+    try:
+        require_driver_ready()
+    except (ValueError, RuntimeError) as exc:
+        return {"accepted": False, "busy": False, "error": str(exc), "stage": "driver_configuration"}
     account_id = int(account_id)
     email = str(email or "").strip()
     access_token = str(access_token or "").strip()
@@ -161,8 +166,9 @@ def enqueue_account_plan_check(
         return {"accepted": False, "busy": True, "error": "该账号正在查询套餐"}
 
     try:
+        from contextvars import copy_context
         _EXECUTOR.submit(
-            _run_plan_check,
+            copy_context().run, _run_plan_check,
             account_id=account_id,
             email=email,
             access_token=access_token,

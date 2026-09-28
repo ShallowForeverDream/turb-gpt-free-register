@@ -637,7 +637,7 @@ def run_registration(
             ))
         )
         if preflight_blocked:
-            message = "登录入口被代理/Cloudflare 拒绝（HTTP 403/429），尚未发送邮箱验证码；请更换代理出口后再重试。"
+            message = "ChatGPT 登录页拒绝了当前自动化协议指纹（curl_cffi，HTTP 403/429）；代理端口可达且尚未发送邮箱验证码。浏览器可访问不代表 protocol 驱动可访问，请改用浏览器驱动后重试。"
             logger.warning("[注册] %s", message)
             return {
                 "success": False, "status": "blocked", "error_code": "login_preflight_blocked",

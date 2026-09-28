@@ -3,6 +3,11 @@
 ## 1. 打开本地页面
 
 在项目目录执行 `webui.cmd start`，浏览器访问 `http://127.0.0.1:5000/`。
+
+如果使用 RoxyBrowser 打开本地管理页，请在 Roxy 地址栏使用
+`http://localhost:5000/`；Roxy 的代理扩展可能会把数字回环地址
+`127.0.0.1` 错误地送入代理，导致 `ERR_ADDRESS_UNREACHABLE`。应用启动时会
+自动为 Roxy 加入回环地址绕过规则，Roxy 控制 API 也不会走系统代理。
 如果本机 `.env` 已设置 `WEBUI_LOCAL_NO_AUTH=True`，无需输入授权码。重启服务用 `webui.cmd restart`。
 
 只有本机回环地址可以免登录。开启免登录时不要把绑定地址改为 `0.0.0.0`。

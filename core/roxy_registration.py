@@ -31,6 +31,24 @@ def _enable_performance_logging(options) -> None:
         logger.debug("[Roxy] 当前 Selenium 选项不支持 performance log：%s", exc)
 
 
+def _ensure_local_webdriver_no_proxy() -> None:
+    """Keep Selenium/CDP control traffic on the local machine.
+
+    The desktop app may be launched with HTTP(S)_PROXY set for ChatGPT.  The
+    Selenium client then accidentally sends its localhost handshake through
+    that proxy and Roxy answers with ``Bad Gateway``.  Preserve any existing
+    bypass entries while adding the local endpoints used by Roxy.
+    """
+    import os
+
+    entries = {"127.0.0.1", "localhost", "::1"}
+    for key in ("NO_PROXY", "no_proxy"):
+        current = str(os.environ.get(key) or "")
+        values = [part.strip() for part in current.split(",") if part.strip()]
+        values.extend(item for item in entries if item not in values)
+        os.environ[key] = ",".join(values)
+
+
 def _log_prefix(driver=None) -> str:
     """按当前浏览器实现返回注册日志前缀。
 
@@ -49,6 +67,7 @@ def _log_prefix(driver=None) -> str:
 
 
 def _build_driver(opened: RoxyOpenResult):
+    _ensure_local_webdriver_no_proxy()
     from selenium import webdriver
     from selenium.webdriver.chrome.options import Options
     from selenium.webdriver.chrome.service import Service

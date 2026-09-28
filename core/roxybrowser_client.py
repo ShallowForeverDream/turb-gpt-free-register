@@ -559,6 +559,17 @@ class RoxyBrowserClient:
         params.setdefault("dirId", int(pid) if str(pid).isdigit() else pid)
         params.setdefault("args", [])
         params.setdefault("forceOpen", True)
+        # The account proxy must never receive local control-plane traffic.
+        # Without this Chromium sends 127.0.0.1:5000 through the configured
+        # SOCKS/HTTP proxy and Roxy reports ERR_ADDRESS_UNREACHABLE, so the
+        # WebUI cannot be opened inside the fingerprint browser.
+        args = list(params.get("args") or [])
+        # Roxy's JSON-to-command-line conversion turns semicolons into spaces;
+        # commas survive intact and Chrome accepts them as bypass separators.
+        loopback_bypass = "--proxy-bypass-list=<-loopback>,localhost,127.0.0.1,[::1]"
+        if not any(str(arg).startswith("--proxy-bypass-list=") for arg in args):
+            args.append(loopback_bypass)
+        params["args"] = args
         _apply_data_saver_open_args(params)
         # ROXY_OPEN_HEADLESS 是显式开关，优先级应高于 ROXY_OPEN_EXTRA_PARAMS，
         # 否则 extra 里残留 headless=False 会导致 WebUI 保存无头后仍弹窗口。

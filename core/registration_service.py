@@ -612,13 +612,20 @@ def retry_job(job_id: int, workers: int | None = None) -> dict:
         reserved_codex = True
 
     try:
-        job, created = db.create_retry_job(
-            int(job_id),
-            job_type="codex_retry" if action == "codex" else "registration",
-            email_source=str(source.get("email_source") or "outlook"),
-            email=email if action == "codex" else str(source.get("email") or "").strip() or None,
-            account_id=account_id if action == "codex" else None,
-        )
+        if action == "registration":
+            # Keep the original failed row so the UI changes in place from
+            # failed -> pending -> running instead of creating a confusing
+            # second record.
+            job = db.reset_job_for_retry(int(job_id))
+            created = True
+        else:
+            job, created = db.create_retry_job(
+                int(job_id),
+                job_type="codex_retry",
+                email_source=str(source.get("email_source") or "outlook"),
+                email=email,
+                account_id=account_id,
+            )
     except LookupError as exc:
         if reserved_codex:
             codex_retry_service.release(email)

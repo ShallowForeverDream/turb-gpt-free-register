@@ -1843,6 +1843,30 @@ def update_account_group(acc_id: int, group: str) -> bool:
         return True
 
 
+def cancel_account_queued_task(acc_id: int, task: str) -> bool:
+    """Cancel a queued account task before its worker starts."""
+    fields = {
+        "live": ("live_check_status", "live_check_error", "查活已取消排队"),
+        "plan": ("plan_check_status", "plan_check_error", "套餐查询已取消排队"),
+        "totp": ("totp_setup_status", "totp_setup_error", "2FA 已取消排队"),
+        "email_change": ("email_change_status", "email_change_error", "换绑已取消排队"),
+        "codex_agent": ("codex_agent_status", "codex_agent_message", "Codex Agent 已取消排队"),
+    }
+    if task not in fields:
+        return False
+    status_key, error_key, message = fields[task]
+    with _LOCK:
+        rows = _load_accounts()
+        row = next((r for r in rows if int(r.get("id") or 0) == int(acc_id)), None)
+        if row is None or str(row.get(status_key) or "") != "queued":
+            return False
+        row[status_key] = "stopped" if task in {"live", "totp", "codex_agent"} else "failed"
+        row[error_key] = message
+        row["updated_at"] = _now()
+        _save_accounts(rows)
+        return True
+
+
 def update_accounts_group(account_ids: list[int], group: str) -> tuple[list[dict], list[dict]]:
     with _LOCK:
         accounts = _load_accounts()
@@ -3489,6 +3513,27 @@ def create_retry_job(
         rows.append(row)
         _save_jobs(rows)
         return dict(row), True
+
+
+def reset_job_for_retry(job_id: int) -> dict:
+    """把失败注册任务原地重置为 pending，保留原记录 ID/行。"""
+    with _LOCK:
+        rows = _load_jobs()
+        row = next((r for r in rows if int(r.get("id") or 0) == int(job_id)), None)
+        if row is None:
+            raise LookupError("任务不存在")
+        if row.get("status") not in {"failed", "blocked", "stopped", "cancelled"}:
+            raise ValueError(f"当前状态不支持重试：{row.get('status')}")
+        row["status"] = "pending"
+        row["error_message"] = None
+        row["started_at"] = None
+        row["completed_at"] = None
+        row["network_traffic"] = None
+        row["retry_attempt"] = int(row.get("retry_attempt") or 0) + 1
+        row["retry_action"] = "registration"
+        row["updated_at"] = _now()
+        _save_jobs(rows)
+        return dict(row)
 
 
 def update_job(

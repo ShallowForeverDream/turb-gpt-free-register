@@ -946,6 +946,26 @@ def create_app(auth_code: str | None = None, *, local_no_auth: bool = False) -> 
         skipped.extend(db_skipped)
         return jsonify({"ok": True, "updated": updated, "updated_count": len(updated), "skipped": skipped, "skipped_count": len(skipped)})
 
+    @app.post("/api/accounts/cancel-queued-bulk")
+    def api_accounts_cancel_queued_bulk():
+        data = request.get_json(silent=True) or {}
+        ids = data.get("account_ids") or data.get("ids") or []
+        task = str(data.get("task") or "").strip().lower()
+        if task not in {"live", "plan", "totp", "email_change", "codex_agent"}:
+            return jsonify({"ok": False, "error": "task 非法"}), 400
+        if not isinstance(ids, list) or not ids:
+            return jsonify({"ok": False, "error": "account_ids 必须是非空数组"}), 400
+        updated, skipped, seen = [], [], set()
+        for raw in ids:
+            try: acc_id = int(raw)
+            except (TypeError, ValueError):
+                skipped.append({"id": raw, "reason": "ID 非法"}); continue
+            if acc_id in seen: continue
+            seen.add(acc_id)
+            if db.cancel_account_queued_task(acc_id, task): updated.append(acc_id)
+            else: skipped.append({"id": acc_id, "reason": "不是排队状态或账号不存在"})
+        return jsonify({"ok": True, "task": task, "cancelled": updated, "cancelled_count": len(updated), "skipped": skipped})
+
     @app.post("/api/accounts/check-live-bulk")
     def api_accounts_check_live_bulk():
         """批量查活：加入后台队列；协议 BrowserSession 指纹环境重新登录并刷新最新 AT。"""

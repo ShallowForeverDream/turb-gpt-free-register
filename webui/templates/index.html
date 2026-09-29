@@ -3517,7 +3517,8 @@ function _totpCellV2(r) {
   }
   if (['queued', 'running'].includes(status)) {
     const label = status === 'queued' ? '排队中' : '开启中';
-    return `<div class="agent-token-cell"><span class="pill status-running"${titleAttr}>${label}</span></div>`;
+    const cancel = status === 'queued' ? `<button class="acc-v2-twofa-btn" data-account-cancel-queued="totp" data-account-id="${esc(r.id)}">取消排队</button>` : '';
+    return `<div class="agent-token-cell"><span class="pill status-running"${titleAttr}>${label}</span>${cancel}</div>`;
   }
   const btnTitle = titleText ? ` title="${esc(titleText)}"` : ` title="为该账号开启 2FA，并把 TOTP 密钥写回账号信息"`;
   const btn = r.has_access_token
@@ -3530,7 +3531,7 @@ function _codexAgentCell(r) {
   const err = r.codex_agent_error || '';
   const msg = r.codex_agent_message || '';
   const title = esc(msg || r.codex_agent_runtime_id || '');
-  if (s === 'queued') return `<div class="agent-token-cell"><span class="pill status-running" title="${title}">排队中</span></div>`;
+  if (s === 'queued') return `<div class="agent-token-cell"><span class="pill status-running" title="${title}">排队中</span><button class="acc-v2-twofa-btn" data-account-cancel-queued="codex_agent" data-account-id="${esc(r.id)}">取消排队</button></div>`;
   if (s === 'running') return `<div class="agent-token-cell"><span class="pill status-running" title="${title}">生成中</span></div>`;
   if (s === 'success') {
     const rid = r.codex_agent_runtime_id ? short(r.codex_agent_runtime_id, 10) : '已生成';
@@ -3590,7 +3591,7 @@ function _planCell(r) {
     const label = automatic ? (queued ? '自动查询排队中' : '自动查询中') : (queued ? '查询排队中' : '查询中');
     const stamp = queued ? r.plan_check_queued_at : r.plan_check_started_at;
     const detail = stamp ? `${queued ? '入队' : '开始'}: ${esc(stamp)}` : '';
-    return `<span class="pill status-running" title="${detail}">${label}</span>`;
+    return `<span class="pill status-running" title="${detail}">${label}</span><button class="acc-v2-twofa-btn" data-account-cancel-queued="plan" data-account-id="${esc(r.id)}">取消排队</button>`;
   }
   if (err || r.plan_check_status === 'failed') {
     const reason = err || '套餐查询失败，未返回具体原因';
@@ -3704,7 +3705,7 @@ function _tokenCellV2(r) {
   let liveHtml = '';
   const liveFp = r.live_check_fingerprint_text || '';
   if (live === 'live') liveHtml = `<div class="acc-v2-sub" title="${esc([liveAt, liveFp].filter(Boolean).join('\n'))}">查活: 正常${liveFp ? ` · ${esc(liveFp)}` : ''}</div>`;
-  else if (live === 'queued') liveHtml = `<div class="acc-v2-sub" title="${esc(liveAt)}" style="color:#e6a23c">查活: 排队</div>`;
+  else if (live === 'queued') liveHtml = `<div class="acc-v2-sub" title="${esc(liveAt)}" style="color:#e6a23c">查活: 排队 <button class="acc-v2-twofa-btn" data-account-cancel-queued="live" data-account-id="${esc(r.id)}">取消</button></div>`;
   else if (live === 'running') liveHtml = `<div class="acc-v2-sub" title="${esc(liveAt)}" style="color:#e6a23c">查活: 运行中</div>`;
   else if (live === 'deactivated') liveHtml = `<div class="acc-v2-sub" title="${esc(liveErr || liveAt)}" style="color:#f56c6c">查活: 已废</div>`;
   else if (liveCheckNeedsManualLogin(r)) liveHtml = `<div class="acc-v2-sub" title="${esc(liveErr || liveAt)}" style="color:#b45309;white-space:normal;">${esc(liveCheckBlockedText(r))}</div>`;
@@ -3769,7 +3770,7 @@ function renderAccounts() {
         ${r.account_group ? `<div class="acc-v2-email-status" title="账号分组">分组：${esc(r.account_group)}</div>` : ''}
         ${r.original_email ? `<div class="acc-v2-email-history">原邮箱: ${esc(r.original_email)}</div>` : ''}
         <div class="acc-v2-email-user">${esc(r.user_name || '-')}</div>
-        ${['queued','running'].includes(r.email_change_status) ? '<div class="acc-v2-email-status">换绑中</div>' : (r.email_change_status === 'failed' ? `<div class="acc-v2-email-status" title="${esc(r.email_change_error || '')}">换绑失败: ${esc(r.email_change_error || '-')}</div>` : '')}
+        ${r.email_change_status === 'queued' ? `<div class="acc-v2-email-status">换绑排队 <button class="acc-v2-twofa-btn" data-account-cancel-queued="email_change" data-account-id="${esc(r.id)}">取消</button></div>` : (r.email_change_status === 'running' ? '<div class="acc-v2-email-status">换绑中</div>' : (r.email_change_status === 'failed' ? `<div class="acc-v2-email-status" title="${esc(r.email_change_error || '')}">换绑失败: ${esc(r.email_change_error || '-')}</div>` : ''))}
       </td>
       <td class="col-source">${esc(r.email_source || '-')}</td>
       <td class="col-token">${_tokenCellV2(r)}</td>
@@ -4015,6 +4016,18 @@ $('#btnCloseEmailChangeLog').addEventListener('click', closeEmailChangeLog);
 
 // 账号操作按钮（事件委托）
 async function onAccountsBodyClick(e) {
+  const cancelQueued = e.target.closest('[data-account-cancel-queued]');
+  if (cancelQueued) {
+    const id = Number(cancelQueued.dataset.accountId);
+    const task = cancelQueued.dataset.accountCancelQueued;
+    cancelQueued.disabled = true;
+    try {
+      const r = await api('/api/accounts/cancel-queued-bulk', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({account_ids:[id], task})});
+      showToast(r.cancelled_count ? '已取消排队' : (r.skipped?.[0]?.reason || '取消失败'));
+      loadAccounts();
+    } catch(err) { showToast('取消排队失败: ' + err.message); cancelQueued.disabled = false; }
+    return;
+  }
   const moreToggle = e.target.closest('[data-acc-more-toggle]');
   if (moreToggle) {
     e.preventDefault();

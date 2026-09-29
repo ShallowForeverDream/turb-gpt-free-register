@@ -914,6 +914,7 @@ def _decorate_imap_email(row: dict, account_by_email: dict[str, dict] | None = N
 def list_email_pool_page(
     source: str = "all",
     status: str | None = None,
+    registration_status: str | None = None,
     q: str | None = None,
     limit: int = 50,
     offset: int = 0,
@@ -937,7 +938,18 @@ def list_email_pool_page(
     if db_source is not None:
         where.append("ep.source=?")
         params.append(db_source)
-    if status:
+    reg_status = str(registration_status or "").strip().lower()
+    if reg_status in {"registered", "unregistered", "disabled"}:
+        account_exists = "EXISTS (SELECT 1 FROM accounts AS a WHERE lower(json_extract(a.payload, '$.email')) = lower(ep.email))"
+        override = "lower(COALESCE(json_extract(ep.payload, '$.registration_status'), ''))"
+        raw = "lower(COALESCE(ep.status, ''))"
+        if reg_status == "registered":
+            where.append(f"({account_exists} OR {override} = 'registered')")
+        elif reg_status == "disabled":
+            where.append(f"(NOT {account_exists} AND ({override} = 'disabled' OR ({override} = '' AND {raw} = 'disabled')))" )
+        else:
+            where.append(f"(NOT {account_exists} AND {override} NOT IN ('registered','disabled') AND {raw} <> 'disabled')")
+    elif status:
         where.append("ep.status=?")
         params.append(status)
     if q and str(q).strip():

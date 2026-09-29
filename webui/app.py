@@ -1751,6 +1751,7 @@ def create_app(auth_code: str | None = None, *, local_no_auth: bool = False) -> 
     @app.get("/api/outlook")
     def api_outlook():
         status = request.args.get("status") or None
+        registration_status = request.args.get("registration_status") or (status if status in {"registered", "unregistered", "disabled"} else None)
         limit = request.args.get("limit", default=500, type=int)
         source = _pool_source_arg()
         q = str(request.args.get("q", default="") or "").strip()
@@ -1762,13 +1763,13 @@ def create_app(auth_code: str | None = None, *, local_no_auth: bool = False) -> 
             page_size = max(1, min(500, int(page_size_arg or limit or 50)))
             offset = (page - 1) * page_size
             result = db.list_email_pool_page(
-                source=source, status=status, q=q, limit=page_size, offset=offset
+                source=source, status=status, registration_status=registration_status, q=q, limit=page_size, offset=offset
             )
             result.update({"ok": True, "page": page, "page_size": page_size})
             return jsonify(result)
         # 兼容旧接口仍返回数组，但查询本身也只从 SQLite 读取 limit 条。
         result = db.list_email_pool_page(
-            source=source, status=status, q=q, limit=max(1, int(limit or 1)), offset=0
+            source=source, status=status, registration_status=registration_status, q=q, limit=max(1, int(limit or 1)), offset=0
         )
         return jsonify(result["items"])
 

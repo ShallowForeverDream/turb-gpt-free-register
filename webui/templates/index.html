@@ -2162,6 +2162,9 @@
         <button type="button" class="jobs-tb-btn jobs-tb-btn--retry" id="btnRetrySelectedJobsV2" disabled title="重试选中的失败、已停止或已取消任务">重试选中</button>
         <button type="button" class="jobs-tb-btn jobs-tb-btn--danger" id="btnDeleteSelectedJobsV2" disabled title="删除选中的非运行中任务，并同时删除对应日志">删除选中</button>
         <button type="button" class="jobs-tb-btn" id="btnCancelPendingV2" title="把所有排队任务标记为已取消">取消全部排队</button>
+        <button type="button" class="jobs-tb-btn" id="btnPauseRegistrationV2" title="暂停注册任务；当前网络请求返回后在检查点暂停">暂停注册</button>
+        <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnResumeRegistrationV2" title="继续已暂停的注册任务">继续注册</button>
+        <span class="acc-v2-selected" id="registrationPauseStatusV2">注册运行中</span>
         <button type="button" class="jobs-tb-btn" id="btnRefreshJobsV2" title="手动刷新任务列表">刷新</button>
         <label class="jobs-tb-field">注册数量
           <span class="el-input-number">
@@ -2223,6 +2226,9 @@
         <div class="acc-v2-btn-group acc-v2-search-wrap">
           <input id="qAccountsV2" type="search" placeholder="搜索邮箱、token、来源…" autocomplete="off">
         </div>
+        <label class="acc-v2-inline" title="按邮箱后缀筛选，例如 icloud.com 或 @gmail.com">
+          <input id="emailSuffixAccountsV2" type="search" placeholder="邮箱后缀" autocomplete="off" style="width:130px;">
+        </label>
 
         <div class="acc-v2-btn-group">
           <span class="acc-v2-selected" id="accountsSelectedHintV2">已选 0</span>
@@ -2462,6 +2468,15 @@
         <div class="acc-v2-btn-group acc-v2-search-wrap">
           <input id="qOutlookV2" type="search" placeholder="搜索邮箱、状态…" autocomplete="off">
         </div>
+        <label class="acc-v2-inline" title="按邮箱池状态筛选">
+          <select id="poolStatusV2">
+            <option value="">全部状态</option>
+            <option value="available">可用</option>
+            <option value="used">已用</option>
+            <option value="failed">失败</option>
+            <option value="disabled">已停用</option>
+          </select>
+        </label>
         <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnMarkSelectedOutlookAvailableV2" disabled title="把选中的邮箱批量标记为未使用/可用">标记未使用</button>
         <button type="button" class="jobs-tb-btn" id="btnDisableSelectedOutlookV2" disabled title="批量停用选中的邮箱；停用后不会被注册任务领取">停用选中</button>
         <button type="button" class="jobs-tb-btn" id="btnFailSelectedOutlookV2" disabled title="批量标记选中的邮箱为失败">标失败</button>
@@ -3024,6 +3039,10 @@ function bindJobsBodyEvents(bodyEl) {
   if (retryV2) retryV2.addEventListener('click', retrySelectedJobs);
   const cancelV2 = $('#btnCancelPendingV2');
   if (cancelV2) cancelV2.addEventListener('click', () => cancelAllPendingJobs(cancelV2));
+  const pauseV2 = $('#btnPauseRegistrationV2');
+  if (pauseV2) pauseV2.addEventListener('click', () => setRegistrationPaused(true, pauseV2));
+  const resumeV2 = $('#btnResumeRegistrationV2');
+  if (resumeV2) resumeV2.addEventListener('click', () => setRegistrationPaused(false, resumeV2));
   const refreshV2 = $('#btnRefreshJobsV2');
   if (refreshV2) refreshV2.addEventListener('click', refreshJobs);
 
@@ -3046,6 +3065,7 @@ function bindJobsBodyEvents(bodyEl) {
   const selectAllV2 = $('#jobsSelectAllV2');
   if (selectAllV2) selectAllV2.addEventListener('change', (e) => syncJobsSelectAll(e.target.checked));
   bindJobsBodyEvents($('#jobsBodyV2'));
+  refreshRegistrationPauseStatus();
 })();
 
 function renderJobs() {
@@ -3108,6 +3128,7 @@ function updateJobsSelectionUi(pageRows = null) {
 
 async function refreshJobs() {
   try {
+    refreshRegistrationPauseStatus();
     const p = PAGERS.jobs;
     const res = await api(`/api/jobs?paged=1&page=${encodeURIComponent(p.page)}&page_size=${encodeURIComponent(p.size)}`);
     const nextJobs = res.items || [];
@@ -3123,6 +3144,32 @@ async function refreshJobs() {
     }
     loadSummary();
   } catch(e) {}
+}
+
+async function refreshRegistrationPauseStatus() {
+  try {
+    const r = await api('/api/jobs/pause-status');
+    const paused = !!r.paused;
+    const label = $('#registrationPauseStatusV2');
+    const pause = $('#btnPauseRegistrationV2');
+    const resume = $('#btnResumeRegistrationV2');
+    if (label) label.textContent = paused ? `注册已暂停（${r.active_jobs || 0} 个任务）` : '注册运行中';
+    if (pause) pause.disabled = paused;
+    if (resume) resume.disabled = !paused;
+  } catch(e) {}
+}
+
+async function setRegistrationPaused(paused, btn) {
+  if (btn) btn.disabled = true;
+  try {
+    const path = paused ? '/api/jobs/pause' : '/api/jobs/resume';
+    const r = await api(path, {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'});
+    showToast(r.message || (paused ? '注册已暂停' : '注册已继续'));
+    refreshRegistrationPauseStatus();
+  } catch(e) {
+    showToast((paused ? '暂停' : '继续') + '注册失败：' + e.message);
+    refreshRegistrationPauseStatus();
+  }
 }
 
 let modalScrollY = 0;
@@ -3321,6 +3368,10 @@ function getAccountsQuery() {
   const el = document.getElementById('qAccountsV2');
   return (el ? el.value : '').trim();
 }
+function getAccountsEmailSuffix() {
+  const el = document.getElementById('emailSuffixAccountsV2');
+  return (el ? el.value : '').trim();
+}
 function getAccountsCodexFilter() {
   const el = document.getElementById('codexStatusFilterV2');
   return (el ? el.value : '').trim();
@@ -3348,10 +3399,11 @@ async function loadAccounts() {
     const codex = getAccountsCodexFilter();
     const totp = getAccountsTotpFilter();
     const q = getAccountsQuery();
+    const suffix = getAccountsEmailSuffix();
     const dateFrom = document.getElementById('dateFromAccountsV2')?.value || '';
     const dateTo = document.getElementById('dateToAccountsV2')?.value || '';
     const p = PAGERS.accounts;
-    const res = await api(`/api/accounts?paged=1&page=${encodeURIComponent(p.page)}&page_size=${encodeURIComponent(p.size)}&archived=${encodeURIComponent(archived)}&plan=${encodeURIComponent(plan)}&codex_status=${encodeURIComponent(codex)}&totp_status=${encodeURIComponent(totp)}&q=${encodeURIComponent(q)}&date_from=${encodeURIComponent(dateFrom)}&date_to=${encodeURIComponent(dateTo)}`);
+    const res = await api(`/api/accounts?paged=1&page=${encodeURIComponent(p.page)}&page_size=${encodeURIComponent(p.size)}&archived=${encodeURIComponent(archived)}&plan=${encodeURIComponent(plan)}&codex_status=${encodeURIComponent(codex)}&totp_status=${encodeURIComponent(totp)}&q=${encodeURIComponent(q)}&email_suffix=${encodeURIComponent(suffix)}&date_from=${encodeURIComponent(dateFrom)}&date_to=${encodeURIComponent(dateTo)}`);
     ACCOUNTS = res.items || [];
     ACCOUNTS_TOTAL = Number(res.total || ACCOUNTS.length || 0);
     const totalPages = Math.max(1, Math.ceil(ACCOUNTS_TOTAL / p.size));
@@ -3369,10 +3421,11 @@ async function pollAccountPlanStatuses() {
     const codex = getAccountsCodexFilter();
     const totp = getAccountsTotpFilter();
     const q = getAccountsQuery();
+    const suffix = getAccountsEmailSuffix();
     const dateFrom = document.getElementById('dateFromAccountsV2')?.value || '';
     const dateTo = document.getElementById('dateToAccountsV2')?.value || '';
     const p = PAGERS.accounts;
-    const snapshot = await api(`/api/accounts/plan-check-status?page=${encodeURIComponent(p.page)}&page_size=${encodeURIComponent(p.size)}&archived=${encodeURIComponent(archived)}&plan=${encodeURIComponent(plan)}&codex_status=${encodeURIComponent(codex)}&totp_status=${encodeURIComponent(totp)}&q=${encodeURIComponent(q)}&date_from=${encodeURIComponent(dateFrom)}&date_to=${encodeURIComponent(dateTo)}`);
+    const snapshot = await api(`/api/accounts/plan-check-status?page=${encodeURIComponent(p.page)}&page_size=${encodeURIComponent(p.size)}&archived=${encodeURIComponent(archived)}&plan=${encodeURIComponent(plan)}&codex_status=${encodeURIComponent(codex)}&totp_status=${encodeURIComponent(totp)}&q=${encodeURIComponent(q)}&email_suffix=${encodeURIComponent(suffix)}&date_from=${encodeURIComponent(dateFrom)}&date_to=${encodeURIComponent(dateTo)}`);
     const items = snapshot.items || [];
     const accountById = new Map(ACCOUNTS.map(r => [Number(r.id), r]));
     const hasUnknown = items.some(item => !accountById.has(Number(item.id)));
@@ -4264,6 +4317,12 @@ async function refreshAccountsList(btn) {
 (function bindAccountsFilterV2() {
   const qV2 = $('#qAccountsV2');
   if (qV2) qV2.addEventListener('input', debounce(() => {
+    ACCOUNT_SELECTED.clear();
+    PAGERS.accounts.page = 1;
+    loadAccounts();
+  }, 250));
+  const suffixV2 = $('#emailSuffixAccountsV2');
+  if (suffixV2) suffixV2.addEventListener('input', debounce(() => {
     ACCOUNT_SELECTED.clear();
     PAGERS.accounts.page = 1;
     loadAccounts();
@@ -5282,6 +5341,10 @@ function getOutlookQuery() {
   const el = document.getElementById('qOutlookV2');
   return (el ? el.value : '').trim();
 }
+function getPoolStatus() {
+  const el = document.getElementById('poolStatusV2');
+  return (el ? el.value : '').trim();
+}
 function poolKey(r) { return `${r.source || getPoolSource() || 'all'}|${r.email || ''}`; }
 function poolLabel(src) {
   return ({outlook:'Outlook', generic_api:'通用API', imap:'通用IMAP', cloudflare_domain:'域名邮箱'})[src] || src || '-';
@@ -5290,8 +5353,9 @@ async function loadOutlook() {
   try {
     const source = getPoolSource();
     const q = getOutlookQuery();
+    const status = getPoolStatus();
     const p = PAGERS.outlook;
-    const res = await api(`/api/outlook?paged=1&page=${encodeURIComponent(p.page)}&page_size=${encodeURIComponent(p.size)}&source=${encodeURIComponent(source)}&q=${encodeURIComponent(q)}`);
+    const res = await api(`/api/outlook?paged=1&page=${encodeURIComponent(p.page)}&page_size=${encodeURIComponent(p.size)}&source=${encodeURIComponent(source)}&status=${encodeURIComponent(status)}&q=${encodeURIComponent(q)}`);
     OUTLOOK = res.items || [];
     OUTLOOK_TOTAL = Number(res.total || OUTLOOK.length || 0);
     const totalPages = Math.max(1, Math.ceil(OUTLOOK_TOTAL / p.size));
@@ -5463,6 +5527,12 @@ async function onOutlookBodyClick(e) {
   if (qV2) qV2.addEventListener('input', debounce(() => {
     PAGERS.outlook.page = 1; loadOutlook();
   }, 250));
+  const statusV2 = $('#poolStatusV2');
+  if (statusV2) statusV2.addEventListener('change', () => {
+    PAGERS.outlook.page = 1;
+    OUTLOOK_SELECTED.clear();
+    loadOutlook();
+  });
   const srcWrap = $('#poolSourceV2Wrap');
   const srcHidden = $('#poolSourceV2');
   if (srcWrap && srcHidden) {

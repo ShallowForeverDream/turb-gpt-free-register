@@ -409,6 +409,7 @@ def _query_collection(collection: str, *, status: str | None = None, archived: s
 def _query_collection_page(collection: str, *, status: str | None = None,
                            archived: str | bool | None = None, q: str | None = None,
                            date_from: str | None = None, date_to: str | None = None,
+                           email_suffix: str | None = None,
                            extra_where: list[str] | None = None,
                            extra_params: list[Any] | None = None,
                            limit: int = 50, offset: int = 0) -> tuple[list[dict], int, str]:
@@ -425,6 +426,11 @@ def _query_collection_page(collection: str, *, status: str | None = None,
         where.append("archived=?"); params.append(int(archived in (True, "1", "true", "yes", "only")))
     if q and str(q).strip():
         where.append("lower(payload) LIKE ?"); params.append("%" + str(q).strip().lower() + "%")
+    if email_suffix and table == "accounts":
+        suffix = str(email_suffix).strip().lower()
+        suffix = suffix if suffix.startswith("@") else "@" + suffix
+        where.append("lower(COALESCE(json_extract(payload, '$.email'), '')) LIKE ?")
+        params.append("%" + suffix)
     if date_from:
         value = str(date_from)
         where.append("created_at >= ?"); params.append(value + ("T00:00:00" if len(value) == 10 else ""))
@@ -1585,6 +1591,7 @@ def list_account_plan_check_statuses(
     date_from: str | None = None,
     date_to: str | None = None,
     totp_filter: str | None = None,
+    email_suffix: str | None = None,
 ) -> dict:
     """返回不含 Token/邮箱密码的套餐查询轻量状态快照。"""
     fields = (
@@ -1632,6 +1639,7 @@ def list_account_plan_check_statuses(
             date_to=date_to,
             extra_where=extra_where,
             extra_params=extra_params,
+            email_suffix=email_suffix,
             limit=limit,
             offset=offset,
         )
@@ -1709,6 +1717,7 @@ def list_accounts(
     date_from: str | None = None,
     date_to: str | None = None,
     totp_filter: str | None = None,
+    email_suffix: str | None = None,
 ) -> list[dict]:
     # 非分页兼容接口也走同一条 SQL 分页路径，避免 limit=500 时先读取整张表。
     result = list_accounts_page(
@@ -1721,6 +1730,7 @@ def list_accounts(
         date_from=date_from,
         date_to=date_to,
         totp_filter=totp_filter,
+        email_suffix=email_suffix,
     )
     return result["items"]
 
@@ -1735,6 +1745,7 @@ def list_accounts_page(
     date_from: str | None = None,
     date_to: str | None = None,
     totp_filter: str | None = None,
+    email_suffix: str | None = None,
 ) -> dict:
     with _LOCK:
         limit = max(1, int(limit))
@@ -1752,6 +1763,7 @@ def list_accounts_page(
             date_to=date_to,
             extra_where=extra_where,
             extra_params=extra_params,
+            email_suffix=email_suffix,
             limit=limit,
             offset=offset,
         )

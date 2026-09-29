@@ -652,7 +652,7 @@ def _login_via_password_or_otp(
     # password document is visited first.  Navigate to the real password
     # page before requesting Sentinel/password verification.
     current_path = str(getattr(session, "current_url", "") or "")
-    if "/log-in/password" not in current_path:
+    if "/log-in/password" not in current_path and callable(getattr(session, "get", None)):
         try:
             session.get(
                 "https://auth.openai.com/log-in/password",

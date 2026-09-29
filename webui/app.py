@@ -477,6 +477,7 @@ def create_app(auth_code: str | None = None, *, local_no_auth: bool = False) -> 
             or ""
         ).strip().lower()
         q = str(request.args.get("q", default="") or "").strip()
+        email_suffix = str(request.args.get("email_suffix") or request.args.get("suffix") or "").strip()
         date_from = str(request.args.get("date_from", default="") or "").strip() or None
         date_to = str(request.args.get("date_to", default="") or "").strip() or None
         # 新分页接口：传 page/page_size 或 paged=1 时返回 {items,total,page,page_size,...}
@@ -487,11 +488,11 @@ def create_app(auth_code: str | None = None, *, local_no_auth: bool = False) -> 
             page = max(1, int(page_arg or 1))
             page_size = max(1, min(500, int(page_size_arg or limit or 50)))
             offset = (page - 1) * page_size
-            result = db.list_accounts_page(limit=page_size, offset=offset, archived=archived, plan_filter=plan_filter, codex_filter=codex_filter, q=q, date_from=date_from, date_to=date_to, totp_filter=totp_filter)
+            result = db.list_accounts_page(limit=page_size, offset=offset, archived=archived, plan_filter=plan_filter, codex_filter=codex_filter, q=q, date_from=date_from, date_to=date_to, totp_filter=totp_filter, email_suffix=email_suffix)
             result["items"] = [_compact_account_for_list(r) for r in (result.get("items") or [])]
             result.update({"ok": True, "page": page, "page_size": page_size, "compact": True})
             return jsonify(result)
-        return jsonify(db.list_accounts(limit=limit, archived=archived, plan_filter=plan_filter, codex_filter=codex_filter, q=q, date_from=date_from, date_to=date_to, totp_filter=totp_filter))
+        return jsonify(db.list_accounts(limit=limit, archived=archived, plan_filter=plan_filter, codex_filter=codex_filter, q=q, date_from=date_from, date_to=date_to, totp_filter=totp_filter, email_suffix=email_suffix))
 
     @app.get("/api/accounts/plan-check-status")
     def api_account_plan_check_status():
@@ -507,6 +508,7 @@ def create_app(auth_code: str | None = None, *, local_no_auth: bool = False) -> 
             or ""
         ).strip().lower()
         q = str(request.args.get("q", default="") or "").strip()
+        email_suffix = str(request.args.get("email_suffix") or request.args.get("suffix") or "").strip()
         date_from = str(request.args.get("date_from", default="") or "").strip() or None
         date_to = str(request.args.get("date_to", default="") or "").strip() or None
         page_arg = request.args.get("page", default=None, type=int)
@@ -515,10 +517,10 @@ def create_app(auth_code: str | None = None, *, local_no_auth: bool = False) -> 
             page = max(1, int(page_arg or 1))
             page_size = max(1, min(500, int(page_size_arg or limit or 50)))
             offset = (page - 1) * page_size
-            snapshot = db.list_account_plan_check_statuses(limit=page_size, offset=offset, archived=archived, plan_filter=plan_filter, codex_filter=codex_filter, q=q, date_from=date_from, date_to=date_to, totp_filter=totp_filter)
+            snapshot = db.list_account_plan_check_statuses(limit=page_size, offset=offset, archived=archived, plan_filter=plan_filter, codex_filter=codex_filter, q=q, date_from=date_from, date_to=date_to, totp_filter=totp_filter, email_suffix=email_suffix)
             snapshot.update({"page": page, "page_size": page_size})
         else:
-            snapshot = db.list_account_plan_check_statuses(limit=max(1, min(5000, limit)), archived=archived, plan_filter=plan_filter, codex_filter=codex_filter, q=q, date_from=date_from, date_to=date_to, totp_filter=totp_filter)
+            snapshot = db.list_account_plan_check_statuses(limit=max(1, min(5000, limit)), archived=archived, plan_filter=plan_filter, codex_filter=codex_filter, q=q, date_from=date_from, date_to=date_to, totp_filter=totp_filter, email_suffix=email_suffix)
         snapshot["queue"] = plan_check_service.queue_settings()
         return jsonify(snapshot)
 
@@ -2867,6 +2869,18 @@ def create_app(auth_code: str | None = None, *, local_no_auth: bool = False) -> 
         """取消所有还在排队（status=pending）的任务。已在 running 的不动。"""
         cancelled = svc.cancel_pending_jobs()
         return jsonify({"ok": True, "cancelled": cancelled})
+
+    @app.get("/api/jobs/pause-status")
+    def api_jobs_pause_status():
+        return jsonify({"ok": True, **svc.registration_pause_status()})
+
+    @app.post("/api/jobs/pause")
+    def api_jobs_pause():
+        return jsonify({"ok": True, "message": "注册已暂停", **svc.pause_registration()})
+
+    @app.post("/api/jobs/resume")
+    def api_jobs_resume():
+        return jsonify({"ok": True, "message": "注册已继续", **svc.resume_registration()})
 
     @app.post("/api/jobs/<int:job_id>/stop")
     def api_job_stop(job_id: int):

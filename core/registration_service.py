@@ -34,6 +34,9 @@ _STOP_EVENTS: dict[int, threading.Event] = {}
 _ACTIVE_JOBS: set[int] = set()
 _STOP_LOCK = threading.Lock()
 _THREAD_CTX = threading.local()
+_PAUSE_GATE = threading.Event()
+_PAUSE_GATE.set()
+_PAUSE_LOCK = threading.Lock()
 
 
 class StopRequested(RuntimeError):
@@ -71,9 +74,37 @@ def is_stop_requested(job_id: int | None = None) -> bool:
 
 
 def check_stop_requested() -> None:
+    # Pause is cooperative: no new registration step starts while paused;
+    # the current HTTP/IMAP call is allowed to return before reaching here.
+    while not _PAUSE_GATE.wait(0.25):
+        job_id = getattr(_THREAD_CTX, "job_id", None)
+        if is_stop_requested(job_id):
+            raise StopRequested(f"任务 #{job_id} 已被用户手动停止")
     job_id = getattr(_THREAD_CTX, "job_id", None)
     if is_stop_requested(job_id):
         raise StopRequested(f"任务 #{job_id} 已被用户手动停止")
+
+
+def registration_pause_status() -> dict:
+    with _PAUSE_LOCK:
+        paused = not _PAUSE_GATE.is_set()
+    with _STOP_LOCK:
+        active = len(_ACTIVE_JOBS)
+    return {"paused": paused, "active_jobs": active, "workers": get_executor_workers()}
+
+
+def pause_registration() -> dict:
+    with _PAUSE_LOCK:
+        _PAUSE_GATE.clear()
+    logger.warning("[Service] 注册总开关已暂停")
+    return registration_pause_status()
+
+
+def resume_registration() -> dict:
+    with _PAUSE_LOCK:
+        _PAUSE_GATE.set()
+    logger.info("[Service] 注册总开关已继续")
+    return registration_pause_status()
 
 
 def _append_job_log(job_id: int, message: str) -> None:

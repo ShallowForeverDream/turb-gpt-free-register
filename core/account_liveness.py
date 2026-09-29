@@ -338,6 +338,45 @@ def _mfa_verify(session: BrowserSession, factor_id: str, code: str) -> dict:
     return resp.json()
 
 
+def _complete_totp_mfa_and_fetch(
+    session: BrowserSession,
+    email: str,
+    result: dict,
+    continue_url: str = "",
+) -> dict:
+    """完成登录链中出现的 TOTP MFA，并继续工作区/OAuth 回调。
+
+    邮箱 OTP 与密码验证都会返回同一种 ``mfa_challenge`` 页面。此前只有
+    密码分支处理了它，邮箱 OTP 分支会把 MFA 页面误当成 OAuth callback，
+    最终在 ``/api/auth/session`` 拿不到 accessToken。
+    """
+    factor_id = _extract_factor_id(result, continue_url)
+    secret = _account_totp_secret(email)
+    if not factor_id:
+        raise RuntimeError(f"MFA challenge 未返回 factor_id：{email}")
+    if not secret:
+        raise RuntimeError(f"登录后进入 MFA，但账号没有 totp_secret：{email}")
+    logger.info("[查活] 已进入 MFA challenge，开始提交 TOTP：%s factor_id=%s", email, factor_id)
+    _mfa_issue_challenge(session, factor_id)
+    code = _account_totp_code(email)
+    if not code:
+        raise RuntimeError(f"无法生成 TOTP 验证码：{email}")
+    mfa_result = _mfa_verify(session, factor_id, code)
+    mfa_page = mfa_result.get("page") if isinstance(mfa_result, dict) else {}
+    if isinstance(mfa_page, dict) and mfa_page.get("type") == "workspace":
+        return _select_workspace_and_fetch(session, email, mfa_result)
+    mfa_continue_url = _extract_continue_url(mfa_result) or continue_url
+    if not mfa_continue_url:
+        raise RuntimeError(f"MFA 验证成功但没有 continue_url: {mfa_result}")
+    return _follow_continue_and_fetch(
+        session,
+        mfa_continue_url,
+        referer=f"https://auth.openai.com/mfa-challenge/{factor_id}",
+        email=email,
+        auth_result=mfa_result,
+    )
+
+
 def _auth_workspaces(session: BrowserSession, result: dict | None = None) -> list[dict]:
     """从本次认证响应或同一会话 Cookie 读取工作区，不复用上次缓存决定本次选择。"""
     values = []
@@ -622,6 +661,8 @@ def _login_via_email_otp(
     continue_url = _extract_continue_url(validate_result)
     if not continue_url:
         raise RuntimeError(f"OTP 登录成功但没有 OAuth continue_url: {validate_result}")
+    if "/mfa-challenge/" in continue_url or page_type == "mfa_challenge":
+        return _complete_totp_mfa_and_fetch(session, email, validate_result, continue_url)
     if "about-you" in str(continue_url) or page_type in {"about_you", "about-you"}:
         raise RuntimeError(f"该邮箱登录后进入资料页，疑似不是完整已注册账号: page_type={page_type}, continue_url={continue_url}")
     logger.info("[查活] 邮箱 OTP 验证完成，开始跟随 OAuth callback")
@@ -697,30 +738,7 @@ def _login_via_password_or_otp(
     page_type = str(page.get("type") or "")
 
     if "/mfa-challenge/" in continue_url or page_type == "mfa_challenge":
-        factor_id = _extract_factor_id(password_result, continue_url)
-        secret = _account_totp_secret(email)
-        if not factor_id:
-            raise RuntimeError(f"密码登录后进入 MFA 但未拿到 factor_id: {password_result}")
-        if not secret:
-            raise RuntimeError(f"密码登录后进入 MFA，但账号没有 totp_secret：{email}")
-        logger.info("[查活] 已进入 MFA challenge，开始提交 TOTP：%s factor_id=%s", email, factor_id)
-        _mfa_issue_challenge(session, factor_id)
-        code = _account_totp_code(email)
-        if not code:
-            raise RuntimeError(f"无法生成 TOTP 验证码：{email}")
-        mfa_result = _mfa_verify(session, factor_id, code)
-        mfa_page = mfa_result.get("page") if isinstance(mfa_result, dict) else {}
-        if isinstance(mfa_page, dict) and mfa_page.get("type") == "workspace":
-            return _select_workspace_and_fetch(session, email, mfa_result)
-        mfa_continue_url = _extract_continue_url(mfa_result) or continue_url
-        if not mfa_continue_url:
-            raise RuntimeError(f"MFA 验证成功但没有 continue_url: {mfa_result}")
-        return _follow_continue_and_fetch(
-            session,
-            mfa_continue_url,
-            referer=f"https://auth.openai.com/mfa-challenge/{factor_id}",
-            email=email, auth_result=mfa_result,
-        )
+        return _complete_totp_mfa_and_fetch(session, email, password_result, continue_url)
 
     if "email-verification" in continue_url or page_type in {"email_verification", "email_otp_send"}:
         logger.info("[查活] 密码登录后仍进入邮箱 OTP，继续完成邮箱验证：%s", email)

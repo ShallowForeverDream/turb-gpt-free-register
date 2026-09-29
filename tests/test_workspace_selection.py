@@ -69,6 +69,24 @@ class WorkspaceSelectionTests(unittest.TestCase):
             self.assertEqual(liveness._login_via_password_or_otp(object(), "a@example.test", 0)["accessToken"], "at")
         select.assert_called_once()
 
+    def test_email_otp_mfa_response_completes_totp_before_callback(self):
+        validated = {
+            "page": {"type": "mfa_challenge", "payload": {"factor_id": "factor-otp"}},
+            "continue_url": "https://auth.openai.com/mfa-challenge/factor-otp",
+        }
+        verified = {"continue_url": "https://auth.openai.com/authorize/continue?state=otp"}
+        with patch.object(liveness, "_validate_with_retry", return_value=validated), \
+             patch.object(liveness, "_account_totp_secret", return_value="secret"), \
+             patch.object(liveness, "_account_totp_code", return_value="123456"), \
+             patch.object(liveness, "_mfa_issue_challenge") as issue, \
+             patch.object(liveness, "_mfa_verify", return_value=verified) as verify, \
+             patch.object(liveness, "_follow_continue_and_fetch", return_value={"accessToken": "at"}) as callback:
+            result = liveness._login_via_email_otp(object(), "a@example.test", 0, email_source="imap")
+        self.assertEqual(result["accessToken"], "at")
+        issue.assert_called_once()
+        verify.assert_called_once()
+        callback.assert_called_once()
+
     def test_default_organization_and_personal_are_distinct(self):
         with tempfile.TemporaryDirectory() as tmp, patch.multiple(db, **storage(Path(tmp))), \
              patch.object(liveness, "_follow_continue_and_fetch", return_value={"accessToken": "at"}):

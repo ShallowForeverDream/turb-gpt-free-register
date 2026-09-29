@@ -792,6 +792,7 @@
       font-weight: 700; color: #303133; line-height: 1.35;
       overflow: visible; text-overflow: clip; white-space: normal;
       overflow-wrap: anywhere; word-break: break-word;
+      cursor: pointer;
     }
     .accounts-table-v2 .acc-v2-sub {
       margin-top: 2px; color: #909399; font-size: 12px; line-height: 1.3;
@@ -2331,7 +2332,7 @@
       <div class="accounts-table-v2-wrap">
         <table class="accounts-table-v2">
           <colgroup>
-            <col class="col-check"><col class="col-id"><col class="col-email"><col class="col-source">
+            <col class="col-check"><col class="col-id"><col class="col-email"><col class="col-source"><col class="col-small">
             <col class="col-token"><col class="col-password"><col class="col-plan"><col class="col-note"><col class="col-small">
             <col class="col-status"><col class="col-time"><col class="col-actions">
           </colgroup>
@@ -2341,6 +2342,7 @@
               <th class="col-id">ID</th>
               <th class="col-email">邮箱</th>
               <th class="col-source">来源</th>
+              <th class="col-small">邮箱验证码</th>
               <th class="col-token">Token</th>
               <th class="col-password">密码</th>
               <th class="col-plan">套餐</th>
@@ -2672,6 +2674,7 @@ const copyStore = new Map();
 let ACCOUNTS = [], OUTLOOK = [], CONFIG = [];
 let ACCOUNTS_TOTAL = 0;
 const TOTP_CODE_CACHE = new Map();
+const EMAIL_OTP_CACHE = new Map();
 let OUTLOOK_TOTAL = 0;
 let SHOW_ARCHIVED_ACCOUNTS = false;
 let SHOW_PLUS_ACCOUNTS_ONLY = false;
@@ -3540,6 +3543,12 @@ function _totpCellV2(r) {
     : `<span class="acc-v2-muted">无Token</span>`;
   return `<div class="agent-token-cell">${btn}</div>`;
 }
+function _emailOtpCellV2(r) {
+  if (String(r.email_source || '').toLowerCase() !== 'imap') return `<span class="acc-v2-muted">-</span>`;
+  const cached = EMAIL_OTP_CACHE.get(Number(r.id));
+  const code = cached?.code;
+  return `<div class="acc-v2-twofa-actions">${code ? `<span class="acc-v2-twofa-code" title="${esc(cached.at || '')}">${esc(code)}</span>` : ''}<button type="button" class="acc-v2-twofa-btn" data-account-email-otp="${esc(r.id)}" title="查询该 IMAP 邮箱最近 15 分钟收到的验证码">${code ? '刷新' : '查验证码'}</button>${code ? `<button type="button" class="acc-v2-twofa-btn" data-account-copy-email-otp="${esc(r.id)}">复制</button>` : ''}</div>`;
+}
 function _codexAgentCell(r) {
   const s = r.codex_agent_status || '';
   const err = r.codex_agent_error || '';
@@ -3780,13 +3789,14 @@ function renderAccounts() {
       <td class="col-check"><input type="checkbox" class="account-row-check" data-account-id="${esc(r.id)}" ${ACCOUNT_SELECTED.has(Number(r.id)) ? 'checked' : ''}></td>
       <td class="col-id">#${esc(r.id)}</td>
       <td class="col-email" title="${esc(r.email || '-')}${r.original_email ? `\n原邮箱: ${esc(r.original_email)}` : ''}\n${esc(r.user_name || '-')}">
-        <div class="acc-v2-email">${esc(r.email)}${r.archived ? ' <span class="pill status-used" title="该账号已归档">归档</span>' : ''}</div>
+        <div class="acc-v2-email" data-account-copy-email="${esc(r.id)}" title="点击复制邮箱">${esc(r.email)}${r.archived ? ' <span class="pill status-used" title="该账号已归档">归档</span>' : ''}</div>
         ${r.account_group ? `<div class="acc-v2-email-status" title="账号分组">分组：${esc(r.account_group)}</div>` : ''}
         ${r.original_email ? `<div class="acc-v2-email-history">原邮箱: ${esc(r.original_email)}</div>` : ''}
         <div class="acc-v2-email-user">${esc(r.user_name || '-')}</div>
         ${r.email_change_status === 'queued' ? `<div class="acc-v2-email-status">换绑排队 <button class="acc-v2-twofa-btn" data-account-cancel-queued="email_change" data-account-id="${esc(r.id)}">取消</button></div>` : (r.email_change_status === 'running' ? '<div class="acc-v2-email-status">换绑中</div>' : (r.email_change_status === 'failed' ? `<div class="acc-v2-email-status" title="${esc(r.email_change_error || '')}">换绑失败: ${esc(r.email_change_error || '-')}</div>` : ''))}
       </td>
       <td class="col-source">${esc(r.email_source || '-')}</td>
+      <td class="col-small">${_emailOtpCellV2(r)}</td>
       <td class="col-token">${_tokenCellV2(r)}</td>
       <td class="col-password">${r.password ? `<span class="mono" title="${esc(r.password)}">${esc(short(r.password, 18))}</span>` : '<span class="acc-v2-muted">-</span>'}</td>
       <td class="col-plan">${_planCell(r)}<div class="acc-v2-sub">${_extractLinkCell(r)}</div></td>
@@ -3807,7 +3817,7 @@ function renderAccounts() {
 
   const bodyV2 = $('#accountsBodyV2');
   if (bodyV2) {
-    bodyV2.innerHTML = rows.map(rowHtmlV2).join('') || '<tr><td colspan="12" style="text-align:center;color:#909399;padding:28px;">暂无账号</td></tr>';
+    bodyV2.innerHTML = rows.map(rowHtmlV2).join('') || '<tr><td colspan="13" style="text-align:center;color:#909399;padding:28px;">暂无账号</td></tr>';
   }
   updateAccountSelectionUi(rows);
   _renderPager('accounts', total);
@@ -4083,6 +4093,32 @@ async function onAccountsBodyClick(e) {
       showToast('复制失败: ' + err.message);
     } finally {
       copySecretBtn.disabled = false;
+    }
+    return;
+  }
+
+  const copyEmailBtn = e.target.closest('[data-account-copy-email]');
+  if (copyEmailBtn) {
+    const acc = ACCOUNTS.find(row => Number(row.id) === Number(copyEmailBtn.dataset.accountCopyEmail));
+    if (acc?.email) {
+      copyText(acc.email);
+      showToast(`邮箱已复制：${acc.email}`);
+    }
+    return;
+  }
+
+  const emailOtpBtn = e.target.closest('[data-account-email-otp]');
+  if (emailOtpBtn) {
+    await queryAccountEmailOtp(Number(emailOtpBtn.dataset.accountEmailOtp), emailOtpBtn);
+    return;
+  }
+
+  const copyEmailOtpBtn = e.target.closest('[data-account-copy-email-otp]');
+  if (copyEmailOtpBtn) {
+    const cached = EMAIL_OTP_CACHE.get(Number(copyEmailOtpBtn.dataset.accountCopyEmailOtp));
+    if (cached?.code) {
+      copyText(cached.code);
+      showToast(`邮箱验证码已复制：${cached.code}`);
     }
     return;
   }
@@ -4463,6 +4499,21 @@ async function showAccountTotpCode(id, btn) {
     showToast(`验证码：${code}`);
   } catch (err) {
     showToast('获取验证码失败: ' + err.message);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function queryAccountEmailOtp(id, btn) {
+  if (btn) btn.disabled = true;
+  try {
+    const r = await api(`/api/accounts/${encodeURIComponent(id)}/email-otp`);
+    if (!r.code) { showToast('最近没有找到邮箱验证码'); return; }
+    EMAIL_OTP_CACHE.set(Number(id), { code: String(r.code), at: new Date().toLocaleString() });
+    renderAccounts();
+    showToast(`邮箱验证码：${r.code}`);
+  } catch (err) {
+    showToast('获取邮箱验证码失败: ' + err.message);
   } finally {
     if (btn) btn.disabled = false;
   }

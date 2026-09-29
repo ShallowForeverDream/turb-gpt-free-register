@@ -48,7 +48,9 @@ OUTLOOK_API_BASE = "https://mail.chatai.codes"
 # ============================================================
 
 OTP_POLL_INTERVAL = 3
-OTP_MAX_WAIT = 90
+# IMAP/邮箱服务偶尔需要较长同步时间，尤其是转发收件箱；不要在 90 秒
+# 时过早判定超时。业务层仍会在收到 HTTP 403/429 时立即停止。
+OTP_MAX_WAIT = 180
 
 # Outlook 双协议取件：抓到一封 OTP 后再多等多少秒看是否有更晚到达的邮件。
 OTP_SETTLE_SECONDS = 5

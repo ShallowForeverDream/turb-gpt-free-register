@@ -2116,6 +2116,22 @@ def update_account_liveness(acc_id: int, result: dict | None = None) -> bool:
             account = session.get("account") or {}
             created_time = _created_time_to_iso(account.get("createdTime"))
             if created_time:
+                # ``registered_at`` is derived from extra_json when rows are
+                # returned to the UI.  Persist the live session's account
+                # metadata as well as the denormalized value, otherwise the
+                # next list/decorate pass would fall back to the import time.
+                raw_extra = row.get("extra_json")
+                try:
+                    extra = json.loads(raw_extra) if isinstance(raw_extra, str) and raw_extra.strip() else {}
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    extra = {}
+                if not isinstance(extra, dict):
+                    extra = {}
+                live_account = extra.get("account") if isinstance(extra.get("account"), dict) else {}
+                live_account.update(account)
+                live_account["createdTime"] = account.get("createdTime")
+                extra["account"] = live_account
+                row["extra_json"] = json.dumps(extra, ensure_ascii=False)
                 row["registered_at"] = created_time
             if user.get("id"):
                 row["user_id"] = user.get("id")

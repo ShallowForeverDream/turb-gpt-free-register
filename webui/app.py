@@ -496,6 +496,36 @@ def create_app(auth_code: str | None = None, *, local_no_auth: bool = False) -> 
             return jsonify(result)
         return jsonify(db.list_accounts(limit=limit, archived=archived, plan_filter=plan_filter, codex_filter=codex_filter, q=q, date_from=date_from, date_to=date_to, totp_filter=totp_filter, email_suffix=email_suffix, account_group=account_group))
 
+    @app.get("/api/accounts/<int:acc_id>/email-otp")
+    def api_account_email_otp(acc_id: int):
+        """读取已保存 IMAP 来源账号最近收到的 ChatGPT 邮箱验证码。
+
+        这里只查已有邮件，不触发登录或发送验证码；窗口短暂轮询是为了
+        覆盖 IMAP 收件箱刚刚同步完成的情况。
+        """
+        acc = db.get_account(acc_id)
+        if not acc:
+            return jsonify({"ok": False, "error": "账号不存在"}), 404
+        email = str(acc.get("email") or "").strip()
+        if str(acc.get("email_source") or "").strip().lower() != "imap":
+            return jsonify({"ok": False, "error": "该账号没有使用 IMAP 邮箱来源"}), 400
+        if not email:
+            return jsonify({"ok": False, "error": "账号邮箱为空"}), 400
+        try:
+            from core.email_provider import wait_for_otp
+            # 仅查询最近 15 分钟，避免把历史验证码误认为当前验证码。
+            code = wait_for_otp(
+                email,
+                after_ts=time.time() - 15 * 60,
+                max_wait=2,
+                poll_interval=1,
+                settle_seconds=0,
+                email_source="imap",
+            )
+        except Exception as exc:
+            return jsonify({"ok": False, "error": str(exc)[:300], "email": email}), 404
+        return jsonify({"ok": True, "id": acc_id, "email": email, "code": str(code)})
+
     @app.get("/api/accounts/groups")
     def api_account_groups():
         return jsonify({"ok": True, "groups": db.list_account_groups()})

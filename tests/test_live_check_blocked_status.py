@@ -94,6 +94,25 @@ class LiveCheckBlockedStatusTests(unittest.TestCase):
             self.assertIsNone(pending["live_check_error_code"])
             self.assertIsNone(pending["live_check_stage"])
 
+    def test_successful_live_check_persists_registration_time_from_session(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.multiple(db, **storage(Path(tmp))):
+            db.import_registered_gpt_accounts([{"email": "time@example.test", "access_token": "old"}])
+            account = db.get_account_by_email("time@example.test")
+            self.assertTrue(account)
+            db.update_account_liveness(account["id"], {
+                "ok": True,
+                "access_token": "fresh",
+                "session": {
+                    "account": {"createdTime": 1760000000000, "planType": "free"},
+                    "user": {"id": "user-1", "email": "time@example.test"},
+                },
+            })
+            updated = db.get_account_by_email("time@example.test")
+            listed = db.list_accounts(limit=10)
+            self.assertEqual(updated["registered_at"], listed[0]["registered_at"])
+            self.assertNotEqual(listed[0]["registered_at"], "")
+            self.assertEqual(updated["access_token"], "fresh")
+
 
 if __name__ == "__main__":
     unittest.main()

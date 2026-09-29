@@ -24,6 +24,23 @@ from core.humanize import delay as human_delay
 logger = logging.getLogger(__name__)
 
 
+class TwofaOtpBlockedError(RuntimeError):
+    """The reauthentication OTP was rejected before TOTP enrollment."""
+
+
+def _reopen_transport_after_tls_error(session: BrowserSession, exc: BaseException) -> None:
+    """Discard a reset curl connection without changing cookies or device ID."""
+    detail = str(exc or "").lower()
+    if not any(marker in detail for marker in (
+        "curl: (35)", "ssl_error_syscall", "ssl_connect", "connection closed abruptly",
+    )):
+        return
+    reopen = getattr(session, "reopen_transport", None)
+    if callable(reopen):
+        reopen()
+        logger.info("[2FA] TLS 连接已重建；保留 Cookie 和设备身份后重试")
+
+
 def _clear_twofa_session_circuit(
     session: BrowserSession, *, source: str = "可选预热"
 ) -> None:
@@ -94,6 +111,7 @@ def _trigger_reauth_with_retry(session: BrowserSession, email: str) -> str:
                 raise
 
             # 403/429 已开启 BrowserSession 熔断；不清理会导致下一轮在本地直接失败。
+            _reopen_transport_after_tls_error(session, exc)
             _clear_twofa_session_circuit(session, source="重认证请求")
             delay = min(120.0, base_delay * (2 ** (attempt - 1)))
             logger.warning(
@@ -140,6 +158,7 @@ def _follow_reauth_with_retry(session: BrowserSession, auth_url: str) -> str:
 
             # 403 响应通常会刷新 __cf_bm。清理本地熔断但保留 Cookie Jar，
             # 下一轮继续使用同一 OAuth state 和新 Cookie 导航。
+            _reopen_transport_after_tls_error(session, exc)
             _clear_twofa_session_circuit(session, source="authorize 导航")
             delay = min(120.0, base_delay * (2 ** (attempt - 1)))
             logger.warning(
@@ -432,6 +451,20 @@ def _validate_reauth_otp(session: BrowserSession, code: str) -> str:
 
     logger.info("[2FA] 提交重认证 OTP")
     resp = session.post(url, headers=headers, data=body)
+    if resp.status_code in (403, 429):
+        try:
+            payload = resp.json()
+            error = payload.get("error") if isinstance(payload, dict) else None
+            code = str(error.get("code") or "") if isinstance(error, dict) else ""
+        except (TypeError, ValueError, AttributeError):
+            code = ""
+        cf = str(resp.headers.get("cf-mitigated") or "") if getattr(resp, "headers", None) else ""
+        detail = f"，服务端代码 {code}" if code else ""
+        challenge = "，Cloudflare challenge" if cf else ""
+        raise TwofaOtpBlockedError(
+            f"邮箱 OTP 提交被拒绝（HTTP {resp.status_code}{detail}{challenge}）；"
+            "尚未进入 TOTP 注册阶段，账号 2FA 状态未改变。"
+        )
     resp.raise_for_status()
     data = resp.json()
     session._reauth_validate_result = data

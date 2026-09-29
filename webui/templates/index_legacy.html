@@ -949,6 +949,10 @@ function activateTab(tab, persist=true) {
   if (!allowed.includes(tab)) tab = 'register';
   $$('nav button').forEach(x => x.classList.toggle('active', x.dataset.tab === tab));
   allowed.forEach(t => $('#tab-'+t).classList.toggle('hidden', t !== tab));
+  if (['register','accounts','codex','outlook'].includes(tab)) {
+    const key = tab === 'register' ? 'jobs' : tab;
+    enableLegacyResizableHeaders(`.${key}-table`, key);
+  }
   if (persist) localStorage.setItem('gpt_console_active_tab', tab);
   if (tab === 'accounts') loadAccounts();
   if (tab === 'codex') loadCodex();
@@ -3816,29 +3820,36 @@ function enableLegacyResizableHeaders(selector, key) {
   const table = document.querySelector(selector);
   if (!table || table.dataset.resizeReady) return;
   table.dataset.resizeReady = '1';
-  const saved = JSON.parse(localStorage.getItem(`legacy-table-widths:${key}`) || '{}');
-  table.querySelectorAll('thead th').forEach((th, index) => {
+  const headers = Array.from(table.querySelectorAll('thead th'));
+  const columns = Array.from(table.querySelectorAll('colgroup col'));
+  if (columns.length !== headers.length) return;
+  let saved = {};
+  try { saved = JSON.parse(localStorage.getItem(`legacy-table-widths:${key}`) || '{}'); } catch(e) {}
+  const widths = columns.map((col, index) => Math.max(48, Number(saved[index]) || parseFloat(getComputedStyle(col).width) || col.getBoundingClientRect().width || 100));
+  const applyWidths = () => {
+    widths.forEach((width, index) => { columns[index].style.width = `${width}px`; });
+    table.style.width = `${widths.reduce((total, width) => total + width, 0)}px`;
+  };
+  applyWidths();
+  headers.forEach((th, index) => {
     const handle = document.createElement('span');
     handle.className = 'table-col-resizer';
     th.appendChild(handle);
-    if (saved[index]) th.style.width = `${saved[index]}px`;
-    handle.addEventListener('mousedown', (event) => {
+    handle.addEventListener('pointerdown', (event) => {
       event.preventDefault(); event.stopPropagation();
-      const startX = event.clientX, startWidth = th.getBoundingClientRect().width;
+      const startX = event.clientX, startWidth = widths[index];
       handle.classList.add('is-dragging'); document.body.classList.add('is-resizing-column');
-      const move = e => { th.style.width = `${Math.max(48, Math.round(startWidth + e.clientX - startX))}px`; };
+      const move = e => { widths[index] = Math.max(48, Math.round(startWidth + e.clientX - startX)); applyWidths(); };
       const up = () => {
-        const widths = JSON.parse(localStorage.getItem(`legacy-table-widths:${key}`) || '{}');
-        widths[index] = Math.round(th.getBoundingClientRect().width);
-        localStorage.setItem(`legacy-table-widths:${key}`, JSON.stringify(widths));
+        saved[index] = widths[index];
+        localStorage.setItem(`legacy-table-widths:${key}`, JSON.stringify(saved));
         handle.classList.remove('is-dragging'); document.body.classList.remove('is-resizing-column');
-        document.removeEventListener('mousemove', move); document.removeEventListener('mouseup', up);
+        document.removeEventListener('pointermove', move); document.removeEventListener('pointerup', up);
       };
-      document.addEventListener('mousemove', move); document.addEventListener('mouseup', up, {once:true});
+      document.addEventListener('pointermove', move); document.addEventListener('pointerup', up, {once:true});
     });
   });
 }
-['jobs','accounts','codex','outlook'].forEach(key => enableLegacyResizableHeaders(`.${key}-table`, key));
 loadSummary();
 activateTab(localStorage.getItem('gpt_console_active_tab') || 'register', false);
 jobsTimer = setInterval(() => { if (!$('#tab-register').classList.contains('hidden')) refreshJobs(); }, 10000);

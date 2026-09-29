@@ -12,7 +12,7 @@ from pathlib import Path
 from config import email as _email_cfg
 from config import twofa as _twofa_cfg
 from core import db
-from core.account_export import setup_2fa
+from core.account_export import setup_2fa, TwofaOtpBlockedError
 from core.session import BrowserSession, close_browser_session
 from core.proxy_utils import mask_proxy_url
 
@@ -147,7 +147,8 @@ def _run_twofa(
         logger.info("[2FA] 完成：email=%s", email)
         return {"ok": True, "status": "success", "totp_secret": secret, "message": "2FA 设置完成"}
     except Exception as exc:
-        result = {"ok": False, "status": "failed", "error": f"{type(exc).__name__}: {str(exc)[:500]}"}
+        status = "blocked" if isinstance(exc, TwofaOtpBlockedError) else "failed"
+        result = {"ok": False, "status": status, "error": f"{type(exc).__name__}: {str(exc)[:500]}"}
         try:
             db.update_account_totp_secret(account_id, result)
         except Exception:

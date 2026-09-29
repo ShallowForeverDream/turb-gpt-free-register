@@ -18,6 +18,30 @@ class _CircuitSession:
 
 
 class AccountExportTwofaTests(unittest.TestCase):
+    def test_reauth_tls_reset_reopens_transport_before_retry(self):
+        session = _CircuitSession()
+        session.reopen_transport = Mock()
+        with patch.object(account_export, "_trigger_reauth", side_effect=[
+            RuntimeError("curl: (35) BoringSSL SSL_connect: Connection closed abruptly"),
+            "https://auth.example/authorize",
+        ]) as trigger, patch("config.twofa.TWOFA_REAUTH_MAX_ATTEMPTS", 2), \
+             patch("config.twofa.TWOFA_REAUTH_RETRY_DELAY", 0), \
+             patch.object(account_export.time, "sleep"):
+            result = account_export._trigger_reauth_with_retry(session, "a@example.test")
+        self.assertEqual(result, "https://auth.example/authorize")
+        self.assertEqual(trigger.call_count, 2)
+        session.reopen_transport.assert_called_once()
+
+    def test_reauth_otp_403_reports_blocked_without_enrolling(self):
+        session = Mock()
+        response = Mock(status_code=403, headers={"cf-mitigated": "challenge"})
+        response.json.return_value = {"error": {"code": "invalid_auth_step"}}
+        session.post.return_value = response
+        with self.assertRaises(account_export.TwofaOtpBlockedError) as caught:
+            account_export._validate_reauth_otp(session, "123456")
+        self.assertIn("invalid_auth_step", str(caught.exception))
+        self.assertIn("尚未进入 TOTP", str(caught.exception))
+
     def test_reauth_callback_without_workspace_still_fetches_session(self):
         session = Mock()
         with patch.object(account_export, "follow_oauth_callback", return_value="https://chatgpt.com/") as callback, \

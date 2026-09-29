@@ -2195,7 +2195,7 @@ def update_account_totp_secret(acc_id: int, result: dict | None = None) -> bool:
         row["totp_setup_status"] = status
         row["totp_setup_ok"] = ok
         row["totp_setup_checked_at"] = result.get("checked_at") or _now()
-        if status in {"success", "failed", "stopped"}:
+        if status in {"success", "failed", "stopped", "blocked"}:
             row["totp_setup_completed_at"] = _now()
         row["totp_setup_error"] = None if ok or status == "running" else result.get("error")
         secret = str(result.get("totp_secret") or "").strip()

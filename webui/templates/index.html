@@ -1823,6 +1823,12 @@
     .config-ep-select-item.is-active { background: #f0f2f5; color: #303133; font-weight: 500; }
     .config-select-v2-field .config-ep-select { margin-top: 6px; }
     .config-select-v2-field .config-ep-select-btn { font-weight: 500; color: #606266; }
+    .config-native-select { width: 100%; margin-top: 6px; }
+    .config-native-select-control {
+      width: 100%; min-height: 36px; margin: 0; padding: 0 12px;
+      border: 1px solid #dcdfe6; border-radius: 4px; background: #fff;
+      color: #303133; font: inherit; font-size: 14px; cursor: pointer;
+    }
     .config-sections-v2 { display: grid; gap: 16px; }
     .config-section-v2 {
       scroll-margin-top: 20px;
@@ -6323,16 +6329,16 @@ function setRegistrationDriverValue(value) {
 function renderRegistrationEpSelect(mount, wrapId) {
   if (!mount) return;
   const cur = getRegistrationDriverValue();
-  const label = registrationDriverLabel(cur);
-  const items = registrationDriverChoices().map(c => `
-    <button type="button" class="config-ep-select-item${c.value === cur ? ' is-active' : ''}" role="option" data-driver-value="${attrEsc(c.value)}">${esc(c.label)}</button>
-  `).join('');
-  mount.className = 'config-ep-select';
+  // Use a native select here. The former custom menu depended on delegated
+  // click events inside a re-rendered layout and could become unselectable
+  // after switching config sections or when an overlay stopped propagation.
+  // Native select also keeps keyboard/accessibility and change tracking sane.
+  mount.className = 'config-native-select';
   mount.id = wrapId;
   mount.innerHTML = `
-    <button type="button" class="config-ep-select-btn" data-ep-toggle="${attrEsc(wrapId)}">${esc(label)}</button>
-    <div class="config-ep-select-menu" role="listbox">${items}</div>
-    <input type="hidden" data-key="REGISTRATION_DRIVER" value="${attrEsc(cur)}">
+    <select class="config-native-select-control" data-key="REGISTRATION_DRIVER" aria-label="统一运行驱动">
+      ${registrationDriverChoices().map(c => `<option value="${attrEsc(c.value)}"${c.value === cur ? ' selected' : ''}>${esc(c.label)}</option>`).join('')}
+    </select>
   `;
 }
 function renderRegistrationDriverCard() {

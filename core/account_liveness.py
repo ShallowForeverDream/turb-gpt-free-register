@@ -423,6 +423,13 @@ def _follow_continue_and_fetch(session: BrowserSession, continue_url: str, *, re
         except Exception as exc:
             if attempt >= max_attempts or not _is_retryable_network_error(exc):
                 raise
+            if _requires_fresh_transport_session(exc):
+                reopen = getattr(session, "reopen_transport", None)
+                if callable(reopen):
+                    try:
+                        reopen()
+                    except Exception as rebuild_exc:
+                        logger.debug("[查活] OAuth callback 重建 transport 失败，继续原会话重试：%s", rebuild_exc)
             _clear_optional_bootstrap_circuit(session)
             delay = float(2 ** (attempt - 1))
             logger.warning(
@@ -639,6 +646,22 @@ def _login_via_password_or_otp(
         )
 
     logger.info("[查活] 账号存在密码，优先走密码登录：%s", email)
+    # OpenAI's current authorize redirect can land on
+    # /email-verification even for password-backed accounts.  The password
+    # verify API rejects that auth step with invalid_auth_step unless the
+    # password document is visited first.  Navigate to the real password
+    # page before requesting Sentinel/password verification.
+    current_path = str(getattr(session, "current_url", "") or "")
+    if "/log-in/password" not in current_path:
+        try:
+            session.get(
+                "https://auth.openai.com/log-in/password",
+                headers=session.get_auth_navigate_headers(referer="https://chatgpt.com/"),
+                allow_redirects=True,
+            ).raise_for_status()
+            logger.info("[查活] 已预热密码登录页：%s", email)
+        except Exception as exc:
+            logger.warning("[查活] 密码登录页预热失败，继续现有认证上下文：%s", str(exc)[:180])
     password_result = _password_verify(session, password)
     continue_url = _extract_continue_url(password_result)
     page = password_result.get("page") if isinstance(password_result, dict) else {}

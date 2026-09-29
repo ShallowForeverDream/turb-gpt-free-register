@@ -182,6 +182,14 @@ def _reset_retryable_circuit(session: BrowserSession) -> None:
         session.blocked_reason = ""
 
 
+def _needs_transport_rebuild(exc: BaseException) -> bool:
+    text = str(exc or "").lower()
+    return any(marker in text for marker in (
+        "curl: (35)", "ssl_error_syscall", "ssl_connect",
+        "connection closed abruptly", "connection reset",
+    ))
+
+
 def _check_stop_requested() -> None:
     """懒加载任务服务，避免模块导入阶段形成 main/registration_service 循环依赖。"""
     from core.registration_service import check_stop_requested
@@ -215,6 +223,13 @@ def _request_with_proxy_retry(session: BrowserSession, label: str, fn):
             last_exc = exc
             if not _is_retryable_authorize_error(exc) or attempt >= max_attempts:
                 raise
+            if _needs_transport_rebuild(exc):
+                reopen = getattr(session, "reopen_transport", None)
+                if callable(reopen):
+                    try:
+                        reopen()
+                    except Exception as rebuild_exc:
+                        logger.debug("[%s] 重建网络 transport 失败，继续使用原会话重试：%s", label, rebuild_exc)
             _reset_retryable_circuit(session)
             backoff = retry_delay * (2 ** (attempt - 1))
             logger.warning(

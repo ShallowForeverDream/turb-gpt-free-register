@@ -117,6 +117,10 @@ class BrowserSession:
             self.proxy = proxy
             self.proxy_target = proxy
             transport_proxy = proxy
+        # Keep the actual transport endpoint separately from the logical
+        # target proxy.  A failed TLS tunnel can then be rebuilt without
+        # changing the account route or fingerprint.
+        self._transport_proxy = transport_proxy or ""
 
         self.fingerprint_seed = str(fingerprint_seed or "").strip()
 
@@ -248,6 +252,43 @@ class BrowserSession:
             relay, self._proxy_pool_relay = self._proxy_pool_relay, None
             if relay is not None:
                 relay.close()
+
+    def reopen_transport(self) -> None:
+        """Recreate curl's connection pool while preserving cookies/identity.
+
+        A local mixed proxy can reset one TLS connection even though the next
+        connection succeeds.  Retrying on the same curl handle keeps the
+        poisoned connection pool and repeatedly returns ``curl (35)``.  This
+        method deliberately preserves the CookieJar and all fingerprint IDs;
+        only the underlying HTTP transport is replaced.
+        """
+        old = getattr(self, "session", None)
+        cookies = []
+        try:
+            cookies = [
+                (c.name, c.value, c.domain, c.path)
+                for c in old.cookies.jar
+            ]
+        except Exception:
+            pass
+        try:
+            if old is not None:
+                old.close()
+        finally:
+            self.session = Session(impersonate=IMPERSONATE)
+            if self._transport_proxy:
+                self.session.proxies = {
+                    "http": self._transport_proxy,
+                    "https": self._transport_proxy,
+                }
+            self.session.timeout = REQUEST_TIMEOUT
+            for name, value, domain, path in cookies:
+                try:
+                    self.session.cookies.set(name, value, domain=domain, path=path)
+                except Exception:
+                    continue
+            self._cf_cookie_seen = self.cf_cookie_snapshot()
+        logger.info("[网络] 已重建 curl transport，保留 Cookie/设备身份：proxy=%s", self.proxy or "direct")
 
     def __enter__(self):
         return self

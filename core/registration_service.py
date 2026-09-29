@@ -192,6 +192,10 @@ def _should_disable_failed_registration_email(error: object) -> bool:
         return False
     return (
         _is_final_session_access_token_timeout(text)
+        or "account_deactivated" in text.lower()
+        or "account_deleted" in text.lower()
+        or "account_banned" in text.lower()
+        or "账号已废弃" in text
         or "邮箱提交后进入登录密码页" in text
         or "auth.openai.com/log-in/password" in text
         or "/log-in/password" in text
@@ -377,7 +381,8 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                 result_email = (result or {}).get("email") if isinstance(result, dict) else None
                 db.update_job(
                     job_id,
-                    status="blocked" if isinstance(result, dict) and result.get("status") == "blocked" else "failed",
+                    status=("disabled" if _should_disable_failed_registration_email(err) else
+                            "blocked" if isinstance(result, dict) and result.get("status") == "blocked" else "failed"),
                     email=result_email,
                     account_id=(result or {}).get("account_id") if isinstance(result, dict) else None,
                     network_traffic=(result or {}).get("network_traffic") if isinstance(result, dict) else None,
@@ -417,7 +422,7 @@ def _run_one_job(job_id: int, log_file: str) -> None:
         log_logger.exception(f"[Job {job_id}] 异常")
         db.update_job(
             job_id,
-            status="failed",
+            status="disabled" if _should_disable_failed_registration_email(err_text) else "failed",
             error=f"{type(exc).__name__}: {exc}"[:500],
             completed_at=datetime.now().isoformat(timespec="seconds"),
         )

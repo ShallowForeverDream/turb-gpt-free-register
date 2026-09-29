@@ -1829,6 +1829,14 @@
       border: 1px solid #dcdfe6; border-radius: 4px; background: #fff;
       color: #303133; font: inherit; font-size: 14px; cursor: pointer;
     }
+    /* 表头可拖动调整列宽；宽度保存在当前浏览器本地。 */
+    table th { position: relative; }
+    .table-col-resizer {
+      position: absolute; top: 0; right: -3px; width: 7px; height: 100%;
+      cursor: col-resize; z-index: 5; touch-action: none;
+    }
+    .table-col-resizer:hover, .table-col-resizer.is-dragging { background: rgba(64,158,255,.35); }
+    body.is-resizing-column { cursor: col-resize !important; user-select: none !important; }
     .config-sections-v2 { display: grid; gap: 16px; }
     .config-section-v2 {
       scroll-margin-top: 20px;
@@ -2339,7 +2347,7 @@
               <th class="col-note">备注</th>
               <th class="col-small">2FA</th>
               <th class="col-status">Codex</th>
-              <th class="col-time">创建时间</th>
+              <th class="col-time">注册时间</th>
               <th class="col-actions">操作</th>
             </tr>
           </thead>
@@ -7161,6 +7169,47 @@ document.addEventListener('click', (e) => {
 });
 
 // ---------- 初始化 ----------
+function enableResizableTableHeaders(selector, storageKey) {
+  const table = document.querySelector(selector);
+  if (!table || table.dataset.resizeReady) return;
+  table.dataset.resizeReady = '1';
+  const headers = Array.from(table.querySelectorAll('thead th'));
+  const saved = JSON.parse(localStorage.getItem(`table-widths:${storageKey}`) || '{}');
+  headers.forEach((th, index) => {
+    const resizer = document.createElement('span');
+    resizer.className = 'table-col-resizer';
+    resizer.title = '拖动调整列宽';
+    th.appendChild(resizer);
+    if (saved[index]) th.style.width = `${saved[index]}px`;
+    resizer.addEventListener('mousedown', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const startX = event.clientX;
+      const startWidth = th.getBoundingClientRect().width;
+      resizer.classList.add('is-dragging');
+      document.body.classList.add('is-resizing-column');
+      const move = (moveEvent) => {
+        const width = Math.max(48, Math.round(startWidth + moveEvent.clientX - startX));
+        th.style.width = `${width}px`;
+      };
+      const up = () => {
+        const width = Math.round(th.getBoundingClientRect().width);
+        const next = JSON.parse(localStorage.getItem(`table-widths:${storageKey}`) || '{}');
+        next[index] = width;
+        localStorage.setItem(`table-widths:${storageKey}`, JSON.stringify(next));
+        resizer.classList.remove('is-dragging');
+        document.body.classList.remove('is-resizing-column');
+        document.removeEventListener('mousemove', move);
+        document.removeEventListener('mouseup', up);
+      };
+      document.addEventListener('mousemove', move);
+      document.addEventListener('mouseup', up, {once: true});
+    });
+  });
+}
+['accounts','outlook','jobs','codex'].forEach(name => {
+  enableResizableTableHeaders(`.${name}-table-v2`, name);
+});
 loadSummary();
 activateTab(localStorage.getItem('gpt_console_active_tab') || 'register', false);
 jobsTimer = setInterval(() => { if (!$('#tab-register').classList.contains('hidden')) refreshJobs(); }, 10000);

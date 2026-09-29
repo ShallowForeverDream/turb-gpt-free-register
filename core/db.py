@@ -1659,7 +1659,7 @@ def list_account_plan_check_statuses(
 ) -> dict:
     """返回不含 Token/邮箱密码的套餐查询轻量状态快照。"""
     fields = (
-        "id", "email", "archived",
+        "id", "email", "archived", "registered_at",
         "plan_type", "current_plan_type", "plus_trial_eligible",
         "eligible_promo_campaigns", "plus_trial_discount_percentage",
         "plan_check_status", "plan_check_ok", "plan_check_error",

@@ -109,7 +109,9 @@ class LiveCheckBlockedStatusTests(unittest.TestCase):
             })
             updated = db.get_account_by_email("time@example.test")
             listed = db.list_accounts(limit=10)
+            snapshot = db.list_account_plan_check_statuses(limit=10)["items"]
             self.assertEqual(updated["registered_at"], listed[0]["registered_at"])
+            self.assertEqual(snapshot[0]["registered_at"], listed[0]["registered_at"])
             self.assertNotEqual(listed[0]["registered_at"], "")
             self.assertEqual(updated["access_token"], "fresh")
 

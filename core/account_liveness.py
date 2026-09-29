@@ -662,7 +662,35 @@ def _login_via_password_or_otp(
             logger.info("[查活] 已预热密码登录页：%s", email)
         except Exception as exc:
             logger.warning("[查活] 密码登录页预热失败，继续现有认证上下文：%s", str(exc)[:180])
-    password_result = _password_verify(session, password)
+    try:
+        password_result = _password_verify(session, password)
+    except Exception as exc:
+        body = _exception_response_text(exc)
+        low_body = body.lower()
+        if "invalid_username_or_password" in low_body or "invalid username or password" in low_body:
+            raise RuntimeError(
+                "账号保存的 GPT 密码验证失败（invalid_username_or_password）；"
+                "请重新导入该账号的正确密码，或为该账号配置可收取验证码的邮箱来源。"
+            ) from exc
+        # A password-backed imported account can still be routed to the
+        # password page with an expired/invalid Auth step.  Treat that as a
+        # login-method mismatch, not as an invalid password: request a fresh
+        # email OTP and continue through the same workspace/callback path.
+        if "invalid_auth_step" in body.lower() or "invalid auth step" in str(exc).lower():
+            if not email_source:
+                raise RuntimeError(
+                    "当前登录需要邮箱验证码，但该账号没有保存 email_source/IMAP 来源；"
+                    "请重新导入正确密码，或先为该账号配置可收取验证码的邮箱来源。"
+                ) from exc
+            logger.warning("[查活] 密码认证步骤已失效，改走邮箱 OTP：%s", email)
+            send_email_otp(session)
+            return _login_via_email_otp(
+                session,
+                email,
+                time.time(),
+                email_source=email_source,
+            )
+        raise
     continue_url = _extract_continue_url(password_result)
     page = password_result.get("page") if isinstance(password_result, dict) else {}
     page = page if isinstance(page, dict) else {}

@@ -114,6 +114,7 @@ def _compact_account_for_list(row: dict) -> dict:
     # 这些是列表固定列直接展示字段。
     for key in (
         "user_name", "email_source", "original_email", "note", "archived", "created_at",
+        "account_group",
         "plan_type", "current_plan_type", "plus_trial_eligible",
         "eligible_promo_campaigns", "plus_trial_discount_percentage",
         "plan_check_status", "codex_status", "codex_agent_status",
@@ -478,6 +479,7 @@ def create_app(auth_code: str | None = None, *, local_no_auth: bool = False) -> 
         ).strip().lower()
         q = str(request.args.get("q", default="") or "").strip()
         email_suffix = str(request.args.get("email_suffix") or request.args.get("suffix") or "").strip()
+        account_group = str(request.args.get("group") or request.args.get("account_group") or "").strip()
         date_from = str(request.args.get("date_from", default="") or "").strip() or None
         date_to = str(request.args.get("date_to", default="") or "").strip() or None
         # 新分页接口：传 page/page_size 或 paged=1 时返回 {items,total,page,page_size,...}
@@ -488,11 +490,15 @@ def create_app(auth_code: str | None = None, *, local_no_auth: bool = False) -> 
             page = max(1, int(page_arg or 1))
             page_size = max(1, min(500, int(page_size_arg or limit or 50)))
             offset = (page - 1) * page_size
-            result = db.list_accounts_page(limit=page_size, offset=offset, archived=archived, plan_filter=plan_filter, codex_filter=codex_filter, q=q, date_from=date_from, date_to=date_to, totp_filter=totp_filter, email_suffix=email_suffix)
+            result = db.list_accounts_page(limit=page_size, offset=offset, archived=archived, plan_filter=plan_filter, codex_filter=codex_filter, q=q, date_from=date_from, date_to=date_to, totp_filter=totp_filter, email_suffix=email_suffix, account_group=account_group)
             result["items"] = [_compact_account_for_list(r) for r in (result.get("items") or [])]
             result.update({"ok": True, "page": page, "page_size": page_size, "compact": True})
             return jsonify(result)
-        return jsonify(db.list_accounts(limit=limit, archived=archived, plan_filter=plan_filter, codex_filter=codex_filter, q=q, date_from=date_from, date_to=date_to, totp_filter=totp_filter, email_suffix=email_suffix))
+        return jsonify(db.list_accounts(limit=limit, archived=archived, plan_filter=plan_filter, codex_filter=codex_filter, q=q, date_from=date_from, date_to=date_to, totp_filter=totp_filter, email_suffix=email_suffix, account_group=account_group))
+
+    @app.get("/api/accounts/groups")
+    def api_account_groups():
+        return jsonify({"ok": True, "groups": db.list_account_groups()})
 
     @app.get("/api/accounts/plan-check-status")
     def api_account_plan_check_status():
@@ -509,6 +515,7 @@ def create_app(auth_code: str | None = None, *, local_no_auth: bool = False) -> 
         ).strip().lower()
         q = str(request.args.get("q", default="") or "").strip()
         email_suffix = str(request.args.get("email_suffix") or request.args.get("suffix") or "").strip()
+        account_group = str(request.args.get("group") or request.args.get("account_group") or "").strip()
         date_from = str(request.args.get("date_from", default="") or "").strip() or None
         date_to = str(request.args.get("date_to", default="") or "").strip() or None
         page_arg = request.args.get("page", default=None, type=int)
@@ -517,10 +524,10 @@ def create_app(auth_code: str | None = None, *, local_no_auth: bool = False) -> 
             page = max(1, int(page_arg or 1))
             page_size = max(1, min(500, int(page_size_arg or limit or 50)))
             offset = (page - 1) * page_size
-            snapshot = db.list_account_plan_check_statuses(limit=page_size, offset=offset, archived=archived, plan_filter=plan_filter, codex_filter=codex_filter, q=q, date_from=date_from, date_to=date_to, totp_filter=totp_filter, email_suffix=email_suffix)
+            snapshot = db.list_account_plan_check_statuses(limit=page_size, offset=offset, archived=archived, plan_filter=plan_filter, codex_filter=codex_filter, q=q, date_from=date_from, date_to=date_to, totp_filter=totp_filter, email_suffix=email_suffix, account_group=account_group)
             snapshot.update({"page": page, "page_size": page_size})
         else:
-            snapshot = db.list_account_plan_check_statuses(limit=max(1, min(5000, limit)), archived=archived, plan_filter=plan_filter, codex_filter=codex_filter, q=q, date_from=date_from, date_to=date_to, totp_filter=totp_filter, email_suffix=email_suffix)
+            snapshot = db.list_account_plan_check_statuses(limit=max(1, min(5000, limit)), archived=archived, plan_filter=plan_filter, codex_filter=codex_filter, q=q, date_from=date_from, date_to=date_to, totp_filter=totp_filter, email_suffix=email_suffix, account_group=account_group)
         snapshot["queue"] = plan_check_service.queue_settings()
         return jsonify(snapshot)
 
@@ -661,6 +668,16 @@ def create_app(auth_code: str | None = None, *, local_no_auth: bool = False) -> 
         if not updated:
             return jsonify({"ok": False, "error": "账号不存在"}), 404
         return jsonify({"ok": True, "updated": True, "id": acc_id, "note": note})
+
+    @app.post("/api/accounts/<int:acc_id>/group")
+    def api_account_group(acc_id: int):
+        data = request.get_json(silent=True) or {}
+        group = str(data.get("group") or data.get("account_group") or "").strip()
+        if len(group) > 100:
+            return jsonify({"ok": False, "error": "分组名称最多 100 个字符"}), 400
+        if not db.update_account_group(acc_id, group):
+            return jsonify({"ok": False, "error": "账号不存在"}), 404
+        return jsonify({"ok": True, "updated": True, "id": acc_id, "account_group": group})
 
     @app.get("/api/accounts/<int:acc_id>/workspace")
     def api_account_workspace_get(acc_id: int):
@@ -908,6 +925,26 @@ def create_app(auth_code: str | None = None, *, local_no_auth: bool = False) -> 
             "skipped": skipped,
             "skipped_count": len(skipped),
         })
+
+    @app.post("/api/accounts/group-bulk")
+    def api_accounts_group_bulk():
+        data = request.get_json(silent=True) or {}
+        ids = data.get("account_ids") or data.get("ids") or []
+        group = str(data.get("group") or data.get("account_group") or "").strip()
+        if not isinstance(ids, list) or not ids:
+            return jsonify({"ok": False, "error": "account_ids 必须是非空数组"}), 400
+        if len(ids) > 5000 or len(group) > 100:
+            return jsonify({"ok": False, "error": "账号数量最多 5000，分组名称最多 100 个字符"}), 400
+        normalized, skipped, seen = [], [], set()
+        for raw in ids:
+            try: acc_id = int(raw)
+            except (TypeError, ValueError):
+                skipped.append({"id": raw, "reason": "ID 非法"}); continue
+            if acc_id not in seen:
+                seen.add(acc_id); normalized.append(acc_id)
+        updated, db_skipped = db.update_accounts_group(normalized, group)
+        skipped.extend(db_skipped)
+        return jsonify({"ok": True, "updated": updated, "updated_count": len(updated), "skipped": skipped, "skipped_count": len(skipped)})
 
     @app.post("/api/accounts/check-live-bulk")
     def api_accounts_check_live_bulk():

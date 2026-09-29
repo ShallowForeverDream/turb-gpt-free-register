@@ -410,6 +410,7 @@ def _query_collection_page(collection: str, *, status: str | None = None,
                            archived: str | bool | None = None, q: str | None = None,
                            date_from: str | None = None, date_to: str | None = None,
                            email_suffix: str | None = None,
+                           account_group: str | None = None,
                            extra_where: list[str] | None = None,
                            extra_params: list[Any] | None = None,
                            limit: int = 50, offset: int = 0) -> tuple[list[dict], int, str]:
@@ -431,6 +432,13 @@ def _query_collection_page(collection: str, *, status: str | None = None,
         suffix = suffix if suffix.startswith("@") else "@" + suffix
         where.append("lower(COALESCE(json_extract(payload, '$.email'), '')) LIKE ?")
         params.append("%" + suffix)
+    if account_group and table == "accounts":
+        group = str(account_group).strip()
+        if group in {"__ungrouped__", "未分组"}:
+            where.append("COALESCE(json_extract(payload, '$.account_group'), '') = ''")
+        else:
+            where.append("json_extract(payload, '$.account_group') = ?")
+            params.append(group)
     if date_from:
         value = str(date_from)
         where.append("created_at >= ?"); params.append(value + ("T00:00:00" if len(value) == 10 else ""))
@@ -782,6 +790,7 @@ def _find_by_email(rows: list[dict], email: str) -> dict | None:
 def _decorate_account(row: dict) -> dict:
     out = dict(row)
     out["note"] = out.get("note") or ""
+    out["account_group"] = out.get("account_group") or ""
     out["note_updated_at"] = out.get("note_updated_at") or ""
     out["workspace_preference"] = out.get("workspace_preference") or "organization"
     out["workspace_options"] = _normalize_workspace_options(out.get("workspace_options"))
@@ -1592,6 +1601,7 @@ def list_account_plan_check_statuses(
     date_to: str | None = None,
     totp_filter: str | None = None,
     email_suffix: str | None = None,
+    account_group: str | None = None,
 ) -> dict:
     """返回不含 Token/邮箱密码的套餐查询轻量状态快照。"""
     fields = (
@@ -1640,6 +1650,7 @@ def list_account_plan_check_statuses(
             extra_where=extra_where,
             extra_params=extra_params,
             email_suffix=email_suffix,
+            account_group=account_group,
             limit=limit,
             offset=offset,
         )
@@ -1718,6 +1729,7 @@ def list_accounts(
     date_to: str | None = None,
     totp_filter: str | None = None,
     email_suffix: str | None = None,
+    account_group: str | None = None,
 ) -> list[dict]:
     # 非分页兼容接口也走同一条 SQL 分页路径，避免 limit=500 时先读取整张表。
     result = list_accounts_page(
@@ -1731,6 +1743,7 @@ def list_accounts(
         date_to=date_to,
         totp_filter=totp_filter,
         email_suffix=email_suffix,
+        account_group=account_group,
     )
     return result["items"]
 
@@ -1746,6 +1759,7 @@ def list_accounts_page(
     date_to: str | None = None,
     totp_filter: str | None = None,
     email_suffix: str | None = None,
+    account_group: str | None = None,
 ) -> dict:
     with _LOCK:
         limit = max(1, int(limit))
@@ -1764,6 +1778,7 @@ def list_accounts_page(
             extra_where=extra_where,
             extra_params=extra_params,
             email_suffix=email_suffix,
+            account_group=account_group,
             limit=limit,
             offset=offset,
         )
@@ -1796,6 +1811,44 @@ def update_account_note(acc_id: int, note: str) -> bool:
         row["updated_at"] = now
         _save_accounts(rows)
         return True
+
+
+def update_account_group(acc_id: int, group: str) -> bool:
+    """设置账号分组；空字符串表示移出分组。"""
+    with _LOCK:
+        accounts = _load_accounts()
+        row = next((r for r in accounts if int(r.get("id") or 0) == int(acc_id)), None)
+        if row is None:
+            return False
+        row["account_group"] = str(group or "").strip()[:100]
+        row["updated_at"] = _now()
+        _save_accounts(accounts)
+        return True
+
+
+def update_accounts_group(account_ids: list[int], group: str) -> tuple[list[dict], list[dict]]:
+    with _LOCK:
+        accounts = _load_accounts()
+        wanted = {int(x) for x in account_ids}
+        updated, skipped = [], []
+        value = str(group or "").strip()[:100]
+        for acc_id in wanted:
+            row = next((r for r in accounts if int(r.get("id") or 0) == acc_id), None)
+            if row is None:
+                skipped.append({"id": acc_id, "reason": "账号不存在"})
+                continue
+            row["account_group"] = value
+            row["updated_at"] = _now()
+            updated.append({"id": acc_id, "email": row.get("email"), "account_group": value})
+        if updated:
+            _save_accounts(accounts)
+        return updated, skipped
+
+
+def list_account_groups() -> list[str]:
+    with _LOCK:
+        values = {str(r.get("account_group") or "").strip() for r in _load_accounts()}
+    return sorted((x for x in values if x), key=lambda x: x.lower())
 
 
 _WORKSPACE_PREFERENCES = {"organization", "personal"}

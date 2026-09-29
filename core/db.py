@@ -814,20 +814,27 @@ def _decorate_account(row: dict) -> dict:
 
 
 def _account_registered_at(row: dict) -> str:
-    """Use ChatGPT account.createdTime when present, else local save time."""
+    """Use ChatGPT account.createdTime; old imported records stay blank."""
     fallback = str(row.get("created_at") or "")
     raw = row.get("extra_json")
     try:
         extra = json.loads(raw) if isinstance(raw, str) and raw.strip() else (raw if isinstance(raw, dict) else {})
         value = (extra.get("account") or {}).get("createdTime") if isinstance(extra, dict) else None
         if value is None:
-            return fallback
+            return "" if isinstance(extra, dict) and extra.get("imported_registered") else fallback
+        return _created_time_to_iso(value) or fallback
+    except (TypeError, ValueError, OSError, OverflowError, json.JSONDecodeError):
+        return fallback
+
+
+def _created_time_to_iso(value: Any) -> str:
+    try:
         stamp = float(value)
         if stamp > 10**12:
             stamp /= 1000.0
         return datetime.fromtimestamp(stamp).isoformat(timespec="seconds")
-    except (TypeError, ValueError, OSError, OverflowError, json.JSONDecodeError):
-        return fallback
+    except (TypeError, ValueError, OSError, OverflowError):
+        return ""
 
 
 def _account_matches_plan_filter(row: dict, plan_filter: str | None = None) -> bool:
@@ -2107,6 +2114,9 @@ def update_account_liveness(acc_id: int, result: dict | None = None) -> bool:
             session = result.get("session") or {}
             user = session.get("user") or {}
             account = session.get("account") or {}
+            created_time = _created_time_to_iso(account.get("createdTime"))
+            if created_time:
+                row["registered_at"] = created_time
             if user.get("id"):
                 row["user_id"] = user.get("id")
             if user.get("name") is not None:

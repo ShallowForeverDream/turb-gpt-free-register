@@ -3786,7 +3786,7 @@ function renderAccounts() {
       <td class="col-note" title="${esc(r.note || '')}">${r.note ? esc(short(r.note, 80)) : '<span class="acc-v2-muted">-</span>'}</td>
       <td class="col-small">${_totpCellV2(r)}</td>
       <td class="col-status">${_codexCellV2(r)}</td>
-      <td class="col-time" title="${esc(r.registered_at || r.created_at || '-')}">${esc(r.registered_at || r.created_at || '-')}</td>
+      <td class="col-time" title="${esc(r.registered_at || '-')}">${esc(r.registered_at || '-')}</td>
       <td class="col-actions">
         <div class="acc-v2-actions">
           <button type="button" class="danger" data-account-delete="${esc(r.id)}" data-email="${esc(r.email)}">删除</button>

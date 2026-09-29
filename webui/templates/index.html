@@ -1832,8 +1832,8 @@
     /* 表头可拖动调整列宽；宽度保存在当前浏览器本地。 */
     table th { position: relative; }
     .table-col-resizer {
-      position: absolute; top: 0; right: -3px; width: 7px; height: 100%;
-      cursor: col-resize; z-index: 5; touch-action: none;
+      position: absolute; top: 0; right: 0; width: 12px; height: 100%;
+      cursor: col-resize; z-index: 20; touch-action: none; user-select: none;
     }
     .table-col-resizer:hover, .table-col-resizer.is-dragging { background: rgba(64,158,255,.35); }
     body.is-resizing-column { cursor: col-resize !important; user-select: none !important; }

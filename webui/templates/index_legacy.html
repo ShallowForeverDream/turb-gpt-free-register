@@ -1652,7 +1652,7 @@ function renderAccounts() {
       <td class="wrap" title="${esc(r.note || '')}">${r.note ? esc(short(r.note, 80)) : '<span class="muted">-</span>'}</td>
       <td>${_totpAction(r)}</td>
       <td>${_codexCell(r)}</td>
-      <td class="muted">${esc(r.created_at || '-')}</td>
+      <td class="muted">${esc(r.registered_at || r.created_at || '-')}</td>
       <td class="actions actions-cell">
         <div class="account-row-actions">
           <div class="account-action-group"><button class="primary" data-account-copy-secret="access_token" data-account-id="${esc(r.id)}" ${r.has_access_token ? '' : 'disabled'}>复制Token</button> <button class="good" data-account-copy-secret="copy_line" data-account-id="${esc(r.id)}">复制整行</button></div>

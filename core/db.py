@@ -794,6 +794,7 @@ def _decorate_account(row: dict) -> dict:
     out["note_updated_at"] = out.get("note_updated_at") or ""
     out["workspace_preference"] = out.get("workspace_preference") or "organization"
     out["workspace_options"] = _normalize_workspace_options(out.get("workspace_options"))
+    out["registered_at"] = _account_registered_at(out)
     plan_status = out.get("plan_check_status")
     if plan_status in {"queued", "running"}:
         try:
@@ -810,6 +811,23 @@ def _decorate_account(row: dict) -> dict:
             out["plan_check_stale"] = True
     out["copy_line"] = _account_line(out)
     return out
+
+
+def _account_registered_at(row: dict) -> str:
+    """Use ChatGPT account.createdTime when present, else local save time."""
+    fallback = str(row.get("created_at") or "")
+    raw = row.get("extra_json")
+    try:
+        extra = json.loads(raw) if isinstance(raw, str) and raw.strip() else (raw if isinstance(raw, dict) else {})
+        value = (extra.get("account") or {}).get("createdTime") if isinstance(extra, dict) else None
+        if value is None:
+            return fallback
+        stamp = float(value)
+        if stamp > 10**12:
+            stamp /= 1000.0
+        return datetime.fromtimestamp(stamp).isoformat(timespec="seconds")
+    except (TypeError, ValueError, OSError, OverflowError, json.JSONDecodeError):
+        return fallback
 
 
 def _account_matches_plan_filter(row: dict, plan_filter: str | None = None) -> bool:

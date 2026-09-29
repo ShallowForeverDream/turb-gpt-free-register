@@ -113,7 +113,7 @@ def _compact_account_for_list(row: dict) -> dict:
 
     # 这些是列表固定列直接展示字段。
     for key in (
-        "user_name", "email_source", "original_email", "note", "archived", "created_at",
+        "user_name", "email_source", "original_email", "note", "archived", "created_at", "registered_at",
         "account_group",
         "plan_type", "current_plan_type", "plus_trial_eligible",
         "eligible_promo_campaigns", "plus_trial_discount_percentage",

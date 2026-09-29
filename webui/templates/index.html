@@ -2481,9 +2481,9 @@
             <option value="disabled">已停用</option>
           </select>
         </label>
-        <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnMarkSelectedOutlookAvailableV2" disabled title="把选中的邮箱批量标记为未使用/可用">标记未使用</button>
+        <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnMarkSelectedOutlookAvailableV2" disabled title="把选中的邮箱批量标记为未注册">标记未注册</button>
         <button type="button" class="jobs-tb-btn" id="btnDisableSelectedOutlookV2" disabled title="批量停用选中的邮箱；停用后不会被注册任务领取">停用选中</button>
-        <button type="button" class="jobs-tb-btn" id="btnFailSelectedOutlookV2" disabled title="批量标记选中的邮箱为失败">标失败</button>
+        <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnMarkSelectedOutlookRegisteredV2" disabled title="把选中的邮箱批量标记为已注册">标记已注册</button>
         <button type="button" class="jobs-tb-btn jobs-tb-btn--danger" id="btnDeleteSelectedOutlookV2" disabled title="批量删除选中的邮箱素材">删除选中</button>
         <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="copyAllEmailsV2" title="复制当前页全部邮箱素材">复制全部邮箱素材</button>
         <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnImportOutlookV2" title="导入邮箱素材">导入</button>
@@ -2815,7 +2815,7 @@ function short(v, n=40) { const s = v || ''; return s.length > n ? s.slice(0,n)+
 function copyId(v) { if (!v) return ''; const id = 'c'+(++copySeq); copyStore.set(id, v); return id; }
 function cbtn(label, value, cls='') { const id = copyId(value); return `<button class="${cls}" data-copy-id="${id}" ${id?'':'disabled'}>${label}</button>`; }
 function pill(status) {
-  const map = { available:'可用', used:'已用', failed:'失败', blocked:'入口受阻', already_registered:'已注册账号', partial_success:'部分成功', disabled:'已停用', pending:'排队', running:'运行中', stopping:'停止中', stopped:'已停止', success:'成功', cancelled:'已取消' };
+  const map = { available:'可用', used:'已用', failed:'失败', registered:'已注册', unregistered:'未注册', blocked:'入口受阻', already_registered:'已注册账号', partial_success:'部分成功', disabled:'停用', pending:'排队', running:'运行中', stopping:'停止中', stopped:'已停止', success:'成功', cancelled:'已取消' };
   return `<span class="pill status-${esc(status)}">${esc(map[status]||status||'-')}</span>`;
 }
 function pillV2(status) {
@@ -5467,9 +5467,9 @@ function _outlookMoreMenu(r) {
   const items = [
     cbtn('复制Token', r.access_token, 'good'),
     cbtn('复制整行', r.account_copy_line, 'good'),
-    r.status !== 'available' ? `<button type="button" data-pool-act="available" data-email="${email}" data-source="${src}">恢复可用</button>` : '',
-    r.status !== 'disabled' ? `<button type="button" data-pool-act="disabled" data-email="${email}" data-source="${src}">停用</button>` : '',
-    r.status !== 'failed' ? `<button type="button" data-pool-act="failed" data-email="${email}" data-source="${src}">标失败</button>` : '',
+    r.registration_status !== 'registered' ? `<button type="button" data-pool-act="registered" data-email="${email}" data-source="${src}">标记已注册</button>` : '',
+    r.registration_status !== 'unregistered' ? `<button type="button" data-pool-act="unregistered" data-email="${email}" data-source="${src}">标记未注册</button>` : '',
+    r.registration_status !== 'disabled' ? `<button type="button" data-pool-act="disabled" data-email="${email}" data-source="${src}">停用</button>` : '',
   ].filter(Boolean).join('');
   return items;
 }
@@ -5489,7 +5489,7 @@ function renderOutlook() {
         <div class="acc-v2-sub" title="${esc(r.copy_line || '')}">${esc(short(r.copy_line, 70))}</div>
       </td>
       <td class="col-source">${r.imap_forwarded ? '转发 IMAP' : esc(poolLabel(r.source))}</td>
-      <td class="col-status">${pill(r.status)}</td>
+      <td class="col-status">${pill(r.registration_status)}</td>
       <td class="col-token">${_outlookTokenCell(r)}</td>
       <td class="col-time" title="${esc(r.imported_at || r.created_at || '-')}">${esc(r.imported_at || r.created_at || '-')}</td>
       <td class="col-time" title="${esc(r.used_at || '-')}">${esc(r.used_at || '-')}</td>
@@ -5513,8 +5513,8 @@ function updateOutlookSelectionUi(pageRows = null) {
   [
     'btnDeleteSelectedOutlookV2',
     'btnMarkSelectedOutlookAvailableV2',
+    'btnMarkSelectedOutlookRegisteredV2',
     'btnDisableSelectedOutlookV2',
-    'btnFailSelectedOutlookV2',
   ].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.disabled = none;
@@ -5639,9 +5639,9 @@ async function onOutlookBodyClick(e) {
     bodyV2.addEventListener('click', onOutlookBodyClick);
   }
   const bind = (id, fn) => { const el = document.getElementById(id); if (el) el.addEventListener('click', fn); };
-  bind('btnMarkSelectedOutlookAvailableV2', () => bulkMarkOutlookStatus('available'));
+  bind('btnMarkSelectedOutlookAvailableV2', () => bulkMarkOutlookStatus('unregistered'));
+  bind('btnMarkSelectedOutlookRegisteredV2', () => bulkMarkOutlookStatus('registered'));
   bind('btnDisableSelectedOutlookV2', () => bulkMarkOutlookStatus('disabled'));
-  bind('btnFailSelectedOutlookV2', () => bulkMarkOutlookStatus('failed'));
   bind('btnDeleteSelectedOutlookV2', deleteSelectedOutlook);
   bind('btnImportOutlookV2', openOutlookImportModal);
   bind('copyAllEmailsV2', () => copyText(OUTLOOK.map(r=>r.copy_line).filter(Boolean).join('\n')));
@@ -5803,14 +5803,10 @@ async function bulkMarkOutlookStatus(status) {
     return {source, email: rest.join('|')};
   });
   if (items.length === 0) { showToast('请先选择邮箱'); return; }
-  const labelMap = {available:'未使用/可用', disabled:'停用', failed:'失败'};
+  const labelMap = {registered:'已注册', unregistered:'未注册', disabled:'停用'};
   const label = labelMap[status] || status;
   if (!confirm(`确定把选中的 ${items.length} 个邮箱标记为${label}吗？`)) return;
-  const btnId = status === 'disabled'
-    ? 'btnDisableSelectedOutlookV2'
-    : status === 'failed'
-      ? 'btnFailSelectedOutlookV2'
-      : 'btnMarkSelectedOutlookAvailableV2';
+  const btnId = status === 'disabled' ? 'btnDisableSelectedOutlookV2' : status === 'registered' ? 'btnMarkSelectedOutlookRegisteredV2' : 'btnMarkSelectedOutlookAvailableV2';
   const btn = document.getElementById(btnId);
   if (btn) btn.disabled = true;
   try {

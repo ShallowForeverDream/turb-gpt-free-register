@@ -839,6 +839,20 @@ def _account_matches_plan_filter(row: dict, plan_filter: str | None = None) -> b
     return plan == f
 
 
+def _pool_registration_status(row: dict, account: dict | None = None) -> str:
+    """Expose one user-facing state for a pool row.
+
+    A local account record is authoritative: a used mailbox from a failed
+    attempt without an account remains ``unregistered`` and can be reused.
+    """
+    if account:
+        return "registered"
+    override = str(row.get("registration_status") or "").strip().lower()
+    if override in {"registered", "unregistered", "disabled"}:
+        return override
+    return "disabled" if str(row.get("status") or "").lower() == "disabled" else "unregistered"
+
+
 def _decorate_outlook(row: dict, account_by_email: dict[str, dict] | None = None) -> dict:
     out = dict(row)
     out["copy_line"] = _outlook_line(out)
@@ -855,6 +869,7 @@ def _decorate_outlook(row: dict, account_by_email: dict[str, dict] | None = None
         )
         out["account_copy_line"] = _account_line(account)
         out["totp_secret"] = account.get("totp_secret")
+    out["registration_status"] = _pool_registration_status(out, account)
     return out
 
 
@@ -878,6 +893,7 @@ def _decorate_generic_api_email(row: dict, account_by_email: dict[str, dict] | N
         )
         out["account_copy_line"] = _account_line(account)
         out["totp_secret"] = account.get("totp_secret")
+    out["registration_status"] = _pool_registration_status(out, account)
     return out
 
 
@@ -891,6 +907,7 @@ def _decorate_imap_email(row: dict, account_by_email: dict[str, dict] | None = N
         out["access_token_preview"] = ((account.get("access_token") or "")[:40] + "...") if account.get("access_token") else ""
         out["account_copy_line"] = _account_line(account)
         out["totp_secret"] = account.get("totp_secret")
+    out["registration_status"] = _pool_registration_status(out, account)
     return out
 
 
@@ -2619,7 +2636,8 @@ def claim_pool_email(email: str, source: str, *, note: str | None = None) -> dic
     with _LOCK:
         rows, saver, normalized = _pool_rows_for_source(source)
         row = _find_by_email(rows, email)
-        if row is None or str(row.get("status") or "") != "available" or _find_by_email(_load_accounts(), email):
+        accounts = _load_accounts()
+        if row is None or _pool_registration_status(row, _find_by_email(accounts, email)) != "unregistered":
             return None
         row["status"] = "used"
         row["used_at"] = _now()
@@ -2658,11 +2676,13 @@ def claim_pool_emails(items: list[dict], *, note: str | None = None) -> tuple[li
                     skipped.append({"email": email, "source": source, "reason": "来源无效"})
                     continue
             row = _find_by_email(pools[source][0], email)
+            account = next((a for a in _load_accounts() if str(a.get("email") or "").lower() == email.lower()), None)
+            registration_status = _pool_registration_status(row, account) if row is not None else "unregistered"
             reason = (
                 "邮箱格式无效" if not valid_email(email) else
                 "账号页已存在，请勿重复注册" if email.lower() in registered else
                 "已有同邮箱注册任务在执行" if email.lower() in active_jobs else
-                "邮箱不存在或不是可用状态" if row is None or row.get("status") != "available" else ""
+                "邮箱不存在或不是未注册状态" if row is None or registration_status != "unregistered" else ""
             )
             if reason:
                 skipped.append({"email": email, "source": source, "reason": reason})
@@ -2678,6 +2698,29 @@ def claim_pool_emails(items: list[dict], *, note: str | None = None) -> tuple[li
         for rows, saver in pools.values():
             saver(rows)
         return claimed, []
+
+
+def set_pool_registration_status(email: str, source: str, registration_status: str, *, note: str | None = None) -> bool:
+    """手动设置邮箱池展示状态：registered/unregistered/disabled。"""
+    value = str(registration_status or "").strip().lower()
+    if value not in {"registered", "unregistered", "disabled"}:
+        raise ValueError("registration_status 非法")
+    email = str(email or "").strip()
+    with _LOCK:
+        rows, saver, _ = _pool_rows_for_source(source)
+        row = _find_by_email(rows, email)
+        if row is None:
+            return False
+        row["registration_status"] = value
+        row["status"] = "disabled" if value == "disabled" else ("used" if value == "registered" else "available")
+        if value == "available" or value == "unregistered":
+            row["used_at"] = None
+        elif not row.get("used_at"):
+            row["used_at"] = _now()
+        if note is not None:
+            row["note"] = note
+        saver(rows)
+        return True
 
 
 def import_pool_emails_as_registered(items: list[dict]) -> tuple[list[dict], list[dict]]:

@@ -1882,31 +1882,28 @@ def create_app(auth_code: str | None = None, *, local_no_auth: bool = False) -> 
         """手动改邮箱状态：body {email, status, note?, source?}。status ∈ available/used/failed/disabled。"""
         data = request.get_json(silent=True) or {}
         email = (data.get("email") or "").strip()
-        status = (data.get("status") or "").strip()
-        if not email or status not in ("available", "used", "failed", "disabled"):
+        status = (data.get("registration_status") or data.get("status") or "").strip().lower()
+        legacy = {"available": "unregistered", "used": "unregistered", "failed": "unregistered", "disabled": "disabled"}
+        status = legacy.get(status, status)
+        if not email or status not in ("registered", "unregistered", "disabled"):
             return jsonify({"ok": False, "error": "email 或 status 非法"}), 400
         source = (data.get("source") or _pool_source_arg()).strip()
         if source == "all":
             source = "outlook"
-        if source == "generic_api":
-            db.release_generic_api_email(email, status=status, note=data.get("note"))
-        elif source == "imap":
-            db.release_imap_email(email, status=status, note=data.get("note"))
-        elif source == "cloudflare_domain":
-            db.release_domain_email(email, status=status, note=data.get("note"))
-        else:
-            db.release_outlook(email, status=status, note=data.get("note"))
-        return jsonify({"ok": True})
+        updated = db.set_pool_registration_status(email, source, status, note=data.get("note"))
+        return jsonify({"ok": True, "updated": updated, "registration_status": status})
 
     @app.post("/api/outlook/status-bulk")
     def api_outlook_status_bulk():
         """批量修改邮箱状态。Body {items:[{email,source}], status, note?}。"""
         data = request.get_json(silent=True) or {}
         items = data.get("items") or data.get("emails") or []
-        status = (data.get("status") or "").strip()
+        status = (data.get("registration_status") or data.get("status") or "").strip().lower()
+        legacy = {"available": "unregistered", "used": "unregistered", "failed": "unregistered", "disabled": "disabled"}
+        status = legacy.get(status, status)
         note = data.get("note")
         default_source = (data.get("source") or _pool_source_arg()).strip()
-        if status not in ("available", "used", "failed", "disabled"):
+        if status not in ("registered", "unregistered", "disabled"):
             return jsonify({"ok": False, "error": "status 非法"}), 400
         if not isinstance(items, list) or not items:
             return jsonify({"ok": False, "error": "items/emails 必须是非空数组"}), 400
@@ -1933,14 +1930,8 @@ def create_app(auth_code: str | None = None, *, local_no_auth: bool = False) -> 
                 continue
             seen.add(key)
             try:
-                if item_source == "generic_api":
-                    db.release_generic_api_email(email, status=status, note=note)
-                elif item_source == "imap":
-                    db.release_imap_email(email, status=status, note=note)
-                elif item_source == "cloudflare_domain":
-                    db.release_domain_email(email, status=status, note=note)
-                else:
-                    db.release_outlook(email, status=status, note=note)
+                if not db.set_pool_registration_status(email, item_source, status, note=note):
+                    raise ValueError("邮箱不存在")
                 updated.append({"email": email, "source": item_source, "status": status})
             except Exception as exc:
                 skipped.append({"email": email, "source": item_source, "reason": f"{type(exc).__name__}: {exc}"})

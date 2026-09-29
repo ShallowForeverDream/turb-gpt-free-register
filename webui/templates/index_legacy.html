@@ -432,7 +432,11 @@
       background: #fff; color: var(--blue); text-decoration: none; font-size: 12px; font-weight: 800;
     }
     .roxy-invite-link:hover { background: #e0ebff; }
-  </style>
+    table th { position: relative; }
+    .table-col-resizer { position:absolute; top:0; right:-3px; width:7px; height:100%; cursor:col-resize; z-index:5; }
+    .table-col-resizer:hover, .table-col-resizer.is-dragging { background:rgba(37,99,235,.3); }
+    body.is-resizing-column { cursor:col-resize !important; user-select:none !important; }
+</style>
 </head>
 <body>
 <header>
@@ -3808,6 +3812,33 @@ document.addEventListener('click', (e) => {
 });
 
 // ---------- 初始化 ----------
+function enableLegacyResizableHeaders(selector, key) {
+  const table = document.querySelector(selector);
+  if (!table || table.dataset.resizeReady) return;
+  table.dataset.resizeReady = '1';
+  const saved = JSON.parse(localStorage.getItem(`legacy-table-widths:${key}`) || '{}');
+  table.querySelectorAll('thead th').forEach((th, index) => {
+    const handle = document.createElement('span');
+    handle.className = 'table-col-resizer';
+    th.appendChild(handle);
+    if (saved[index]) th.style.width = `${saved[index]}px`;
+    handle.addEventListener('mousedown', (event) => {
+      event.preventDefault(); event.stopPropagation();
+      const startX = event.clientX, startWidth = th.getBoundingClientRect().width;
+      handle.classList.add('is-dragging'); document.body.classList.add('is-resizing-column');
+      const move = e => { th.style.width = `${Math.max(48, Math.round(startWidth + e.clientX - startX))}px`; };
+      const up = () => {
+        const widths = JSON.parse(localStorage.getItem(`legacy-table-widths:${key}`) || '{}');
+        widths[index] = Math.round(th.getBoundingClientRect().width);
+        localStorage.setItem(`legacy-table-widths:${key}`, JSON.stringify(widths));
+        handle.classList.remove('is-dragging'); document.body.classList.remove('is-resizing-column');
+        document.removeEventListener('mousemove', move); document.removeEventListener('mouseup', up);
+      };
+      document.addEventListener('mousemove', move); document.addEventListener('mouseup', up, {once:true});
+    });
+  });
+}
+['jobs','accounts','codex','outlook'].forEach(key => enableLegacyResizableHeaders(`.${key}-table`, key));
 loadSummary();
 activateTab(localStorage.getItem('gpt_console_active_tab') || 'register', false);
 jobsTimer = setInterval(() => { if (!$('#tab-register').classList.contains('hidden')) refreshJobs(); }, 10000);

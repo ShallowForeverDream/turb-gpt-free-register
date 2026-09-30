@@ -474,6 +474,104 @@ def _validate_reauth_otp(session: BrowserSession, code: str) -> str:
     return continue_url
 
 
+def _is_retryable_otp_submit_error(exc: BaseException) -> bool:
+    """判断 OTP 提交是否只是传输抖动，而不是验证码/账号业务错误。"""
+    if isinstance(exc, TwofaOtpBlockedError):
+        return False
+    response = getattr(exc, "response", None)
+    try:
+        status = int(getattr(response, "status_code", 0) or 0)
+    except (TypeError, ValueError):
+        status = 0
+    if status:
+        # 401 交给上层换取更新的 OTP；403/429 明确是入口/风控拒绝，不能
+        # 在同一会话中重复提交。408/425/5xx 才属于可恢复的服务/网络抖动。
+        return status in (408, 425) or status >= 500
+    text = str(exc or "").lower()
+    return any(marker in text for marker in (
+        "curl: (35)", "ssl_error_syscall", "ssl_connect",
+        "connection closed", "connection reset", "timed out", "timeout",
+        "proxy", "socks", "temporarily unavailable",
+    ))
+
+
+def _validate_reauth_otp_with_retry(
+    session: BrowserSession,
+    email: str,
+    otp_code: str,
+    otp_after_ts: float,
+) -> str:
+    """提交邮箱 OTP，传输失败时等待后重试，最多消耗三次提交机会。
+
+    401 表示候选验证码可能是转发/接口缓存中的旧码：等待退避后只刷新一次
+    邮箱候选；TLS/代理失败则保留同一验证码、Cookie 和 device id 重试。
+    403/429 由 ``_validate_reauth_otp`` 转成明确的 blocked，不在这里重试。
+    """
+    from config import email as _email_cfg
+    from config import twofa as _twofa_cfg
+
+    max_attempts = max(1, min(3, int(
+        getattr(_twofa_cfg, "TWOFA_OTP_SUBMIT_MAX_ATTEMPTS", 3) or 3
+    )))
+    base_delay = max(0.0, min(120.0, float(
+        getattr(_twofa_cfg, "TWOFA_OTP_SUBMIT_RETRY_DELAY", 5.0) or 0.0
+    )))
+    current_code = str(otp_code or "").strip()
+    refreshed = False
+    last_exc: BaseException | None = None
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return _validate_reauth_otp(session, current_code)
+        except TwofaOtpBlockedError:
+            raise
+        except Exception as exc:
+            last_exc = exc
+            response = getattr(exc, "response", None)
+            try:
+                status = int(getattr(response, "status_code", 0) or 0)
+            except (TypeError, ValueError):
+                status = 0
+            is_old_otp = status == 401 and bool(getattr(_email_cfg, "USE_EMAIL_SERVICE", False)) and not refreshed
+            retryable = is_old_otp or _is_retryable_otp_submit_error(exc)
+            if attempt >= max_attempts or not retryable:
+                logger.warning(
+                    "[2FA] OTP 提交失败且不再重试：attempt=%s/%s error=%s: %s",
+                    attempt, max_attempts, type(exc).__name__, str(exc)[:200],
+                )
+                raise
+
+            _reopen_transport_after_tls_error(session, exc)
+            _clear_twofa_session_circuit(session, source="OTP 提交")
+            delay = min(120.0, base_delay * (2 ** (attempt - 1)))
+            logger.warning(
+                "[2FA] OTP 提交临时失败：attempt=%s/%s error=%s: %s；%.1fs 后重试",
+                attempt, max_attempts, type(exc).__name__, str(exc)[:180], delay,
+            )
+            if delay > 0:
+                time.sleep(delay)
+
+            if is_old_otp:
+                from core.email_provider import wait_for_otp
+
+                retry_settle = max(8, int(getattr(_email_cfg, "OTP_SETTLE_SECONDS", 5) or 5))
+                broad_after_ts = max(0.0, float(otp_after_ts) - 120.0)
+                logger.info("[2FA] 首次 OTP 被拒绝，等待后重新获取候选验证码（settle=%ss）", retry_settle)
+                fresh_otp = wait_for_otp(
+                    email,
+                    after_ts=broad_after_ts,
+                    settle_seconds=retry_settle,
+                )
+                if fresh_otp == current_code:
+                    logger.warning("[2FA] 重试仍获取到相同 OTP，继续提交")
+                else:
+                    logger.info("[2FA] 已获取新的 OTP，替换首次候选")
+                current_code = fresh_otp
+                refreshed = True
+
+    raise last_exc if last_exc else RuntimeError("邮箱 OTP 提交失败")
+
+
 def _exchange_new_token(session: BrowserSession, continue_url: str, *, email: str = "") -> str:
     """
     步骤5: 跟随 continue_url 完成回调，再次拉 /api/auth/session 拿到新 accessToken
@@ -658,29 +756,17 @@ def setup_2fa(
             logger.info("[2FA] 已手动输入邮箱重认证 OTP")
 
     human_delay("otp_input")
-    logger.info("[2FA] 正在提交邮箱重认证 OTP...")
-    try:
-        continue_url = _validate_reauth_otp(session, otp_code)
-    except Exception as first_exc:
-        # 部分取码接口会短暂返回缓存中的上一封邮件。若服务端拒绝验证码，
-        # 重新轮询一次并提交最新候选，避免第一次旧码直接终止整个 2FA 流程。
-        status_code = getattr(getattr(first_exc, "response", None), "status_code", None)
-        if status_code != 401 or not bool(getattr(_email_cfg, "USE_EMAIL_SERVICE", False)):
-            raise
-        logger.warning("[2FA] 首次 OTP 被拒绝，重新获取最新验证码后再试一次")
-        from core.email_provider import wait_for_otp
-        retry_settle = max(8, int(getattr(_email_cfg, "OTP_SETTLE_SECONDS", 5) or 5))
-        fresh_otp = wait_for_otp(
-            email,
-            after_ts=reauth_otp_after_ts,
-            settle_seconds=retry_settle,
-        )
-        if fresh_otp == otp_code:
-            logger.warning("[2FA] 重试仍获取到相同 OTP，继续提交以保留原始错误信息")
-        else:
-            logger.info("[2FA] 已获取新的 OTP，替换首次候选")
-        otp_code = fresh_otp
-        continue_url = _validate_reauth_otp(session, otp_code)
+    from config import twofa as _twofa_cfg
+    logger.info(
+        "[2FA] 正在提交邮箱重认证 OTP...（最多 %s 次，失败后递增等待）",
+        max(1, min(3, int(getattr(_twofa_cfg, "TWOFA_OTP_SUBMIT_MAX_ATTEMPTS", 3) or 3))),
+    )
+    continue_url = _validate_reauth_otp_with_retry(
+        session,
+        email,
+        otp_code,
+        reauth_otp_after_ts,
+    )
     logger.info("[2FA] 邮箱重认证 OTP 验证通过，下一步=%s", urlsplit(continue_url).path)
     human_delay("api")
     logger.info("[2FA] 正在交换新 token...")

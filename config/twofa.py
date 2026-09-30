@@ -22,6 +22,11 @@ TWOFA_PROXY_MODE = "saved"
 TWOFA_REAUTH_MAX_ATTEMPTS = 3
 TWOFA_REAUTH_RETRY_DELAY = 3.0
 
+# 提交邮箱 OTP 时的传输故障重试。一次任务最多提交 3 次；等待按 5s、10s
+# 递增。HTTP 403/429 仍立即停止，不重复撞 Cloudflare/认证熔断。
+TWOFA_OTP_SUBMIT_MAX_ATTEMPTS = 3
+TWOFA_OTP_SUBMIT_RETRY_DELAY = 5.0
+
 # 2FA 后台队列。workers 是实际同时执行的账号数，修改后需重启进程以重建线程池。
 TWOFA_WORKERS = 1
 TWOFA_QUEUE_LIMIT = 200
@@ -32,6 +37,8 @@ apply_env_overrides(globals(), {
     'TWOFA_PROXY_MODE': 'str',
     'TWOFA_REAUTH_MAX_ATTEMPTS': 'int',
     'TWOFA_REAUTH_RETRY_DELAY': 'float',
+    'TWOFA_OTP_SUBMIT_MAX_ATTEMPTS': 'int',
+    'TWOFA_OTP_SUBMIT_RETRY_DELAY': 'float',
     'TWOFA_WORKERS': 'int',
     'TWOFA_QUEUE_LIMIT': 'int',
 })

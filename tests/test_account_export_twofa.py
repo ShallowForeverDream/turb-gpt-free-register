@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 import core.account_export as account_export
 
@@ -41,6 +41,38 @@ class AccountExportTwofaTests(unittest.TestCase):
             account_export._validate_reauth_otp(session, "123456")
         self.assertIn("invalid_auth_step", str(caught.exception))
         self.assertIn("尚未进入 TOTP", str(caught.exception))
+
+    def test_reauth_otp_transport_failure_retries_three_times_with_backoff(self):
+        session = _CircuitSession()
+        session.reopen_transport = Mock()
+        errors = [
+            RuntimeError("curl: (35) BoringSSL SSL_connect: Connection closed abruptly"),
+            RuntimeError("curl: (35) BoringSSL SSL_connect: Connection closed abruptly"),
+            "https://auth.openai.com/workspace",
+        ]
+        with patch.object(account_export, "_validate_reauth_otp", side_effect=errors) as validate, \
+             patch("config.twofa.TWOFA_OTP_SUBMIT_MAX_ATTEMPTS", 3), \
+             patch("config.twofa.TWOFA_OTP_SUBMIT_RETRY_DELAY", 5), \
+             patch.object(account_export.time, "sleep") as sleep:
+            result = account_export._validate_reauth_otp_with_retry(
+                session, "a@example.test", "123456", 100.0
+            )
+        self.assertEqual(result, "https://auth.openai.com/workspace")
+        self.assertEqual(validate.call_count, 3)
+        self.assertEqual(sleep.call_args_list, [call(5), call(10)])
+        self.assertEqual(session.reopen_transport.call_count, 2)
+
+    def test_reauth_otp_403_is_not_retried_by_submit_retry(self):
+        session = _CircuitSession()
+        blocked = account_export.TwofaOtpBlockedError("HTTP 403")
+        with patch.object(account_export, "_validate_reauth_otp", side_effect=blocked) as validate, \
+             patch.object(account_export.time, "sleep") as sleep:
+            with self.assertRaises(account_export.TwofaOtpBlockedError):
+                account_export._validate_reauth_otp_with_retry(
+                    session, "a@example.test", "123456", 100.0
+                )
+        validate.assert_called_once()
+        sleep.assert_not_called()
 
     def test_reauth_callback_without_workspace_still_fetches_session(self):
         session = Mock()

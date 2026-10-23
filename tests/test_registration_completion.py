@@ -1,5 +1,5 @@
 import json
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -13,6 +13,30 @@ from tests.test_forwarded_imap_and_account_import import storage
 
 
 class RegistrationCompletionTests(unittest.TestCase):
+    def test_saved_plan_proxy_uses_pool_upstream_until_child_finishes(self):
+        future = Future()
+        future.set_result({"ok": True})
+        relay = SimpleNamespace(close=lambda: events.append("closed"))
+        events = []
+        with patch("core.workflow_driver.resolve_driver", return_value="protocol"), \
+             patch("core.proxy_chain.open_proxy_pool_proxy", return_value=("http://127.0.0.1:18888", relay)) as opened, \
+             patch("core.plan_check_service.enqueue_account_plan_check", return_value={"accepted": True, "future": future}) as enqueue:
+            result = registration_completion._wait_plan_check({"account_id": 99999}, "socks5://fixture@proxy.test:1234")
+        self.assertTrue(result["ok"])
+        opened.assert_called_once_with("socks5://fixture@proxy.test:1234")
+        self.assertEqual(enqueue.call_args.kwargs["proxy"], "http://127.0.0.1:18888")
+        self.assertEqual(events, ["closed"])
+
+    def test_saved_plan_proxy_is_closed_when_enqueue_fails(self):
+        events = []
+        relay = SimpleNamespace(close=lambda: events.append("closed"))
+        with patch("core.workflow_driver.resolve_driver", return_value="protocol"), \
+             patch("core.proxy_chain.open_proxy_pool_proxy", return_value=("http://127.0.0.1:18888", relay)), \
+             patch("core.plan_check_service.enqueue_account_plan_check", side_effect=RuntimeError("fixture")):
+            with self.assertRaises(RuntimeError):
+                registration_completion._wait_plan_check({}, "socks5://fixture@proxy.test:1234")
+        self.assertEqual(events, ["closed"])
+
     def test_real_session_low_traffic_callback_has_no_optional_log_hook_requirement(self):
         from core.session import BrowserSession
         from core.account_export import follow_oauth_callback

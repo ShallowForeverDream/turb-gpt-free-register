@@ -13,6 +13,24 @@ def completion_managed():
     return _MANAGED.get()
 
 
+def _wait_plan_check(args: dict, proxy: str | None):
+    from core.plan_check_service import enqueue_account_plan_check
+    from core.workflow_driver import resolve_driver
+    relay = None
+    transport = proxy
+    if proxy and resolve_driver() == "protocol":
+        from core.proxy_chain import open_proxy_pool_proxy
+        transport, relay = open_proxy_pool_proxy(proxy)
+    try:
+        # An explicit plan proxy is a complete transport override. Build the
+        # saved pool proxy's upstream first, just as the 2FA service does.
+        queued = enqueue_account_plan_check(**args, proxy=transport, return_future=True)
+        return queued["future"].result() if queued.get("accepted") else queued
+    finally:
+        if relay is not None:
+            relay.close()
+
+
 def finish_account(account_id: int) -> dict:
     from config import register, twofa
     from core.protocol_traffic import current_traffic
@@ -37,11 +55,9 @@ def finish_account(account_id: int) -> dict:
     args = {"account_id": account_id, "email": row["email"],
             "access_token": row.get("access_token") or "", "trigger": "registration_auto"}
     if register.AUTO_PLAN_CHECK_AFTER_REGISTER:
-        from core.plan_check_service import enqueue_account_plan_check
         logger.info("[收尾] 查询套餐和试用资格：%s", row["email"])
         try:
-            queued = enqueue_account_plan_check(**args, proxy=row.get("proxy_used"), return_future=True)
-            result = queued["future"].result() if queued.get("accepted") else queued
+            result = _wait_plan_check(args, row.get("proxy_used"))
             outcome["plan"] = "success" if result.get("ok") else "failed"
         except Exception:
             logger.exception("[收尾] 套餐查询异常")
@@ -65,8 +81,7 @@ def finish_account(account_id: int) -> dict:
         fresh = db.get_account(account_id) or {}
         if fresh.get("access_token") and fresh["access_token"] != args["access_token"]:
             try:
-                queued = enqueue_account_plan_check(**{**args, "access_token": fresh["access_token"]}, proxy=row.get("proxy_used"), return_future=True)
-                result = queued["future"].result() if queued.get("accepted") else queued
+                result = _wait_plan_check({**args, "access_token": fresh["access_token"]}, row.get("proxy_used"))
                 outcome["plan"] = "success" if result.get("ok") else "failed"
             except Exception:
                 logger.exception("[收尾] 刷新 AT 后查询套餐失败")

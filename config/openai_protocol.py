@@ -50,6 +50,12 @@ CHATGPT_AUTH_BOOTSTRAP_ENABLED = True
 # True 时预热失败会中断主流程；默认 False，仅记录日志并继续。
 CHATGPT_BOOTSTRAP_STRICT = False
 
+# 只在 protocol 注册任务中省去可选应用初始化及回调后的首页下载。
+# 关闭可恢复完整链路，便于同一版本做流量/成功率对照。
+PROTOCOL_LOW_TRAFFIC = True
+# 十进制 1 MB，仅记录预算告警，不改变注册结果。
+PROTOCOL_TRAFFIC_BUDGET_BYTES = 1_000_000
+
 # 纯协议注册遇到代理连接、TLS、超时、连接重置等临时网络故障时的重试配置。
 # 总尝试次数包含首次请求；退避间隔依次为 delay、delay*2、delay*4……
 OPENAI_PROXY_RETRY_MAX_ATTEMPTS = 3
@@ -60,6 +66,8 @@ OPENAI_PREFLIGHT_TIMEOUT = 12.0
 
 
 apply_env_overrides(globals(), {
+    "PROTOCOL_LOW_TRAFFIC": "bool",
+    "PROTOCOL_TRAFFIC_BUDGET_BYTES": "int",
     "OPENAI_PROXY_RETRY_MAX_ATTEMPTS": "int",
     "OPENAI_PROXY_RETRY_DELAY": "float",
     "OPENAI_PREFLIGHT_TIMEOUT": "float",

@@ -14,7 +14,7 @@ import random
 import time
 from datetime import datetime
 from pathlib import Path
-from urllib.parse import urlencode, urlsplit
+from urllib.parse import urlencode, urlsplit, urljoin
 
 import pyotp
 
@@ -313,6 +313,52 @@ def _append_batch_archive(
     return None
 
 
+def _has_chatgpt_session_cookie(session: BrowserSession) -> bool:
+    try:
+        return any(
+            cookie.domain.lstrip(".") == "chatgpt.com"
+            and cookie.name.startswith(("__Secure-next-auth.session-token", "__Host-next-auth.session-token"))
+            and bool(cookie.value)
+            for cookie in session.session.cookies.jar
+        )
+    except (AttributeError, TypeError):
+        return False
+
+
+def _follow_low_traffic_callback(session: BrowserSession, url: str, referer: str) -> str:
+    """Follow every OAuth hop; stop before the application document once cookies exist."""
+    callback_seen = False
+    for _ in range(20):
+        parts = urlsplit(url)
+        if parts.hostname == "chatgpt.com" and parts.path.startswith(("/api/auth/error", "/auth/error")):
+            raise RuntimeError("OAuth 回调返回认证错误页；已停止，未下载错误页面")
+        if parts.hostname == "chatgpt.com":
+            headers = session.get_chatgpt_navigate_headers(referer=referer)
+            callback_seen |= parts.path.startswith("/api/auth/callback/")
+        else:
+            headers = session.get_auth_navigate_headers(referer=referer)
+        resp = session.get(url, headers=headers, allow_redirects=False)
+        resp.raise_for_status()
+        if resp.status_code in (301, 302, 303, 307, 308) and resp.headers.get("location"):
+            next_url = urljoin(url, resp.headers["location"])
+            next_parts = urlsplit(next_url)
+            if (callback_seen and _has_chatgpt_session_cookie(session)
+                    and next_parts.scheme == "https" and next_parts.netloc == "chatgpt.com"
+                    and next_parts.path in ("", "/")):
+                meter = getattr(session, "protocol_traffic", None)
+                if meter is not None:
+                    meter.skip("post_callback_home_document")
+                logger.info("[协议省流] OAuth 回调已写入会话 Cookie，跳过首页文档，继续验证 Session/AT")
+                return next_url
+            referer, url = url, next_url
+            continue
+        observe = getattr(session, "observe_chatgpt_document", None)
+        if callable(observe):
+            observe(resp)
+        return str(resp.url)
+    raise RuntimeError("OAuth 回调重定向超过 20 跳，已停止")
+
+
 def follow_oauth_callback(session: BrowserSession, continue_url: str, referer: str = "https://auth.openai.com/about-you") -> str:
     """
     步骤12.5: 跟随 create_account 返回的 continue_url，完成 OAuth 回调。
@@ -329,6 +375,12 @@ def follow_oauth_callback(session: BrowserSession, continue_url: str, referer: s
     """
     if not continue_url:
         raise ValueError("continue_url 为空，无法完成 OAuth 回调")
+
+    if getattr(session, "protocol_low_traffic", False) is True:
+        final_url = _follow_low_traffic_callback(session, continue_url, referer)
+        session.log_cookie_names("oauth_callback_complete")
+        logger.info("[OAuth回调] 完成，最终落点: %s", urlsplit(final_url).path)
+        return final_url
 
     # continue_url 通常是 auth.openai.com/authorize/continue；
     # OTP 后 external_url 分支也可能直接给 chatgpt.com 回调地址。

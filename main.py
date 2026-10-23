@@ -19,6 +19,7 @@ from config import roxybrowser as _roxy_cfg
 from config import openai_protocol as _protocol_cfg
 from core.session import BrowserSession, close_browser_session
 from core.chatgpt_auth import get_providers, get_csrf_token, signin_openai
+from core.protocol_traffic import capture_protocol_registration
 from core.openai_auth import (
     follow_authorize,
     request_sentinel_token,
@@ -167,6 +168,7 @@ def prepare_registration_inputs() -> tuple[str | None, str, str]:
 
 
 @unified_workflow("registration")
+@capture_protocol_registration
 def run_registration(
     email: str | None,
     name: str,
@@ -648,6 +650,12 @@ def run_registration(
                 "email": email, "error": message,
             }
         return {"success": False, "email": email, "error": error_text}
+
+    finally:
+        try:
+            close_browser_session(session)
+        except Exception:
+            logger.warning("[注册] 关闭 HTTP 会话失败", exc_info=True)
 
 
 def main():

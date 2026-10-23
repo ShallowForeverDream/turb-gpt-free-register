@@ -57,6 +57,15 @@ EDITABLE_FIELDS = [
         "label": "注册后自动查套餐", "help": "注册成功后自动入队查询套餐/Plus 资格；关闭后仅保存账号，不自动查套餐",
     },
 
+    {
+        "key": "PROTOCOL_LOW_TRAFFIC", "file": "openai_protocol.py", "type": "bool", "group": "注册方式",
+        "label": "协议注册省流", "help": "保留登录、验证、回调和 Session；跳过可选应用预热及回调后的首页下载。关闭可进行完整模式对照。",
+    },
+    {
+        "key": "PROTOCOL_TRAFFIC_BUDGET_BYTES", "file": "openai_protocol.py", "type": "int", "group": "注册方式",
+        "label": "协议流量预算（字节）", "help": "默认 1000000（1 MB）；仅告警。任务流量是 HTTP 估算，最终以代理商上下行统计为准。",
+    },
+
     # ---- CloakBrowser ----
     {
         "key": "CLOAK_HEADLESS", "file": "cloakbrowser.py", "type": "bool", "group": "CloakBrowser",

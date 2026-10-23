@@ -12,6 +12,7 @@ import time
 import uuid
 from urllib.parse import urlparse
 from curl_cffi.requests import Session
+from core.protocol_traffic import current_traffic
 
 from config import (
     USER_AGENT, SEC_CH_UA, SEC_CH_UA_PLATFORM, SEC_CH_UA_MOBILE,
@@ -104,6 +105,8 @@ class BrowserSession:
         # proxy=None  → 从池里随机抽（默认行为），并按代理池上游配置决定是否链式
         # proxy=""    → 禁用代理（直连）
         # proxy="..." → 使用指定代理，不套用代理池上游
+        self.protocol_traffic = current_traffic()
+        self.protocol_low_traffic = bool(self.protocol_traffic and self.protocol_traffic.low_traffic)
         self._proxy_pool_relay = None
         if proxy is None:
             self.proxy = pick_proxy()
@@ -437,7 +440,7 @@ class BrowserSession:
         headers = {"User-Agent": USER_AGENT, "Accept": "application/json"}
         for url in endpoints:
             try:
-                resp = self.session.get(url, headers=headers, timeout=timeout)
+                resp = self._perform_request("get", url, headers=headers, timeout=timeout)
                 if resp.status_code != 200:
                     continue
                 data = resp.json()
@@ -815,12 +818,32 @@ class BrowserSession:
         """发送 GET 请求"""
         self._raise_if_circuit_open()
         headers = self._attach_openai_target_headers_for_url(url, headers)
-        resp = self.session.get(url, headers=headers, **kwargs)
+        resp = self._perform_request("get", url, headers=headers, **kwargs)
         return self._observe_response_for_circuit_breaker(resp, url)
 
     def post(self, url: str, headers: dict = None, **kwargs):
         """发送 POST 请求"""
         self._raise_if_circuit_open()
         headers = self._attach_openai_target_headers_for_url(url, headers)
-        resp = self.session.post(url, headers=headers, **kwargs)
+        resp = self._perform_request("post", url, headers=headers, **kwargs)
         return self._observe_response_for_circuit_breaker(resp, url)
+
+    def _perform_request(self, method: str, url: str, **kwargs):
+        meter = getattr(self, "protocol_traffic", None)
+        try:
+            response = getattr(self.session, method)(url, **kwargs)
+        except Exception as exc:
+            if meter is not None:
+                try:
+                    meter.record(url, getattr(exc, "response", None), failed=True)
+                except Exception:
+                    meter.unknown += 1
+                    logger.debug("[协议流量] 无法计量失败请求", exc_info=True)
+            raise
+        if meter is not None:
+            try:
+                meter.record(url, response)
+            except Exception:
+                meter.unknown += 1
+                logger.debug("[协议流量] 无法计量请求", exc_info=True)
+        return response

@@ -12,6 +12,7 @@ import logging
 from typing import Iterable
 
 from core.session import BrowserSession
+from core.protocol_traffic import skip_optional_bootstrap
 from core.sentinel import generate_requirements_token
 
 logger = logging.getLogger(__name__)
@@ -143,6 +144,8 @@ def anonymous_bootstrap(session: BrowserSession, *, strict: bool = False) -> Non
     和地区定价配置；旧版的匿名 chat-requirements/models/conversation/init
     并未发生。这里避免为“像浏览器”反而发送浏览器没有发送的额外请求。
     """
+    if skip_optional_bootstrap(session, "anonymous_bootstrap"):
+        return
     referer = "https://chatgpt.com/auth/login"
     tz = session.js_timezone_offset_min()
     logger.info("[Bootstrap] 匿名态 ChatGPT 预热开始")
@@ -182,6 +185,8 @@ def anonymous_bootstrap(session: BrowserSession, *, strict: bool = False) -> Non
 
 def authenticated_bootstrap(session: BrowserSession, access_token: str | None = None, *, strict: bool = False) -> None:
     """登录态 ChatGPT bootstrap，access_token 存在时补 Authorization。"""
+    if skip_optional_bootstrap(session, "authenticated_bootstrap"):
+        return
     referer = "https://chatgpt.com/"
     tz = session.js_timezone_offset_min()
 

@@ -4,6 +4,8 @@
 
 > 按顺序配置、导入和处理登录错误，见 [本地操作说明](docs/local-operations.md)。查活遇到 HTTP 403/429 会停止并说明阶段，不会自动切换直连重复请求。
 
+> 纯协议注册已增加省流开关和任务流量统计；使用与对照方法见 [协议注册省流与流量验证](docs/protocol_low_traffic.md)。1 MB 是诊断预算，实际消耗需对照代理商上下行统计。
+
 ChatGPT / OpenAI 账号自动注册与 Codex OAuth 授权工具。当前项目支持三套注册驱动：
 
 - **protocol**：原纯协议注册，基于 `curl_cffi` + Sentinel/PoW。

@@ -415,7 +415,7 @@ EDITABLE_FIELDS = [
     },
     {
         "key": "OUTLOOK_FETCH_MODE", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
-        "label": "Outlook取件模式", "help": "auto=远端优先，远端 402/DEPLOYMENT_DISABLED 自动切 Graph 直连；direct=只用 Microsoft Graph 直连；remote=只用远端服务",
+        "label": "Outlook取件模式", "help": "direct=直接使用 Microsoft Graph/IMAP，IMAP 同时检查收件箱和垃圾箱；auto=远端优先，远端停用后转直连；remote=只用远端服务",
     },
     {
         "key": "EMAIL_DOMAIN", "file": "email.py", "type": "str", "group": "邮箱 / OTP",

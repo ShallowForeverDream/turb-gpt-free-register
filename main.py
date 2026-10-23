@@ -8,6 +8,7 @@ import argparse
 from core.workflow_driver import unified_workflow
 import logging
 import time
+from urllib.parse import urlsplit
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from typing import Callable
 
@@ -182,7 +183,7 @@ def run_registration(
     执行完整的 ChatGPT 注册流程（OTP-only，无密码）。
 
     OpenAI 当前默认流程：signin 时携带 login_hint+screen_hint=login_or_signup
-    → follow_authorize 重定向链自动落到 /email-verification 并触发 OTP 发送
+    → follow_authorize 落到 /email-verification 后显式触发 OTP 发送
     → 用户输入验证码 → validate_email_otp → about-you 提交昵称生日 → 完成。
 
     Args:
@@ -329,11 +330,15 @@ def run_registration(
 
         # ==================== 阶段2: OpenAI Auth ====================
         # 步骤4: 跟随 authorize URL（建立 auth.openai.com 的 cookies）
-        # 由于步骤3已携带 login_hint + screen_hint=login_or_signup，
-        # 重定向链会直接走到 /email-verification 并自动触发 OTP 发送，
-        # 不需要 /create-account/password、register_user、单独 send_email_otp 调用。
-        follow_authorize(session, authorize_url)
+        final_auth_url = follow_authorize(session, authorize_url)
         human_delay("navigate")
+        # The document can land on email-verification without sending mail.
+        # Its browser client calls email-otp/send; protocol registration must
+        # perform that step too. Do not invalidate an explicitly supplied code.
+        if otp_code is None and urlsplit(str(final_auth_url or "")).path.rstrip("/") == "/email-verification":
+            otp_after_ts = time.time()
+            send_email_otp(session)
+            logger.info("[OTP] 已显式触发首次邮箱验证码发送")
 
         # ==================== 阶段3: 验证码验证 ====================
         # Sentinel Token 不提前生成；等 OTP 到手后紧贴 validate 请求生成，

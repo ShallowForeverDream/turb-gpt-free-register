@@ -66,6 +66,20 @@ class AccountLivenessTests(unittest.TestCase):
     def setUp(self):
         _DummyBrowserSession.created = []
 
+    def test_passwordless_login_sends_email_otp_before_waiting(self):
+        session = _DummyBrowserSession(proxy="")
+        with patch.object(liveness, "_network_preflight_with_retry", return_value=(session, "authorize")), \
+             patch.object(liveness, "follow_authorize", return_value="https://auth.openai.com/email-verification"), \
+             patch.object(liveness, "_account_registration_password", return_value=""), \
+             patch.object(liveness, "send_email_otp") as send, \
+             patch.object(liveness, "_login_via_password_or_otp", return_value={"accessToken": "test"}) as login:
+            _, info = liveness._login_via_full_web_flow(
+                "user@outlook.test", "", email_source="outlook", fingerprint_state={},
+            )
+        self.assertEqual(info["accessToken"], "test")
+        send.assert_called_once_with(session)
+        login.assert_called_once()
+
     def test_preflight_preserves_explicit_direct_route_and_skips_providers(self):
         with patch.object(liveness, "BrowserSession", _DummyBrowserSession), \
              patch.object(liveness, "_warm_login_fingerprint_context"), \

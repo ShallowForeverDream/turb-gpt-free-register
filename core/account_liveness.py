@@ -780,6 +780,10 @@ def _login_via_full_web_flow(
             f"账号已废弃（{dead_code}）",
             error_code=dead_code,
         )
+    if "/email-verification" in str(final_url) and not _account_registration_password(email):
+        otp_after_ts = time.time()
+        send_email_otp(session)
+        logger.info("[查活] 已显式触发密码为空账号的邮箱登录验证码")
     session_info = _login_via_password_or_otp(
         session,
         email,

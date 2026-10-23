@@ -40,6 +40,7 @@ class PoolSelectionRegistrationTests(unittest.TestCase):
              patch.object(main, "get_csrf_token", return_value="csrf"), \
              patch.object(main, "signin_openai", return_value="authorize"), \
              patch.object(main, "follow_authorize", return_value="https://auth.openai.com/email-verification"), \
+             patch.object(main, "send_email_otp") as send, \
              patch.object(main, "wait_for_otp", return_value="123456"), \
              patch.object(main, "validate_email_otp", return_value=validate), \
              patch.object(main, "human_delay"), \
@@ -53,6 +54,7 @@ class PoolSelectionRegistrationTests(unittest.TestCase):
         self.assertTrue(result["success"])
         self.assertEqual(result["status"], "already_registered")
         self.assertTrue(result["existing_account"])
+        send.assert_called_once_with(session)
 
     def test_selected_pool_email_can_be_imported_as_registered_account(self):
         with tempfile.TemporaryDirectory() as tmp, patch.multiple(db, **storage(Path(tmp))):

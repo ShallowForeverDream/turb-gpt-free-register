@@ -99,10 +99,12 @@ class ProtocolTrafficTests(unittest.TestCase):
     def test_callback_does_not_download_error_page_or_retry_denial(self):
         session = Mock(protocol_low_traffic=True)
         session.get.return_value = SimpleNamespace(
-            status_code=302, headers={"location": "/api/auth/error?error=private"}, raise_for_status=lambda: None,
+            status_code=302, headers={"location": "/api/auth/error?error=OAuthCallback&code=private-code"}, raise_for_status=lambda: None,
         )
-        with self.assertRaisesRegex(RuntimeError, "认证错误页"):
+        with self.assertRaisesRegex(RuntimeError, "认证错误页") as caught:
             account_export.follow_oauth_callback(session, "https://chatgpt.com/api/auth/callback/openai")
+        self.assertIn("OAuthCallback", str(caught.exception))
+        self.assertNotIn("private-code", str(caught.exception))
         session.get.assert_called_once()
         session.get.reset_mock()
         session.get.return_value.raise_for_status = Mock(side_effect=RuntimeError("HTTP 403"))

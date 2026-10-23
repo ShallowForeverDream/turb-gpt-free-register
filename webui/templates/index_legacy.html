@@ -893,7 +893,7 @@ function formatTraffic(t) {
   const note = `；${t.note || ''}${t.measurement_complete === false ? '；部分请求未完整计量' : ''}`;
   const budget = t.within_budget === false ? ' · 超预算' : '';
   const title = `上传 ${n(t.upload_bytes)} 字节，下载 ${n(t.download_bytes)} 字节，${n(t.request_count)} 个请求${jsHint}${note}`;
-  return `<div title="${esc(title)}"><strong>${protocol ? '≈' : ''}${fmt(t.total_bytes)}${budget}</strong><div style="font-size:11px;color:#606266;">↑ ${fmt(t.upload_bytes)} · ↓ ${fmt(t.download_bytes)}</div><div style="font-size:11px;color:#909399;">${n(t.total_bytes).toLocaleString()} 字节 · ${tunnel ? '代理隧道' : protocol ? 'HTTP估算' : '浏览器统计'}</div></div>`;
+  return `<div title="${esc(title)}"><strong>${t.measurement_complete === false ? '小计 ' : protocol ? '≈' : ''}${fmt(t.total_bytes)}${budget}</strong><div style="font-size:11px;color:#606266;">↑ ${fmt(t.upload_bytes)} · ↓ ${fmt(t.download_bytes)}</div><div style="font-size:11px;color:#909399;">${n(t.total_bytes).toLocaleString()} 字节 · ${tunnel ? '代理隧道' : protocol ? 'HTTP估算' : '浏览器统计'}</div></div>`;
 }
 function copyId(v) { if (!v) return ''; const id = 'c'+(++copySeq); copyStore.set(id, v); return id; }
 function cbtn(label, value, cls='') { const id = copyId(value); return `<button class="${cls}" data-copy-id="${id}" ${id?'':'disabled'}>${label}</button>`; }

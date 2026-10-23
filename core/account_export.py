@@ -14,7 +14,7 @@ import random
 import time
 from datetime import datetime
 from pathlib import Path
-from urllib.parse import urlencode, urlsplit, urljoin
+from urllib.parse import urlencode, urlsplit, urljoin, parse_qs
 
 import pyotp
 
@@ -331,7 +331,13 @@ def _follow_low_traffic_callback(session: BrowserSession, url: str, referer: str
     for _ in range(20):
         parts = urlsplit(url)
         if parts.hostname == "chatgpt.com" and parts.path.startswith(("/api/auth/error", "/auth/error")):
-            raise RuntimeError("OAuth 回调返回认证错误页；已停止，未下载错误页面")
+            reason = str(parse_qs(parts.query).get("error", [""])[0])
+            reason = reason if reason in {
+                "OAuthCallback", "OAuthSignin", "OAuthCreateAccount", "EmailCreateAccount",
+                "Callback", "OAuthAccountNotLinked", "AccessDenied", "Configuration",
+                "Verification", "SessionRequired", "Default", "CredentialsSignin", "OAuthCallbackError",
+            } else "unknown"
+            raise RuntimeError(f"OAuth 回调返回认证错误页（error={reason or 'unknown'}）；已停止，未下载错误页面")
         if parts.hostname == "chatgpt.com":
             headers = session.get_chatgpt_navigate_headers(referer=referer)
             callback_seen |= parts.path.startswith("/api/auth/callback/")

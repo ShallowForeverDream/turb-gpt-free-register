@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, call, patch
 
 from core import outlook_client
 
@@ -100,6 +100,38 @@ class OutlookClientContextTests(unittest.TestCase):
         self.assertIs(first, second)
         get_outlook_by_email.assert_called_once_with("pool@outlook.test")
         get_account_by_email.assert_called_once_with("pool@outlook.test")
+
+
+class OutlookJunkOtpTests(unittest.TestCase):
+    def test_finds_otp_in_junk_when_inbox_is_empty(self):
+        account = outlook_client.OutlookAccount("sample@outlook.test", "password", "client", "refresh")
+        mail, http = Mock(), Mock()
+        mail.select.return_value = ("OK", [b"0"])
+        mail.search.side_effect = [("OK", [b""]), ("OK", [b"1"])]
+        mail.fetch.return_value = ("OK", [(b"1 (RFC822)", b"From: noreply@tm.openai.com\r\nSubject: Your ChatGPT code\r\n\r\nYour verification code is 123456")])
+        with patch.object(outlook_client, "_ms_http", return_value=http), \
+             patch.object(outlook_client, "_live_imap_access_token", return_value="token"), \
+             patch.object(outlook_client.imaplib, "IMAP4_SSL", return_value=mail):
+            messages = outlook_client._fetch_imap_direct_messages(account)
+        self.assertEqual(len(messages), 1)
+        self.assertEqual(messages[0]["_mail_folder"], "Junk")
+        self.assertEqual(outlook_client.extract_otp(messages[0]), "123456")
+        mail.select.assert_has_calls([call("INBOX", readonly=True), call("Junk", readonly=True)])
+        mail.logout.assert_called_once()
+        http.close.assert_called_once()
+
+    def test_missing_junk_folder_preserves_inbox_messages(self):
+        account = outlook_client.OutlookAccount("sample@outlook.test", "password", "client", "refresh")
+        mail = Mock()
+        mail.select.side_effect = [("OK", [b"1"]), ("NO", [b"missing folder"])]
+        mail.search.return_value = ("OK", [b"1"])
+        mail.fetch.return_value = ("OK", [(b"1 (RFC822)", b"From: noreply@tm.openai.com\r\nSubject: ChatGPT\r\n\r\n123456")])
+        with patch.object(outlook_client, "_ms_http"), \
+             patch.object(outlook_client, "_live_imap_access_token", return_value="token"), \
+             patch.object(outlook_client.imaplib, "IMAP4_SSL", return_value=mail):
+            messages = outlook_client._fetch_imap_direct_messages(account)
+        self.assertEqual(len(messages), 1)
+        self.assertEqual(messages[0]["_mail_folder"], "INBOX")
 
 
 if __name__ == "__main__":

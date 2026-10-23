@@ -16,8 +16,8 @@ Outlook 邮箱客户端（mail.chatai.codes 双协议）
     2. fetch_latest_otp()   双协议（Graph / IMAP）轮询取 OTP
     3. 注册成功后会写入 SQLite 账号表
 
-只用 Outlook 提供的 refresh_token 调远端的 mail.chatai.codes 服务，
-不直连 Microsoft Graph，因为后者要 access_token + 复杂 OAuth 协议。
+支持使用 refresh_token 直连 Microsoft Graph / Outlook REST / IMAP XOAUTH2；
+auto / remote 模式另保留远端取件服务的兼容路径。
 """
 import base64
 import email as email_lib
@@ -792,7 +792,7 @@ def _fetch_outlook_rest_messages(http: CurlSession, token: str) -> list[dict]:
 
 
 def _fetch_imap_direct_messages(account: OutlookAccount) -> list[dict]:
-    """本地 IMAP XOAUTH2 读取 Outlook Inbox 最新邮件。"""
+    """Read Inbox and Junk using IMAP XOAUTH2; verification mail can land in either."""
     http = _ms_http()
     mail: imaplib.IMAP4_SSL | None = None
     try:
@@ -806,33 +806,34 @@ def _fetch_imap_direct_messages(account: OutlookAccount) -> list[dict]:
         auth_string = f"user={account.email}\x01auth=Bearer {token}\x01\x01"
         mail = imaplib.IMAP4_SSL("outlook.office365.com", 993)
         mail.authenticate("XOAUTH2", lambda _challenge: auth_string.encode("utf-8"))
-        status, _data = mail.select("INBOX")
-        if status != "OK":
-            raise OutlookClientError(f"IMAP select INBOX 失败: {status}")
-
-        status, msg_ids = mail.search(None, "ALL")
-        if status != "OK":
-            raise OutlookClientError(f"IMAP search 失败: {status}")
-        ids = msg_ids[0].split() if msg_ids and msg_ids[0] else []
-        if not ids:
-            logger.debug("[Outlook] 本地 IMAP 收件箱为空")
-            return []
-
         out = []
-        for mid in ids[-20:]:
-            status, data = mail.fetch(mid, "(RFC822)")
-            if status != "OK" or not data:
+        for folder in ("INBOX", "Junk"):
+            status, _data = mail.select(folder, readonly=True)
+            if status != "OK":
+                if folder == "INBOX":
+                    raise OutlookClientError(f"IMAP select INBOX 失败: {status}")
                 continue
-            try:
-                raw = data[0][1]
-                if not isinstance(raw, (bytes, bytearray)):
+            status, msg_ids = mail.search(None, "ALL")
+            if status != "OK":
+                if folder == "INBOX":
+                    raise OutlookClientError(f"IMAP search 失败: {status}")
+                continue
+            ids = msg_ids[0].split() if msg_ids and msg_ids[0] else []
+            for mid in ids[-20:]:
+                status, data = mail.fetch(mid, "(RFC822)")
+                if status != "OK" or not data:
                     continue
-                msg = email_lib.message_from_bytes(raw)
-                item = _imap_msg_to_dict(msg)
-                item["_fetch_source"] = "imap_new" if token_source == "live_imap_new" else "imap_entra_outlook"
-                out.append(item)
-            except Exception as exc:
-                logger.debug("[Outlook] 本地 IMAP 解析邮件失败 mid=%s: %s", mid, exc)
+                try:
+                    raw = data[0][1]
+                    if not isinstance(raw, (bytes, bytearray)):
+                        continue
+                    msg = email_lib.message_from_bytes(raw)
+                    item = _imap_msg_to_dict(msg)
+                    item["_fetch_source"] = "imap_new" if token_source == "live_imap_new" else "imap_entra_outlook"
+                    item["_mail_folder"] = folder
+                    out.append(item)
+                except Exception as exc:
+                    logger.debug("[Outlook] 本地 IMAP 解析邮件失败 folder=%s mid=%s: %s", folder, mid, exc)
         if token_source == "live_imap_new":
             logger.info("[Outlook] 本地 IMAP(New) 直连拿到 %s 封邮件", len(out))
         else:

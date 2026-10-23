@@ -815,16 +815,16 @@ def _decorate_account(row: dict) -> dict:
 
 def _account_registered_at(row: dict) -> str:
     """Use ChatGPT account.createdTime; old imported records stay blank."""
-    fallback = str(row.get("created_at") or "")
     raw = row.get("extra_json")
     try:
         extra = json.loads(raw) if isinstance(raw, str) and raw.strip() else (raw if isinstance(raw, dict) else {})
-        value = (extra.get("account") or {}).get("createdTime") if isinstance(extra, dict) else None
+        account = extra.get("account") if isinstance(extra, dict) else None
+        value = account.get("createdTime") if isinstance(account, dict) else None
         if value is None:
-            return "" if isinstance(extra, dict) and extra.get("imported_registered") else fallback
-        return _created_time_to_iso(value) or fallback
+            return ""
+        return _created_time_to_iso(value)
     except (TypeError, ValueError, OSError, OverflowError, json.JSONDecodeError):
-        return fallback
+        return ""
 
 
 def _created_time_to_iso(value: Any) -> str:
@@ -1659,7 +1659,7 @@ def list_account_plan_check_statuses(
 ) -> dict:
     """返回不含 Token/邮箱密码的套餐查询轻量状态快照。"""
     fields = (
-        "id", "email", "archived", "registered_at",
+        "id", "email", "archived", "registered_at", "flow_traffic", "flow_completion",
         "plan_type", "current_plan_type", "plus_trial_eligible",
         "eligible_promo_campaigns", "plus_trial_discount_percentage",
         "plan_check_status", "plan_check_ok", "plan_check_error",
@@ -1761,6 +1761,8 @@ def list_account_plan_check_statuses(
                     "email_source": row.get("email_source"),
                     "email_change_status": row.get("email_change_status"),
                     "email_change_error": row.get("email_change_error"),
+                    "flow_traffic": row.get("flow_traffic"),
+                    "flow_completion": row.get("flow_completion"),
                 }
                 for row in rows
             ],
@@ -1863,6 +1865,22 @@ def update_account_note(acc_id: int, note: str) -> bool:
         row["note"] = str(note or "")
         row["note_updated_at"] = now
         row["updated_at"] = now
+        _save_accounts(rows)
+        return True
+
+
+def update_account_flow(acc_id: int, *, traffic: dict | None = None, completion: dict | None = None) -> bool:
+    """Persist the latest measured flow without replacing credentials or remote metadata."""
+    with _LOCK:
+        rows = _load_accounts()
+        row = next((r for r in rows if int(r.get("id") or 0) == int(acc_id)), None)
+        if row is None:
+            return False
+        if traffic is not None:
+            row["flow_traffic"] = traffic
+        if completion is not None:
+            row["flow_completion"] = completion
+        row["updated_at"] = _now()
         _save_accounts(rows)
         return True
 

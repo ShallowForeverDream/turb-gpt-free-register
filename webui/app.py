@@ -108,8 +108,8 @@ def _compact_account_for_list(row: dict) -> dict:
         or row.get("registration_password")
         or ""
     ).strip()
-    if password:
-        out["password"] = password
+    out["has_gpt_password"] = bool(password)
+    out["has_mail_password"] = bool(_account_secret_value(row, "mail_password"))
 
     # 这些是列表固定列直接展示字段。
     for key in (
@@ -119,6 +119,7 @@ def _compact_account_for_list(row: dict) -> dict:
         "eligible_promo_campaigns", "plus_trial_discount_percentage",
         "plan_check_status", "codex_status", "codex_agent_status",
         "totp_setup_status",
+        "flow_traffic", "flow_completion",
     ):
         if key in row:
             out[key] = row.get(key)
@@ -163,6 +164,16 @@ def _compact_account_for_list(row: dict) -> dict:
 
 def _account_secret_value(row: dict, field: str) -> str:
     field = (field or "").strip()
+    if field == "mail_password":
+        source = str(row.get("email_source") or "").lower()
+        if source == "outlook":
+            mailbox = db.get_outlook_by_email(str(row.get("email") or "")) or {}
+            return str(mailbox.get("password") or row.get("mail_password") or "")
+        if source == "imap":
+            # Forwarded Apple addresses have no password of their own here.
+            # Never expose the shared receiver's IMAP authorization code.
+            return str(row.get("mail_password") or "")
+        return ""
     if field == "access_token":
         return str(row.get("access_token") or "")
     if field == "copy_line":
@@ -204,7 +215,7 @@ def _account_secret_value(row: dict, field: str) -> str:
             return str(_account_full_export_line(row) or "")
         except Exception:
             return ""
-    raise ValueError("field 仅支持 access_token/copy_line/codex_agent_token/totp_secret/totp_code/password/login_credentials/full_export")
+    raise ValueError("field 仅支持 access_token/copy_line/codex_agent_token/totp_secret/totp_code/password/mail_password/login_credentials/full_export")
 
 
 def _compact_job_for_list(row: dict) -> dict:
@@ -507,8 +518,9 @@ def create_app(auth_code: str | None = None, *, local_no_auth: bool = False) -> 
         if not acc:
             return jsonify({"ok": False, "error": "账号不存在"}), 404
         email = str(acc.get("email") or "").strip()
-        if str(acc.get("email_source") or "").strip().lower() != "imap":
-            return jsonify({"ok": False, "error": "该账号没有使用 IMAP 邮箱来源"}), 400
+        source = str(acc.get("email_source") or "").strip().lower()
+        if source not in {"imap", "outlook"}:
+            return jsonify({"ok": False, "error": "该账号没有可查询的 IMAP / Outlook 邮箱来源"}), 400
         if not email:
             return jsonify({"ok": False, "error": "账号邮箱为空"}), 400
         try:
@@ -520,7 +532,8 @@ def create_app(auth_code: str | None = None, *, local_no_auth: bool = False) -> 
                 max_wait=2,
                 poll_interval=1,
                 settle_seconds=0,
-                email_source="imap",
+                email_source=source,
+                force_service=True,
             )
         except Exception as exc:
             return jsonify({"ok": False, "error": str(exc)[:300], "email": email}), 404

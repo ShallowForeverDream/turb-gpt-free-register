@@ -139,6 +139,12 @@ def _run_twofa(
             secret = session.setup_twofa(email, email_source=source)
         else:
             secret = setup_2fa(session, email, access_token=access_token)
+        refreshed = getattr(session, "_twofa_session_info", None)
+        if isinstance(refreshed, dict) and refreshed.get("accessToken"):
+            db.update_account_liveness(account_id, {
+                "ok": True, "status": "live", "session": refreshed,
+                "access_token": refreshed["accessToken"],
+            })
         db.update_account_totp_secret(
             account_id,
             {"ok": True, "status": "success", "totp_secret": secret, "message": "2FA 设置完成"},
@@ -147,6 +153,13 @@ def _run_twofa(
         logger.info("[2FA] 完成：email=%s", email)
         return {"ok": True, "status": "success", "totp_secret": secret, "message": "2FA 设置完成"}
     except Exception as exc:
+        from core.openai_auth import detect_account_unusable_text
+        dead_code = detect_account_unusable_text(str(exc))
+        if dead_code:
+            db.update_account_liveness(account_id, {
+                "ok": False, "status": "deactivated", "error": dead_code,
+                "error_code": dead_code, "stage": "twofa_reauth",
+            })
         status = "blocked" if isinstance(exc, TwofaOtpBlockedError) else "failed"
         result = {"ok": False, "status": status, "error": f"{type(exc).__name__}: {str(exc)[:500]}"}
         try:

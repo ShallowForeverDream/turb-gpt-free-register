@@ -21,6 +21,7 @@ from config import openai_protocol as _protocol_cfg
 from core.session import BrowserSession, close_browser_session
 from core.chatgpt_auth import get_providers, get_csrf_token, signin_openai
 from core.protocol_traffic import capture_protocol_registration
+from core.registration_completion import complete_registration_flow, completion_managed
 from core.openai_auth import (
     follow_authorize,
     request_sentinel_token,
@@ -119,6 +120,34 @@ def _finalize_registration_session(
             return session_info, access_token
         except Exception as exc:
             last_exc = exc
+            if _is_preflight_access_refusal(exc):
+                raise
+            if "OAuth 回调返回认证错误页（error=OAuthCallback" in str(exc):
+                # OAuth authorization codes are single-use; replaying the same
+                # rejected callback cannot repair a completed remote signup.
+                # Attempt one ordinary login to this same account instead.
+                from core.account_liveness import check_account_liveness
+                from core.email_provider import resolve_email_source
+                from core.proxy_chain import open_proxy_pool_proxy
+                logger.warning("[登录态] OAuth callback 已失效，停止重放；同一邮箱补登录一次（不重新创建账号）")
+                target = getattr(session, "proxy_target", None) or session.proxy
+                identity = {key: getattr(session, key, None) for key in (
+                    "device_id", "auth_session_logging_id", "oai_session_id", "sentinel_sid", "browser_profile",
+                )}
+                close_browser_session(session)
+                transport, relay = open_proxy_pool_proxy(target)
+                try:
+                    recovered = check_account_liveness(
+                        email, proxy=transport, email_source=resolve_email_source(email), fingerprint_state=identity,
+                    )
+                finally:
+                    if relay is not None:
+                        relay.close()
+                if recovered.get("ok") and recovered.get("access_token"):
+                    session._registration_recovered = True
+                    logger.info("[登录态] 补登录成功，继续保存账号和收尾步骤")
+                    return recovered["session"], recovered["access_token"]
+                raise RuntimeError("账号创建后补登录未完成：" + str(recovered.get("error") or recovered.get("status"))) from exc
             if attempt >= _FINALIZE_SESSION_MAX_ATTEMPTS:
                 break
             backoff = _FINALIZE_SESSION_BACKOFF_BASE ** (attempt - 1)
@@ -170,6 +199,7 @@ def prepare_registration_inputs() -> tuple[str | None, str, str]:
 
 @unified_workflow("registration")
 @capture_protocol_registration
+@complete_registration_flow
 def run_registration(
     email: str | None,
     name: str,
@@ -450,7 +480,7 @@ def run_registration(
                 email,
                 callback_referer="https://auth.openai.com/email-verification",
             )
-            if getattr(_protocol_cfg, "CHATGPT_AUTH_BOOTSTRAP_ENABLED", True):
+            if getattr(_protocol_cfg, "CHATGPT_AUTH_BOOTSTRAP_ENABLED", True) and not getattr(session, "_registration_recovered", False):
                 from core.chatgpt_bootstrap import authenticated_bootstrap
                 authenticated_bootstrap(
                     session,
@@ -498,7 +528,7 @@ def run_registration(
 
             # 步骤13: 拉 /api/auth/session 提取 accessToken
             session_info, access_token = _finalize_registration_session(session, continue_url, email)
-            if getattr(_protocol_cfg, "CHATGPT_AUTH_BOOTSTRAP_ENABLED", True):
+            if getattr(_protocol_cfg, "CHATGPT_AUTH_BOOTSTRAP_ENABLED", True) and not getattr(session, "_registration_recovered", False):
                 from core.chatgpt_bootstrap import authenticated_bootstrap
                 authenticated_bootstrap(
                     session,
@@ -509,7 +539,7 @@ def run_registration(
 
         # ==================== 阶段7: 设置 2FA（受 config.ENABLE_2FA 控制）====================
         totp_secret = None
-        if _twofa_cfg.ENABLE_2FA:
+        if _twofa_cfg.ENABLE_2FA and not completion_managed():
             # 步骤14-20: 重认证（要再收一次邮箱 OTP）→ enroll TOTP → activate
             try:
                 totp_secret = setup_2fa(session, email)
@@ -528,8 +558,12 @@ def run_registration(
         #   2) codex_result["file_path"]     CPA 可直接导入的 codex-{email}.json
         codex_result = {"status": "skipped", "ok": False, "message": "未触发"}
         try:
-            from core.codex_oauth import run_codex_oauth
-            codex_result = run_codex_oauth(email)
+            from config import codex as codex_cfg
+            if codex_cfg.ENABLE_CODEX_AUTO:
+                from core.codex_oauth import run_codex_oauth
+                codex_result = run_codex_oauth(email)
+            else:
+                codex_result["message"] = "ENABLE_CODEX_AUTO=False，按配置跳过"
         except Exception as exc:
             codex_result = {
                 "status": "failed",
@@ -569,7 +603,7 @@ def run_registration(
             },
         )
 
-        logger.info(f"[完成] {email}，账号ID={account_id}，Token={access_token[:16]}...")
+        logger.info(f"[完成] {email}，账号ID={account_id}，accessToken 已保存")
 
         # ==================== 阶段9: 后置自动触发 flow ====================
         # 只有走完回调、拿到 token 并保存成功的账号，才会触发 flow。
@@ -594,7 +628,7 @@ def run_registration(
                 f"原因={flow_result.get('message')}"
             )
 
-        logger.debug(f"[完成] TOTP Secret: {totp_secret or '(未设置)'}")
+        logger.debug("[完成] TOTP 密钥状态：%s", "已保存" if totp_secret else "未设置")
 
         # 注册任务的成功判定：账号本身(注册+token)+Codex 授权都成功才算 success。
         # Codex 失败时账号仍保存（token 拿到了、有补跑机会），但任务状态标失败，
@@ -618,8 +652,26 @@ def run_registration(
         #   1. 账号已废（account_deactivated 等）：邮箱素材本身不可用，标 failed 直接剔除。
         #   2. 创建接口通过后失败：远端已消耗这个邮箱，直接废弃，避免重复注册。
         #   3. 创建接口通过前的普通失败：邮箱还可以下次继续尝试，放回 available。
-        from core.openai_auth import AccountUnusableError
-        account_dead = isinstance(e, AccountUnusableError)
+        from core.openai_auth import AccountUnusableError, detect_account_unusable_text
+        dead_code = detect_account_unusable_text(str(e))
+        account_dead = isinstance(e, AccountUnusableError) or bool(dead_code)
+        partial_account_id = None
+        if create_acknowledged or existing_account_detected:
+            # Creation acknowledgement is not a usable session. Keep a local
+            # record so the mailbox is not silently sent through signup again;
+            # leave remote registration time blank until createdTime is fetched.
+            from core import db
+            from core.email_provider import resolve_email_source
+            existing = db.get_account_by_email(email)
+            partial_account_id = existing.get("id") if existing else save_account_data(
+                email=email, access_token="", email_source=resolve_email_source(email),
+                extra={"registration_confirmed": True, "registration_error": str(e)[:500]},
+            )
+            if account_dead:
+                db.update_account_liveness(partial_account_id, {
+                    "ok": False, "status": "deactivated", "error": dead_code or str(e),
+                    "error_code": dead_code, "stage": "registration_completion",
+                })
         try:
             if email:
                 from core.email_provider import release_email
@@ -654,7 +706,7 @@ def run_registration(
                 "success": False, "status": "blocked", "error_code": "login_preflight_blocked",
                 "email": email, "error": message,
             }
-        return {"success": False, "email": email, "error": error_text}
+        return {"success": False, "email": email, "error": error_text, "account_id": partial_account_id}
 
     finally:
         try:

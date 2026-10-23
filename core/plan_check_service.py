@@ -146,6 +146,7 @@ def enqueue_account_plan_check(
     trigger: str,
     proxy: str | None = None,
     timezone_offset_min: str = "-",
+    return_future: bool = False,
 ) -> dict:
     """把查询放入统一线程池；重复查询或队列满时不提交。"""
     from core.workflow_driver import require_driver_ready
@@ -167,7 +168,7 @@ def enqueue_account_plan_check(
 
     try:
         from core.workflow_driver import submit_with_driver
-        submit_with_driver(
+        future = submit_with_driver(
             _EXECUTOR, _run_plan_check,
             account_id=account_id,
             email=email,
@@ -186,7 +187,7 @@ def enqueue_account_plan_check(
         db.update_account_plan_check(acc_id=account_id, result=result)
         return {"accepted": False, "busy": False, "error": result["error"]}
 
-    return {
+    queued = {
         "accepted": True,
         "busy": False,
         "account_id": account_id,
@@ -194,6 +195,9 @@ def enqueue_account_plan_check(
         "status": "queued",
         "trigger": str(trigger or "manual"),
     }
+    if return_future:
+        queued["future"] = future
+    return queued
 
 
 def queue_settings() -> dict:

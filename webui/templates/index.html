@@ -746,6 +746,7 @@
     .accounts-table-v2 .col-source { width: 90px; }
     .accounts-table-v2 .col-token { width: 100px; }
     .accounts-table-v2 .col-password { width: 120px; }
+    .accounts-table-v2 .col-traffic { width: 195px; white-space: normal; }
     .accounts-table-v2 .col-plan { width: 120px; }
     .accounts-table-v2 .col-note { width: 140px; }
     .accounts-table-v2 .col-small { width: 170px; }
@@ -2333,8 +2334,8 @@
         <table class="accounts-table-v2">
           <colgroup>
             <col class="col-check"><col class="col-id"><col class="col-email"><col class="col-source"><col class="col-small">
-            <col class="col-token"><col class="col-password"><col class="col-plan"><col class="col-note"><col class="col-small">
-            <col class="col-status"><col class="col-time"><col class="col-actions">
+            <col class="col-token"><col class="col-password"><col class="col-password"><col class="col-plan"><col class="col-note"><col class="col-small">
+            <col class="col-status"><col class="col-time"><col class="col-traffic"><col class="col-actions">
           </colgroup>
           <thead>
             <tr>
@@ -2344,12 +2345,14 @@
               <th class="col-source">来源</th>
               <th class="col-small">邮箱验证码</th>
               <th class="col-token">Token</th>
-              <th class="col-password">密码</th>
+              <th class="col-password">GPT 密码</th>
+              <th class="col-password">邮箱密码</th>
               <th class="col-plan">套餐</th>
               <th class="col-note">备注</th>
               <th class="col-small">2FA</th>
               <th class="col-status">Codex</th>
               <th class="col-time">注册时间</th>
+              <th class="col-traffic">流量花费</th>
               <th class="col-actions">操作</th>
             </tr>
           </thead>
@@ -3523,6 +3526,7 @@ function _codexCellV2(r) {
   return `<span class="acc-v2-muted">-</span>`;
 }
 function _totpCellV2(r) {
+  if (r.live_check_status === 'deactivated') return '<span class="acc-v2-muted" title="服务器确认账号停用，未重试 2FA">停用</span>';
   const enabled = !!r.totp_enabled;
   const status = r.totp_setup_status || '';
   const titleText = r.totp_setup_message || r.totp_setup_error || '';
@@ -3549,10 +3553,10 @@ function _totpCellV2(r) {
   return `<div class="agent-token-cell">${btn}</div>`;
 }
 function _emailOtpCellV2(r) {
-  if (String(r.email_source || '').toLowerCase() !== 'imap') return `<span class="acc-v2-muted">-</span>`;
+  if (!['imap', 'outlook'].includes(String(r.email_source || '').toLowerCase())) return `<span class="acc-v2-muted">-</span>`;
   const cached = EMAIL_OTP_CACHE.get(Number(r.id));
   const code = cached?.code;
-  return `<div class="acc-v2-twofa-actions">${code ? `<span class="acc-v2-twofa-code" title="${esc(cached.at || '')}">${esc(code)}</span>` : ''}<button type="button" class="acc-v2-twofa-btn" data-account-email-otp="${esc(r.id)}" title="查询该 IMAP 邮箱最近 15 分钟收到的验证码">${code ? '刷新' : '查验证码'}</button>${code ? `<button type="button" class="acc-v2-twofa-btn" data-account-copy-email-otp="${esc(r.id)}">复制</button>` : ''}</div>`;
+  return `<div class="acc-v2-twofa-actions">${code ? `<span class="acc-v2-twofa-code" title="${esc(cached.at || '')}">${esc(code)}</span>` : ''}<button type="button" class="acc-v2-twofa-btn" data-account-email-otp="${esc(r.id)}" title="查询 IMAP / Outlook 最近 15 分钟收到的验证码（不发送新验证码）">${code ? '刷新' : '查验证码'}</button>${code ? `<button type="button" class="acc-v2-twofa-btn" data-account-copy-email-otp="${esc(r.id)}">复制</button>` : ''}</div>`;
 }
 function _codexAgentCell(r) {
   const s = r.codex_agent_status || '';
@@ -3803,12 +3807,14 @@ function renderAccounts() {
       <td class="col-source">${esc(r.email_source || '-')}</td>
       <td class="col-small">${_emailOtpCellV2(r)}</td>
       <td class="col-token">${_tokenCellV2(r)}</td>
-      <td class="col-password">${r.password ? `<span class="mono" title="${esc(r.password)}">${esc(short(r.password, 18))}</span>` : '<span class="acc-v2-muted">-</span>'}</td>
+      <td class="col-password">${r.has_gpt_password ? `<button type="button" data-account-copy-secret="password" data-account-id="${esc(r.id)}" title="点击读取并复制 GPT 登录密码">•••••• · 复制</button>` : '<span class="acc-v2-muted">未设置（OTP登录）</span>'}</td>
+      <td class="col-password">${r.has_mail_password ? `<button type="button" data-account-copy-secret="mail_password" data-account-id="${esc(r.id)}" title="点击读取并复制邮箱密码，与 GPT 密码无关">•••••• · 复制</button>` : '<span class="acc-v2-muted">未保存</span>'}</td>
       <td class="col-plan">${_planCell(r)}<div class="acc-v2-sub">${_extractLinkCell(r)}</div></td>
       <td class="col-note" title="${esc(r.note || '')}">${r.note ? esc(short(r.note, 80)) : '<span class="acc-v2-muted">-</span>'}</td>
       <td class="col-small">${_totpCellV2(r)}</td>
       <td class="col-status">${_codexCellV2(r)}</td>
       <td class="col-time" title="${esc(r.registered_at || '-')}">${esc(r.registered_at || '-')}</td>
+      <td class="col-traffic">${formatTraffic(r.flow_traffic)}</td>
       <td class="col-actions">
         <div class="acc-v2-actions">
           <button type="button" class="danger" data-account-delete="${esc(r.id)}" data-email="${esc(r.email)}">删除</button>
@@ -3822,7 +3828,7 @@ function renderAccounts() {
 
   const bodyV2 = $('#accountsBodyV2');
   if (bodyV2) {
-    bodyV2.innerHTML = rows.map(rowHtmlV2).join('') || '<tr><td colspan="13" style="text-align:center;color:#909399;padding:28px;">暂无账号</td></tr>';
+    bodyV2.innerHTML = rows.map(rowHtmlV2).join('') || '<tr><td colspan="15" style="text-align:center;color:#909399;padding:28px;">暂无账号</td></tr>';
   }
   updateAccountSelectionUi(rows);
   _renderPager('accounts', total);
@@ -4088,6 +4094,8 @@ async function onAccountsBodyClick(e) {
       copyText(value);
       showToast(
         field === 'access_token' ? 'Token 已复制' :
+        field === 'password' ? 'GPT 密码已复制' :
+        field === 'mail_password' ? '邮箱密码已复制' :
         field === 'codex_agent_token' ? 'Agent Token 已复制' :
         field === 'login_credentials' ? '邮箱、注册密码和 2FA 密钥已复制' :
         field === 'totp_secret' ? '2FA 密钥已复制' :

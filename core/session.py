@@ -13,6 +13,7 @@ import uuid
 from urllib.parse import urlparse
 from curl_cffi.requests import Session
 from core.protocol_traffic import current_traffic
+from core.proxy_utils import mask_proxy_url
 
 from config import (
     USER_AGENT, SEC_CH_UA, SEC_CH_UA_PLATFORM, SEC_CH_UA_MOBILE,
@@ -366,7 +367,7 @@ class BrowserSession:
         p = self.fingerprint_summary()
         parts = [
             f"device_id={self._short_value(p.get('device_id'), 12)}",
-            f"proxy={self._short_value(p.get('proxy') or 'direct', 36)}",
+            f"proxy={self._short_value(mask_proxy_url(p.get('proxy')) or 'direct', 60)}",
             f"ua={self._short_value(p.get('user_agent'), 72)}",
             f"lang={p.get('accept_language')}",
             f"tz={p.get('timezone_iana')}({p.get('timezone_offset_minutes')})",

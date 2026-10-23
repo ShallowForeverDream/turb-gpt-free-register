@@ -34,7 +34,10 @@ class PoolSelectionRegistrationTests(unittest.TestCase):
             "page": {"type": "workspace"},
             "oai-client-auth-session": {"workspaces": []},
         }
-        with patch.object(main, "BrowserSession", return_value=session), \
+        with patch("core.registration_completion.finish_account", return_value={"status": "success"}), \
+             patch("core.protocol_traffic.current_traffic"), \
+             patch("core.db.update_account_flow"), \
+             patch.object(main, "BrowserSession", return_value=session), \
              patch.object(main, "network_preflight"), \
              patch.object(main, "get_providers", return_value={}), \
              patch.object(main, "get_csrf_token", return_value="csrf"), \

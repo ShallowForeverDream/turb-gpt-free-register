@@ -17,9 +17,9 @@ _ACTIVE = ContextVar("protocol_registration_traffic", default=None)
 
 def current_traffic():
     meter = _ACTIVE.get()
-    # submit_with_driver copies ContextVars to background plan/2FA queues. Their
-    # traffic belongs to a separate task and must not alter this registration.
-    if meter is not None and meter.owner_thread == threading.get_ident() and not meter.closed:
+    # Detached queues cannot alter registration totals. The completion pipeline
+    # opts in only for children it joins before closing the meter.
+    if meter is not None and not meter.closed and (meter.owner_thread == threading.get_ident() or meter.share_with_workers):
         return meter
     return None
 
@@ -39,6 +39,7 @@ class ProtocolTraffic:
     def __init__(self, *, low_traffic: bool, budget_bytes: int):
         self.owner_thread = threading.get_ident()
         self.closed = False
+        self.share_with_workers = False
         self.low_traffic = low_traffic
         self.budget_bytes = max(1, budget_bytes)
         self.started_at = datetime.now().isoformat(timespec="seconds")
@@ -100,7 +101,9 @@ class ProtocolTraffic:
             download = sum(item["download_bytes"] for item in tunnels)
             method = "proxy_tunnel"
             complete = self.unmetered_sessions == 0
-            note = "本次注册的本地代理隧道字节（包含 TLS 握手和重试）；不含 TCP/IP、代理认证握手、其他客户端及后台任务。最终计费以代理商双向统计为准。"
+            note = "本次流程的本地代理隧道字节（包含 TLS 握手和重试）；不含 TCP/IP、代理认证握手和其他客户端。最终计费以代理商双向统计为准。"
+        if self.share_with_workers:
+            note += " 包含等待完成的套餐资格查询和 2FA；邮箱直连 Microsoft 的流量不走该计费代理，不在代理流量内。"
         total = upload + download
         # A missing/partial failed response or an automatically followed redirect
         # can hide transfer bytes. A small subtotal must not certify the budget.
@@ -108,7 +111,7 @@ class ProtocolTraffic:
         return {
             "available": True,
             "method": method,
-            "scope": "registration_thread_browser_sessions",
+            "scope": "registration_and_joined_postprocessing" if self.share_with_workers else "registration_thread_browser_sessions",
             "low_traffic": self.low_traffic,
             "started_at": self.started_at,
             "duration_seconds": round(time.perf_counter() - self.started_perf, 3),
@@ -163,6 +166,12 @@ def capture_protocol_registration(fn):
             result = fn(*args, **kwargs)
             if isinstance(result, dict):
                 result["network_traffic"] = meter.snapshot()
+                if result.get("account_id"):
+                    from core import db
+                    try:
+                        db.update_account_flow(int(result["account_id"]), traffic=result["network_traffic"])
+                    except Exception:
+                        logger.warning("[协议流量] 账号流量写回失败，保留任务内统计", exc_info=True)
             return result
         finally:
             try:

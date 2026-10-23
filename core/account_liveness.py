@@ -2,6 +2,7 @@
 """已注册账号查活：优先复用已有 AT 预热后走 reauth OTP，成功刷新 AT 即视为正常。"""
 from core.workflow_driver import unified_workflow
 import logging
+from core.proxy_utils import mask_proxy_url
 import json
 import re
 import threading
@@ -184,7 +185,7 @@ def _network_preflight_with_retry(
     for attempt in range(1, max_attempts + 1):
         logger.info(
             "[查活] 复用统一会话：proxy=%s device_id=%s oai_session_id=%s（网络预检第 %s/%s 次）",
-            session.proxy or "配置随机/直连", session.device_id,
+            mask_proxy_url(session.proxy) or "配置随机/直连", session.device_id,
             str(getattr(session, "oai_session_id", "") or "")[:12] + "...",
             attempt, max_attempts,
         )
@@ -930,7 +931,7 @@ def check_account_liveness(
             session = _new_fingerprint_pinned_session(email, proxy, task_fingerprint_state)
             logger.info(
                 "[查活] 会话创建完成：proxy=%s device_id=%s（复用2FA稳定链路）",
-                session.proxy or "直连/配置随机",
+                mask_proxy_url(session.proxy) or "直连/配置随机",
                 session.device_id,
             )
             logger.info("[查活] 指纹摘要：%s", session.fingerprint_summary_text())

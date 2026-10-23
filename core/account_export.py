@@ -659,6 +659,7 @@ def _exchange_new_token(session: BrowserSession, continue_url: str, *, email: st
         else:
             new_session = fetch_session(session)
     new_token = new_session["accessToken"]
+    session._twofa_session_info = new_session
     logger.info("[2FA] 已取得重认证后的新 accessToken")
     return new_token
 
@@ -919,6 +920,10 @@ def save_account_data(
         batch_dir=batch_dir,
     )
     logger.info("[Save] 账号及凭证已保存到 SQLite, id=%s, email=%s", row_id, email)
+
+    from core.registration_completion import completion_managed
+    if completion_managed():
+        return row_id
 
     auto_twofa = False
     try:

@@ -616,7 +616,7 @@
           <colgroup><col class="col-check"><col class="col-id"><col class="col-email"><col class="col-source"><col class="col-small"><col class="col-token"><col class="col-password"><col class="col-plan"><col class="col-note"><col class="col-small"><col class="col-status"><col class="col-time"><col class="col-actions"></colgroup>
           <thead><tr>
             <th><input type="checkbox" id="accountsSelectAll" title="全选/取消全选当前页账号"></th>
-            <th>ID</th><th>邮箱</th><th>来源</th><th>邮箱验证码</th><th>Token</th><th>密码</th><th>套餐</th><th>备注</th><th>2FA</th><th>Codex</th><th>注册时间</th><th>操作</th>
+            <th>ID</th><th>邮箱</th><th>来源</th><th>邮箱验证码</th><th>Token</th><th>GPT 密码</th><th>邮箱密码</th><th>套餐</th><th>备注</th><th>2FA</th><th>Codex</th><th>注册时间</th><th>流量花费</th><th>操作</th>
           </tr></thead>
           <tbody id="accountsBody"></tbody>
         </table>
@@ -1616,6 +1616,7 @@ function _codexAction(r) {
   return `<button data-codex-retry="${esc(r.email)}" title="重新跑一次 Codex 授权（会消耗 1 封邮箱 OTP + 1 个接码短信）">${label}</button>`;
 }
 function _totpAction(r) {
+  if (r.live_check_status === 'deactivated') return '<span class="muted" title="服务器确认账号停用，未重试 2FA">停用</span>';
   const status = r.totp_setup_status || '';
   if (r.totp_enabled) {
     const cached = TOTP_CODE_CACHE.get(Number(r.id));
@@ -1634,10 +1635,10 @@ function _totpAction(r) {
   return `<button type="button" class="twofa-action" data-account-totp-setup="${esc(r.id)}" title="${esc(tip)}">开启2FA</button>`;
 }
 function _emailOtpAction(r) {
-  if (String(r.email_source || '').toLowerCase() !== 'imap') return '<span class="muted">-</span>';
+  if (!['imap', 'outlook'].includes(String(r.email_source || '').toLowerCase())) return '<span class="muted">-</span>';
   const cached = EMAIL_OTP_CACHE.get(Number(r.id));
   const code = cached?.code;
-  return `<div class="twofa-actions">${code ? `<span class="twofa-code" title="${esc(cached.at || '')}">${esc(code)}</span>` : ''}<button type="button" class="twofa-action" data-account-email-otp="${esc(r.id)}" title="查询该 IMAP 邮箱最近 15 分钟收到的验证码">${code ? '刷新' : '查验证码'}</button>${code ? `<button type="button" class="twofa-action" data-account-copy-email-otp="${esc(r.id)}">复制</button>` : ''}</div>`;
+  return `<div class="twofa-actions">${code ? `<span class="twofa-code" title="${esc(cached.at || '')}">${esc(code)}</span>` : ''}<button type="button" class="twofa-action" data-account-email-otp="${esc(r.id)}" title="查询 IMAP / Outlook 最近 15 分钟收到的验证码（不发送新验证码）">${code ? '刷新' : '查验证码'}</button>${code ? `<button type="button" class="twofa-action" data-account-copy-email-otp="${esc(r.id)}">复制</button>` : ''}</div>`;
 }
 {% include 'live_check_status.html' %}
 function _liveStatusSub(r) {
@@ -1665,12 +1666,14 @@ function renderAccounts() {
       <td>${esc(r.email_source || '-')}</td>
       <td>${_emailOtpAction(r)}</td>
       <td><span class="mono" title="列表仅显示预览，完整 Token 请点复制">${r.has_access_token ? '有Token' : '<span class="muted">无Token</span>'}</span>${_liveStatusSub(r)}</td>
-      <td>${r.password ? `<span class="mono" title="${esc(r.password)}">${esc(short(r.password, 18))}</span>` : '<span class="muted">-</span>'}</td>
+      <td>${r.has_gpt_password ? `<button data-account-copy-secret="password" data-account-id="${esc(r.id)}" title="复制 GPT 登录密码">•••••• · 复制</button>` : '<span class="muted">未设置（OTP登录）</span>'}</td>
+      <td>${r.has_mail_password ? `<button data-account-copy-secret="mail_password" data-account-id="${esc(r.id)}" title="复制邮箱密码">•••••• · 复制</button>` : '<span class="muted">未保存</span>'}</td>
       <td>${_planCell(r)}<div class="sub-cell">${_extractLinkCell(r)}</div></td>
       <td class="wrap" title="${esc(r.note || '')}">${r.note ? esc(short(r.note, 80)) : '<span class="muted">-</span>'}</td>
       <td>${_totpAction(r)}</td>
       <td>${_codexCell(r)}</td>
       <td class="muted">${esc(r.registered_at || '-')}</td>
+      <td>${formatTraffic(r.flow_traffic)}</td>
       <td class="actions actions-cell">
         <div class="account-row-actions">
           <div class="account-action-group"><button class="primary" data-account-copy-secret="access_token" data-account-id="${esc(r.id)}" ${r.has_access_token ? '' : 'disabled'}>复制Token</button> <button class="good" data-account-copy-secret="copy_line" data-account-id="${esc(r.id)}">复制整行</button></div>
@@ -1679,7 +1682,7 @@ function renderAccounts() {
           <div class="account-action-group danger-zone"><button data-account-archive="${esc(r.id)}" data-archived="${r.archived ? '0' : '1'}" title="${r.archived ? '恢复到默认账号列表' : '归档后默认账号列表不再显示'}">${r.archived ? '恢复' : '归档'}</button> <button class="danger" data-account-delete="${esc(r.id)}" data-email="${esc(r.email)}">删除</button></div>
         </div>
       </td>
-    </tr>`).join('') || '<tr><td colspan="13" class="muted">暂无账号</td></tr>';
+    </tr>`).join('') || '<tr><td colspan="15" class="muted">暂无账号</td></tr>';
   updateAccountSelectionUi(rows);
   _renderPager('accounts', total);
 }

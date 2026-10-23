@@ -804,7 +804,7 @@ def _fetch_imap_direct_messages(account: OutlookAccount) -> list[dict]:
             token, _kind = _ms_access_token(account, http=http, preferred_kind="outlook")
             token_source = "entra_outlook"
         auth_string = f"user={account.email}\x01auth=Bearer {token}\x01\x01"
-        mail = imaplib.IMAP4_SSL("outlook.office365.com", 993)
+        mail = imaplib.IMAP4_SSL("outlook.office365.com", 993, timeout=30)
         mail.authenticate("XOAUTH2", lambda _challenge: auth_string.encode("utf-8"))
         out = []
         for folder in ("INBOX", "Junk"):

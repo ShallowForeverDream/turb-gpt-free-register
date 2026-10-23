@@ -13,6 +13,23 @@ from core.session import BrowserSession
 
 
 class ProtocolTrafficTests(unittest.TestCase):
+    def test_proxy_tunnel_totals_include_tls_and_do_not_double_count_http(self):
+        meter = protocol_traffic.ProtocolTraffic(low_traffic=True, budget_bytes=1000000)
+        relay = Mock()
+        relay.traffic_snapshot.return_value = {"upload_bytes": 3000, "download_bytes": 12000}
+        meter.attach_proxy(relay)
+        meter.record("https://chatgpt.com/api/auth/session", SimpleNamespace(
+            upload_size=0, request_size=100, download_size=200, header_size=100,
+            content=b"token-fixture", redirect_count=2,
+        ))
+        snapshot = meter.snapshot()
+        self.assertEqual(snapshot["method"], "proxy_tunnel")
+        self.assertEqual(snapshot["total_bytes"], 15000)
+        self.assertEqual(snapshot["http_estimate_download_bytes"], 300)
+        self.assertTrue(snapshot["measurement_complete"])
+        meter.attach_proxy(None)
+        self.assertFalse(meter.snapshot()["measurement_complete"])
+
     def test_only_registration_context_skips_optional_bootstrap(self):
         session = Mock(protocol_low_traffic=True)
         session.protocol_traffic = protocol_traffic.ProtocolTraffic(low_traffic=True, budget_bytes=1000000)

@@ -47,6 +47,14 @@ class ProtocolTraffic:
         self.requests = self.failed = self.unknown = self.redirects = 0
         self.by_path = {}
         self.skipped = {}
+        self.proxy_relays = []
+        self.unmetered_sessions = 0
+
+    def attach_proxy(self, relay):
+        if relay is None:
+            self.unmetered_sessions += 1
+        elif relay not in self.proxy_relays:
+            self.proxy_relays.append(relay)
 
     def record(self, url, response=None, *, failed=False):
         upload = download = decoded = 0
@@ -82,21 +90,35 @@ class ProtocolTraffic:
         self.skipped[label] = self.skipped.get(label, 0) + 1
 
     def snapshot(self):
-        total = self.upload + self.download
+        upload, download = self.upload, self.download
         complete = bool(self.requests) and not (self.failed or self.unknown or self.redirects)
+        method = "curl_cffi.transfer_sizes"
+        note = "libcurl HTTP 传输估算（压缩响应体及可见头）；不含 TLS/IP/代理开销、邮箱客户端和后台任务。自动重定向及异常可能漏计，以代理商双向账单为准。"
+        if self.proxy_relays:
+            tunnels = [relay.traffic_snapshot() for relay in self.proxy_relays]
+            upload = sum(item["upload_bytes"] for item in tunnels)
+            download = sum(item["download_bytes"] for item in tunnels)
+            method = "proxy_tunnel"
+            complete = self.unmetered_sessions == 0
+            note = "本次注册的本地代理隧道字节（包含 TLS 握手和重试）；不含 TCP/IP、代理认证握手、其他客户端及后台任务。最终计费以代理商双向统计为准。"
+        total = upload + download
         # A missing/partial failed response or an automatically followed redirect
         # can hide transfer bytes. A small subtotal must not certify the budget.
         within = False if total > self.budget_bytes else (True if complete else None)
         return {
             "available": True,
-            "method": "curl_cffi.transfer_sizes",
+            "method": method,
             "scope": "registration_thread_browser_sessions",
             "low_traffic": self.low_traffic,
             "started_at": self.started_at,
             "duration_seconds": round(time.perf_counter() - self.started_perf, 3),
-            "upload_bytes": self.upload,
-            "download_bytes": self.download,
+            "upload_bytes": upload,
+            "download_bytes": download,
             "total_bytes": total,
+            "http_estimate_upload_bytes": self.upload,
+            "http_estimate_download_bytes": self.download,
+            "proxy_tunnel_count": len(self.proxy_relays),
+            "unmetered_session_count": self.unmetered_sessions,
             "decoded_download_bytes": self.decoded_download,
             "request_count": self.requests,
             "failed_request_count": self.failed,
@@ -107,7 +129,7 @@ class ProtocolTraffic:
             "within_budget": within,
             "by_path": {key: dict(value) for key, value in self.by_path.items()},
             "skipped": dict(self.skipped),
-            "note": "libcurl HTTP 传输估算（压缩响应体及可见头）；不含 TLS/IP/代理开销、邮箱客户端和后台任务。自动重定向及异常可能漏计，以代理商双向账单为准。",
+            "note": note,
         }
 
     def log_summary(self):
@@ -115,7 +137,7 @@ class ProtocolTraffic:
         budget = {True: "范围内", False: "超出", None: "待核对"}[data["within_budget"]]
         logger.info(
             "[协议流量] 上传=%sB 下载=%sB 合计=%sB 请求=%s 失败=%s 预算=%sB（%s）",
-            self.upload, self.download, data["total_bytes"], self.requests, self.failed, self.budget_bytes, budget,
+            data["upload_bytes"], data["download_bytes"], data["total_bytes"], self.requests, self.failed, self.budget_bytes, budget,
         )
         for path, item in sorted(self.by_path.items(), key=lambda entry: entry[1]["download_bytes"], reverse=True)[:5]:
             logger.info("[协议流量] %s requests=%s download=%sB", path, item["request_count"], item["download_bytes"])

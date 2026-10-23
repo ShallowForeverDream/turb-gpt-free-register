@@ -582,7 +582,7 @@
     .jobs-table-v2 .col-status { width: 110px; }
     .jobs-table-v2 .col-email { min-width: 200px; width: 24%; }
     .jobs-table-v2 .col-time { width: 170px; }
-    .jobs-table-v2 .col-traffic { width: 120px; white-space: nowrap; }
+    .jobs-table-v2 .col-traffic { width: 185px; white-space: normal; }
     .jobs-table-v2 .col-error { width: auto; min-width: 160px; }
     .jobs-table-v2 .col-actions {
       width: 168px; overflow: visible; text-overflow: clip; white-space: nowrap;
@@ -2850,7 +2850,7 @@ function formatDateTime(v) {
   return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
 }
 function formatTraffic(t) {
-  if (!t || !t.available) return '-';
+  if (!t || !t.available) return '<span title="该任务未采集流量；历史流量无法补算">未记录</span>';
   const n = (v) => Number.isFinite(Number(v)) ? Math.max(0, Number(v)) : 0;
   const fmt = (v) => {
     v = n(v);
@@ -2861,9 +2861,11 @@ function formatTraffic(t) {
   const j = t.js_coverage;
   const jsHint = j && j.enabled ? `，JS脚本 ${n(j.script_count)}（执行 ${n(j.executed_script_count)}，候选 ${n(j.candidate_script_count)}）` : '';
   const protocol = t.method === 'curl_cffi.transfer_sizes';
-  const note = protocol ? `；HTTP估算，${t.measurement_complete ? '可见请求已计量' : '含未完整计量的请求'}；${t.note || ''}` : '';
-  const budget = protocol && t.within_budget === false ? ' · 超预算' : '';
-  return `<span title="上传 ${fmt(t.upload_bytes)}，下载 ${fmt(t.download_bytes)}，${n(t.request_count)} 个请求${jsHint}${esc(note)}">${protocol ? '≈' : ''}${fmt(t.total_bytes)}${budget}</span>`;
+  const tunnel = t.method === 'proxy_tunnel';
+  const note = `；${t.note || ''}${t.measurement_complete === false ? '；部分请求未完整计量' : ''}`;
+  const budget = t.within_budget === false ? ' · 超预算' : '';
+  const title = `上传 ${n(t.upload_bytes)} 字节，下载 ${n(t.download_bytes)} 字节，${n(t.request_count)} 个请求${jsHint}${note}`;
+  return `<div title="${esc(title)}"><strong>${protocol ? '≈' : ''}${fmt(t.total_bytes)}${budget}</strong><div style="font-size:11px;color:#606266;">↑ ${fmt(t.upload_bytes)} · ↓ ${fmt(t.download_bytes)}</div><div style="font-size:11px;color:#909399;">${n(t.total_bytes).toLocaleString()} 字节 · ${tunnel ? '代理隧道' : protocol ? 'HTTP估算' : '浏览器统计'}</div></div>`;
 }
 function jobsV2OpIcons() {
   return {

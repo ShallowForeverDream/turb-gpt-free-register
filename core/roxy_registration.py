@@ -2343,6 +2343,11 @@ def run_roxy_registration(
             network_traffic = {}
         browser_total = int(network_traffic.get("total_bytes") or 0)
         transport_total = int(transport.get("total_bytes") or 0)
+        network_traffic["browser_observed_method"] = network_traffic.get("method")
+        network_traffic["method"] = "proxy_tunnel"
+        network_traffic["available"] = True
+        network_traffic["measurement_complete"] = True
+        network_traffic["note"] = "Roxy 全浏览器代理隧道上下行（含 TLS 和重试）；不含 TCP/IP、代理认证及本地 API。最终计费以代理商统计为准。"
         network_traffic["browser_observed_upload_bytes"] = int(network_traffic.get("upload_bytes") or 0)
         network_traffic["browser_observed_download_bytes"] = int(network_traffic.get("download_bytes") or 0)
         network_traffic["browser_observed_total_bytes"] = browser_total

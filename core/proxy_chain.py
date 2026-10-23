@@ -50,14 +50,14 @@ def _read_socks_address(sock: socket.socket, atyp: int) -> tuple[str, int]:
 class ProxyChainRelay:
     """Expose a local HTTP CONNECT endpoint that reaches target through upstream."""
 
-    def __init__(self, target: str, upstream: str, *, timeout: float = 15.0):
+    def __init__(self, target: str, upstream: str = "", *, timeout: float = 15.0):
         self.target = parse_proxy_url(target)
-        self.upstream = parse_proxy_url(upstream)
+        self.upstream = parse_proxy_url(upstream) if str(upstream or "").strip() else None
         if self.target.scheme not in {"http", "socks5", "socks5h"}:
             raise ValueError("代理链目标代理必须是 http://、socks5:// 或 socks5h://")
-        if self.upstream.scheme == "https":
+        if self.upstream is not None and self.upstream.scheme == "https":
             raise ValueError("代理链暂不支持 https:// 作为上游代理，请填写 http:// 或 socks5://")
-        if socks is None:
+        if self.upstream is not None and socks is None:
             raise RuntimeError("代理链需要 PySocks，请先安装 requirements.txt 中的依赖")
         self.timeout = max(1.0, float(timeout or 15.0))
         self._listener: socket.socket | None = None
@@ -153,6 +153,8 @@ class ProxyChainRelay:
             threading.Thread(target=self._handle_client, args=(client,), name="proxy-chain-client", daemon=True).start()
 
     def _connect_target_through_upstream(self, host: str, port: int) -> socket.socket:
+        if self.upstream is None:
+            return socket.create_connection((host, port), timeout=self.timeout)
         proxy_type = socks.HTTP if self.upstream.scheme == "http" else socks.SOCKS5
         remote = socks.socksocket()
         remote.set_proxy(
@@ -298,6 +300,9 @@ class ProxyChainRelay:
                 return
             host, port = self._split_host_port(destination)
             remote = self._connect_target_through_upstream(self.target.host, self.target.port)
+            self._track(remote, True)
+            if self._stop.is_set():
+                return
             if self.target.scheme in {"socks5", "socks5h"}:
                 self._target_socks_connect(remote, host, port)
             else:
@@ -307,12 +312,14 @@ class ProxyChainRelay:
             client.settimeout(0.5)
             self._relay(client, remote)
         except Exception as exc:
+            if self._stop.is_set():
+                return
             detail = str(exc or "").strip()
             self._last_error = f"{type(exc).__name__}: {detail[:240]}" if detail else type(exc).__name__
             logger.warning(
                 "代理链连接失败 target=%s upstream=%s error=%s",
                 mask_proxy_url(self.target.raw),
-                mask_proxy_url(self.upstream.raw),
+                mask_proxy_url(self.upstream.raw) if self.upstream is not None else "direct",
                 self._last_error,
             )
             self._send_http_error(client)

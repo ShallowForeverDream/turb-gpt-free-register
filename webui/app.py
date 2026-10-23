@@ -227,7 +227,7 @@ def _compact_job_for_list(row: dict) -> dict:
         out["error_message"] = err[:240] + ("…" if len(err) > 240 else "")
     traffic = row.get("network_traffic")
     if isinstance(traffic, dict) and traffic.get("available"):
-        # 流量统计只包含字节计数，不带 URL/Header/请求体，可直接随任务列表返回。
+        # 汇总仅含计数和已脱敏的 Host/Path，不含 URL 查询、Header 或请求体。
         out["network_traffic"] = traffic
     return out
 

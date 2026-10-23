@@ -33,15 +33,17 @@ WebUI 保存后对新任务生效，已开始的任务固定使用开始时的�
 
 ## 读流量记录
 
-注册任务的「流量」列显示 `≈` 前缀，悬停查看口径。成功与失败任务都保存 `network_traffic`，日志末尾有 `[协议流量]` 汇总及下载量最大的 5 个路径。
+注册任务的「流量」列直接显示总量、上传、下载和具体字节数。成功与失败任务都保存 `network_traffic`，日志末尾有 `[协议流量]` 汇总及下载量最大的 5 个路径。历史任务若当时未采集，会显示「未记录」，不能事后补算。
 
-- `upload_bytes` / `download_bytes`：libcurl 可见的请求体、请求头、压缩响应体及响应头。
+- `method=proxy_tunnel`：通过本地 CONNECT 中继统计所选 HTTP/SOCKS5 代理隧道的上下行字节，包含 TLS 握手、失败请求和重试，不把解压后的正文重复相加。供应商账号、会话参数和出口代理不变；供应商连接失败时不会直连目标网站兜底。
+- `method=curl_cffi.transfer_sizes`：没有可计量隧道（例如明确直连或 HTTPS 代理）时显示 `≈` HTTP 估算及其计量缺口。
+- `upload_bytes` / `download_bytes`：优先使用隧道计数；HTTP 估算另存为 `http_estimate_upload_bytes` / `http_estimate_download_bytes`。
 - `decoded_download_bytes`：解压后正文长度，只作对照，不拿它当压缩下载量。
 - `by_path`：按 Host/Path 聚合；不保存查询参数、凭据、请求头或正文。自动重定向归到原始调用，不伪造中间跳字节数。
-- `unknown_size_request_count` / `automatic_redirect_count`：失败响应或自动重定向可能漏计。存在这类情况时，`within_budget` 可以为 `null`，表示尚不能确认预算。
+- `unknown_size_request_count` / `automatic_redirect_count`：标记 HTTP 估算可能漏计的响应；隧道计数仍覆盖这些传输。若没有完整的隧道计量，`within_budget` 可以为 `null`，表示尚不能确认预算。
 - `within_budget`：诊断值，超过预算也不把已完成的注册改为失败。
 
-计量覆盖注册线程里经过 `BrowserSession` 的会话，包括同线程的重试和后续流程。邮箱客户端、其他 SDK、异步后台查询，以及 TLS/IP/代理隧道开销不在这个 HTTP 估算值中。**最终成本以代理商双向流量差额为准。** 后台任务和并发注册的计数彼此隔离。
+计量覆盖注册线程里经过 `BrowserSession` 的会话，包括同线程的重试和后续流程。隧道计数包含 TLS，但不包含 TCP/IP、连接供应商时的代理认证握手、邮箱客户端、其他 SDK 和异步后台查询。**最终成本以代理商双向流量差额为准。** 后台任务和并发注册的计数彼此隔离。
 
 ## 接入住宅代理后的验证
 

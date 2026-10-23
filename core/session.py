@@ -120,6 +120,15 @@ class BrowserSession:
             self.proxy = proxy
             self.proxy_target = proxy
             transport_proxy = proxy
+        # Count the encrypted tunnel, including TLS negotiation and retries.
+        # The local CONNECT relay always connects to the selected proxy; it
+        # does not change the supplier credentials or fall back to direct.
+        if self.protocol_traffic is not None:
+            if transport_proxy and self._proxy_pool_relay is None and not transport_proxy.lower().startswith("https://"):
+                from core.proxy_chain import ProxyChainRelay
+                self._proxy_pool_relay = ProxyChainRelay(transport_proxy).start()
+                transport_proxy = self._proxy_pool_relay.proxy_url
+            self.protocol_traffic.attach_proxy(self._proxy_pool_relay)
         # Keep the actual transport endpoint separately from the logical
         # target proxy.  A failed TLS tunnel can then be rebuilt without
         # changing the account route or fingerprint.

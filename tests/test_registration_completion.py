@@ -13,7 +13,47 @@ from tests.test_forwarded_imap_and_account_import import storage
 
 
 class RegistrationCompletionTests(unittest.TestCase):
-    def test_separate_passwords_are_on_demand_and_not_bulk_disclosed(self):
+    def test_real_session_low_traffic_callback_has_no_optional_log_hook_requirement(self):
+        from core.session import BrowserSession
+        from core.account_export import follow_oauth_callback
+        with BrowserSession(proxy="", detect_exit_geo=False) as session:
+            session.protocol_low_traffic = True
+            self.assertFalse(hasattr(session, "log_cookie_names"))
+            with patch("core.account_export._follow_low_traffic_callback", return_value="https://chatgpt.com/"):
+                self.assertEqual(follow_oauth_callback(session, "https://auth.openai.com/authorize/continue"), "https://chatgpt.com/")
+
+    def test_session_fetch_retry_never_replays_successful_callback(self):
+        import main
+        session = SimpleNamespace()
+        with patch.object(main, "follow_oauth_callback") as follow, \
+             patch.object(main, "fetch_session", side_effect=[RuntimeError("session temporarily unavailable"), {"accessToken": "fixture"}]), \
+             patch.object(main, "human_delay"), patch.object(main.time, "sleep"):
+            result = main._finalize_registration_session(session, "https://chatgpt.com/callback", "fixture@outlook.com")
+        follow.assert_called_once()
+        self.assertEqual(result[1], "fixture")
+
+    def test_password_page_submits_password_before_polling_mail(self):
+        import main
+        events = []
+        with patch("core.openai_auth.generate_registration_password", return_value="fixture-password"), \
+             patch("core.openai_auth.request_password_sentinel_bundle", return_value={}), \
+             patch.object(main, "build_sentinel_header", return_value=("fixture-header", None)), \
+             patch.object(main, "human_delay"), \
+             patch("core.openai_auth.register_user", side_effect=lambda *a: events.append("password") or {"continue_url": "/api/accounts/email-otp/send"}), \
+             patch("core.openai_auth.navigate_email_otp_send", side_effect=lambda *a: events.append("send")), \
+             patch.object(main, "send_email_otp") as resend:
+            password, sent_at = main._prepare_registration_otp(object(), "fixture@outlook.com", "https://auth.openai.com/create-account/password")
+        self.assertEqual(password, "fixture-password")
+        self.assertEqual(events, ["password", "send"])
+        self.assertGreater(sent_at, 0)
+        resend.assert_not_called()
+
+    def test_unknown_auth_page_does_not_wait_for_unsent_mail(self):
+        import main
+        with self.assertRaisesRegex(RuntimeError, "未盲等验证码"):
+            main._prepare_registration_otp(object(), "fixture@outlook.com", "https://auth.openai.com/log-in")
+
+    def test_list_shows_mail_password_but_gpt_password_stays_on_demand(self):
         row = {"id": 99999, "email": "fixture@outlook.com", "email_source": "outlook",
                "password": "mail-password", "extra_json": json.dumps({"registration_password": "gpt-password"})}
         with patch("webui.app.db.get_outlook_by_email", return_value={"password": "mail-password"}):
@@ -21,7 +61,8 @@ class RegistrationCompletionTests(unittest.TestCase):
             self.assertTrue(compact["has_gpt_password"])
             self.assertTrue(compact["has_mail_password"])
             self.assertNotIn("password", compact)
-            self.assertNotIn("mail-password", json.dumps(compact))
+            self.assertEqual(compact["mail_password"], "mail-password")
+            self.assertNotIn("gpt-password", json.dumps(compact))
             self.assertEqual(_account_secret_value(row, "password"), "gpt-password")
             self.assertEqual(_account_secret_value(row, "mail_password"), "mail-password")
             row["extra_json"] = "{}"

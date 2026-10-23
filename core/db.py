@@ -870,6 +870,10 @@ def _pool_registration_status(row: dict, account: dict | None = None) -> str:
     A local account record is authoritative: a used mailbox from a failed
     attempt without an account remains ``unregistered`` and can be reused.
     """
+    if account and any(str(account.get(key) or "").lower() == "deactivated" for key in ("live_check_status", "codex_status")):
+        return "disabled"
+    if row.get("registration_status") == "disabled" or row.get("status") == "disabled":
+        return "disabled"
     if account:
         return "registered"
     override = str(row.get("registration_status") or "").strip().lower()
@@ -966,14 +970,16 @@ def list_email_pool_page(
     reg_status = str(registration_status or "").strip().lower()
     if reg_status in {"registered", "unregistered", "disabled"}:
         account_exists = "EXISTS (SELECT 1 FROM accounts AS a WHERE lower(json_extract(a.payload, '$.email')) = lower(ep.email))"
+        account_dead = "EXISTS (SELECT 1 FROM accounts AS a WHERE lower(a.email) = lower(ep.email) AND (json_extract(a.payload, '$.live_check_status') = 'deactivated' OR json_extract(a.payload, '$.codex_status') = 'deactivated'))"
         override = "lower(COALESCE(json_extract(ep.payload, '$.registration_status'), ''))"
         raw = "lower(COALESCE(ep.status, ''))"
+        disabled = f"({account_dead} OR {override} = 'disabled' OR {raw} = 'disabled')"
         if reg_status == "registered":
-            where.append(f"({account_exists} OR {override} = 'registered')")
+            where.append(f"(NOT {disabled} AND ({account_exists} OR {override} = 'registered'))")
         elif reg_status == "disabled":
-            where.append(f"(NOT {account_exists} AND ({override} = 'disabled' OR ({override} = '' AND {raw} = 'disabled')))" )
+            where.append(disabled)
         else:
-            where.append(f"(NOT {account_exists} AND {override} NOT IN ('registered','disabled') AND {raw} <> 'disabled')")
+            where.append(f"(NOT {disabled} AND NOT {account_exists} AND {override} <> 'registered')")
     elif status:
         where.append("ep.status=?")
         params.append(status)
@@ -1139,8 +1145,12 @@ def update_account_codex_status(email: str, codex_status: str, codex_error: str 
             row["live_check_ok"] = False
             row["live_check_error"] = codex_error or "Codex 授权判定账号已废号"
             row["live_checked_at"] = _now()
+            row["archived"] = True
+            row["archive_reason"] = "account_deactivated"
         row["updated_at"] = _now()
         _save_accounts(accounts)
+        if str(codex_status or "").strip().lower() == "deactivated":
+            _disable_account_mailboxes(email, codex_error or "account_deactivated")
         return True
 
 
@@ -2102,6 +2112,37 @@ def recover_interrupted_email_changes() -> int:
         return count
 
 
+def _disable_account_mailboxes(email: str, reason: str) -> None:
+    """Persist disabled state across matching pool sources, without touching secrets."""
+    with closing(_sqlite_conn()) as conn:
+        matches = conn.execute("SELECT id,payload FROM email_pool WHERE lower(email)=lower(?)", (email,)).fetchall()
+        for match in matches:
+            row = json.loads(match["payload"])
+            if row.get("status") == "disabled" and row.get("registration_status") == "disabled":
+                continue
+            row.update(status="disabled", registration_status="disabled", disabled_reason=reason, updated_at=_now())
+            conn.execute("UPDATE email_pool SET status='disabled',updated_at=?,payload=? WHERE id=?",
+                         (row["updated_at"], json.dumps(row, ensure_ascii=False), match["id"]))
+        conn.commit()
+
+
+def sync_deactivated_accounts() -> int:
+    """Backfill existing terminal accounts; archive, never delete, their history."""
+    with _LOCK:
+        rows = _load_accounts()
+        count = 0
+        for row in rows:
+            if row.get("live_check_status") != "deactivated" and row.get("codex_status") != "deactivated":
+                continue
+            if not row.get("archived"):
+                row.update(archived=True, archive_reason="account_deactivated", updated_at=_now())
+                count += 1
+            _disable_account_mailboxes(row.get("email") or "", row.get("live_check_error") or "account_deactivated")
+        if count:
+            _save_accounts(rows)
+        return count
+
+
 def update_account_liveness(acc_id: int, result: dict | None = None) -> bool:
     """写回账号查活结果；成功时同步刷新最新 access_token 和账号基础信息。"""
     result = result or {}
@@ -2121,6 +2162,10 @@ def update_account_liveness(acc_id: int, result: dict | None = None) -> bool:
         row["live_check_stage"] = result.get("stage")
         row["live_check_error_code"] = result.get("error_code")
         row["updated_at"] = now
+
+        if status == "deactivated":
+            row["archived"] = True
+            row["archive_reason"] = "account_deactivated"
 
         if ok:
             selected = _normalize_workspace_options([result.get("workspace_selected")])[0:1]
@@ -2167,6 +2212,8 @@ def update_account_liveness(acc_id: int, result: dict | None = None) -> bool:
 
         row["copy_line"] = _account_line(row)
         _save_accounts(rows)
+        if status == "deactivated":
+            _disable_account_mailboxes(row.get("email") or "", result.get("error") or "account_deactivated")
         return True
 
 

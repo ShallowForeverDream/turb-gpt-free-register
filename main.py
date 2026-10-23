@@ -104,13 +104,16 @@ def _finalize_registration_session(
         raise RuntimeError("create_account 响应缺少 continue_url，无法完成 OAuth 回调")
 
     last_exc: Exception | None = None
+    callback_complete = False
     for attempt in range(1, _FINALIZE_SESSION_MAX_ATTEMPTS + 1):
         try:
             logger.info(
                 f"[登录态] 完成 OAuth 回调并拉取 Token：{email} "
                 f"(尝试 {attempt}/{_FINALIZE_SESSION_MAX_ATTEMPTS})"
             )
-            follow_oauth_callback(session, continue_url, referer=callback_referer)
+            if not callback_complete:
+                follow_oauth_callback(session, continue_url, referer=callback_referer)
+                callback_complete = True
             human_delay("post_auth")
             session_info = fetch_session(session)
             access_token = session_info.get("accessToken")
@@ -122,7 +125,9 @@ def _finalize_registration_session(
             last_exc = exc
             if _is_preflight_access_refusal(exc):
                 raise
-            if "OAuth 回调返回认证错误页（error=OAuthCallback" in str(exc):
+            from core.account_export import _has_chatgpt_session_cookie
+            callback_complete = callback_complete or _has_chatgpt_session_cookie(session)
+            if not callback_complete and "OAuth 回调返回认证错误页（error=OAuthCallback" in str(exc):
                 # OAuth authorization codes are single-use; replaying the same
                 # rejected callback cannot repair a completed remote signup.
                 # Attempt one ordinary login to this same account instead.
@@ -168,6 +173,33 @@ def generate_display_name() -> str:
     return random_display_name()
 
 
+def _prepare_registration_otp(session, email: str, final_url: str, otp_code=None):
+    """Honor the actual auth page before waiting for mail; never skip password creation."""
+    from core.openai_auth import (
+        generate_registration_password, request_password_sentinel_bundle,
+        register_user, navigate_email_otp_send,
+    )
+    path = urlsplit(str(final_url or "")).path.rstrip("/")
+    sent_at = time.time()
+    if path == "/create-account/password":
+        logger.info("[注册] 服务端要求创建 GPT 密码，先提交密码，再发送邮箱验证码")
+        password = generate_registration_password()
+        bundle = request_password_sentinel_bundle(session)
+        header, so_header = build_sentinel_header(session, bundle, "username_password_create")
+        human_delay("form")
+        sent_at = time.time()
+        result = register_user(session, email, password, header, so_header)
+        navigate_email_otp_send(session, result.get("continue_url"))
+        logger.info("[OTP] 密码已提交，已导航到邮箱验证页并触发发送")
+        return password, sent_at
+    if path != "/email-verification":
+        raise RuntimeError(f"注册尚未到达邮箱验证页（当前路径 {path or '/'}），已停止，未盲等验证码")
+    if otp_code is None:
+        send_email_otp(session)
+        logger.info("[OTP] 已显式触发首次邮箱验证码发送")
+    return None, sent_at
+
+
 def prepare_registration_inputs() -> tuple[str | None, str, str]:
     """按 CLI 规则准备一次注册所需的邮箱、显示名和生日。"""
     email = REGISTER_EMAIL
@@ -210,7 +242,7 @@ def run_registration(
     on_email_acquired: Callable[[str], None] | None = None,
 ):
     """
-    执行完整的 ChatGPT 注册流程（OTP-only，无密码）。
+    执行 ChatGPT 注册流程，按实际页面选择邮箱 OTP 或密码创建 + OTP。
 
     OpenAI 当前默认流程：signin 时携带 login_hint+screen_hint=login_or_signup
     → follow_authorize 落到 /email-verification 后显式触发 OTP 发送
@@ -317,6 +349,7 @@ def run_registration(
 
     create_acknowledged = False
     existing_account_detected = False
+    registration_password = None
     try:
         # 网络预检必须在 signin/follow_authorize 之前完成；预检不带邮箱，不会触发 OTP。
         try:
@@ -362,13 +395,7 @@ def run_registration(
         # 步骤4: 跟随 authorize URL（建立 auth.openai.com 的 cookies）
         final_auth_url = follow_authorize(session, authorize_url)
         human_delay("navigate")
-        # The document can land on email-verification without sending mail.
-        # Its browser client calls email-otp/send; protocol registration must
-        # perform that step too. Do not invalidate an explicitly supplied code.
-        if otp_code is None and urlsplit(str(final_auth_url or "")).path.rstrip("/") == "/email-verification":
-            otp_after_ts = time.time()
-            send_email_otp(session)
-            logger.info("[OTP] 已显式触发首次邮箱验证码发送")
+        registration_password, otp_after_ts = _prepare_registration_otp(session, email, final_auth_url, otp_code)
 
         # ==================== 阶段3: 验证码验证 ====================
         # Sentinel Token 不提前生成；等 OTP 到手后紧贴 validate 请求生成，
@@ -515,6 +542,15 @@ def run_registration(
             # 步骤12: 提交用户信息，完成注册
             create_result = create_account(session, name, birthday, sentinel_header_11, so_header_11)
             create_acknowledged = True
+            if registration_password:
+                # Persist only after remote creation is acknowledged. A failed
+                # callback must not lose the password needed for normal login.
+                from core.email_provider import resolve_email_source
+                save_account_data(
+                    email=email, access_token="", email_source=resolve_email_source(email),
+                    proxy_used=session.proxy or None,
+                    extra={"registration_password": registration_password, "registration_confirmed": True},
+                )
 
             logger.info(f"[注册] 创建接口已通过：{email}，继续完成 OAuth 回调")
             human_delay("post_auth")
@@ -600,6 +636,7 @@ def run_registration(
                 "sentinel_sid": getattr(session, "sentinel_sid", None),
                 "browser_profile": getattr(session, "browser_profile", None),
                 "codex": codex_result,
+                **({"registration_password": registration_password} if registration_password else {}),
             },
         )
 

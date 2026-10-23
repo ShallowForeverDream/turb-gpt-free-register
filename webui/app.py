@@ -84,7 +84,7 @@ def _compact_account_for_list(row: dict) -> dict:
     原则：
     - 不返回完整 Token / Token 预览 / TOTP Secret / Agent Token。
     - 时间戳、错误原因、提链详情等只在前端确实要展示时返回；空值不返回。
-    - 复制/下载敏感内容时再通过 /secret 接口按需读取。
+    - 邮箱密码按用户要求直接展示；其他凭据复制/下载时通过 /secret 按需读取。
     """
     out = {
         "id": row.get("id"),
@@ -109,7 +109,10 @@ def _compact_account_for_list(row: dict) -> dict:
         or ""
     ).strip()
     out["has_gpt_password"] = bool(password)
-    out["has_mail_password"] = bool(_account_secret_value(row, "mail_password"))
+    mail_password = _account_secret_value(row, "mail_password")
+    out["has_mail_password"] = bool(mail_password)
+    if mail_password:
+        out["mail_password"] = mail_password
 
     # 这些是列表固定列直接展示字段。
     for key in (
@@ -339,6 +342,7 @@ def create_app(auth_code: str | None = None, *, local_no_auth: bool = False) -> 
 
     init_auth(app, auth_code=auth_code)
     register_auth_routes(app, local_no_auth=local_no_auth)
+    db.sync_deactivated_accounts()
     recovered_plan_checks = db.recover_interrupted_plan_checks()
     if recovered_plan_checks:
         logger.warning("已恢复 %s 个因 WebUI 重启中断的套餐查询状态", recovered_plan_checks)

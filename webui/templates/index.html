@@ -3807,10 +3807,10 @@ function renderAccounts() {
       <td class="col-source">${esc(r.email_source || '-')}</td>
       <td class="col-small">${_emailOtpCellV2(r)}</td>
       <td class="col-token">${_tokenCellV2(r)}</td>
-      <td class="col-password">${r.has_gpt_password ? `<button type="button" data-account-copy-secret="password" data-account-id="${esc(r.id)}" title="点击读取并复制 GPT 登录密码">•••••• · 复制</button>` : '<span class="acc-v2-muted">未设置（OTP登录）</span>'}</td>
-      <td class="col-password">${r.has_mail_password ? `<button type="button" data-account-copy-secret="mail_password" data-account-id="${esc(r.id)}" title="点击读取并复制邮箱密码，与 GPT 密码无关">•••••• · 复制</button>` : '<span class="acc-v2-muted">未保存</span>'}</td>
+      <td class="col-password">${r.has_gpt_password ? `<button type="button" class="account-password-text" data-account-copy-secret="password" data-account-id="${esc(r.id)}" title="点击复制 GPT 登录密码">•••••• · 复制</button>` : '<span class="acc-v2-muted">未设置（OTP登录）</span>'}</td>
+      <td class="col-password">${r.mail_password ? `<button type="button" class="account-password-text" data-account-copy-secret="mail_password" data-account-id="${esc(r.id)}" title="点击复制邮箱密码">${esc(r.mail_password)}</button>` : '<span class="acc-v2-muted">未保存</span>'}</td>
       <td class="col-plan">${_planCell(r)}<div class="acc-v2-sub">${_extractLinkCell(r)}</div></td>
-      <td class="col-note" title="${esc(r.note || '')}">${r.note ? esc(short(r.note, 80)) : '<span class="acc-v2-muted">-</span>'}</td>
+      <td class="col-note">${r.note ? `<button type="button" class="account-note-summary" data-account-note-preview="${esc(r.id)}" title="点击查看完整备注">${esc(r.note)}</button>` : '<span class="acc-v2-muted">-</span>'}</td>
       <td class="col-small">${_totpCellV2(r)}</td>
       <td class="col-status">${_codexCellV2(r)}</td>
       <td class="col-time" title="${esc(r.registered_at || '-')}">${esc(r.registered_at || '-')}</td>
@@ -7298,5 +7298,6 @@ setInterval(() => { if (!$('#tab-accounts').classList.contains('hidden')) pollAc
 {% include 'workflow_driver_status.html' %}
 </script>
 {% include 'promo_details.html' %}
+{% include 'account_details.html' %}
 </body>
 </html>

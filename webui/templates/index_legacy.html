@@ -1666,10 +1666,10 @@ function renderAccounts() {
       <td>${esc(r.email_source || '-')}</td>
       <td>${_emailOtpAction(r)}</td>
       <td><span class="mono" title="列表仅显示预览，完整 Token 请点复制">${r.has_access_token ? '有Token' : '<span class="muted">无Token</span>'}</span>${_liveStatusSub(r)}</td>
-      <td>${r.has_gpt_password ? `<button data-account-copy-secret="password" data-account-id="${esc(r.id)}" title="复制 GPT 登录密码">•••••• · 复制</button>` : '<span class="muted">未设置（OTP登录）</span>'}</td>
-      <td>${r.has_mail_password ? `<button data-account-copy-secret="mail_password" data-account-id="${esc(r.id)}" title="复制邮箱密码">•••••• · 复制</button>` : '<span class="muted">未保存</span>'}</td>
+      <td>${r.has_gpt_password ? `<button class="account-password-text" data-account-copy-secret="password" data-account-id="${esc(r.id)}" title="复制 GPT 登录密码">•••••• · 复制</button>` : '<span class="muted">未设置（OTP登录）</span>'}</td>
+      <td>${r.mail_password ? `<button class="account-password-text" data-account-copy-secret="mail_password" data-account-id="${esc(r.id)}" title="复制邮箱密码">${esc(r.mail_password)}</button>` : '<span class="muted">未保存</span>'}</td>
       <td>${_planCell(r)}<div class="sub-cell">${_extractLinkCell(r)}</div></td>
-      <td class="wrap" title="${esc(r.note || '')}">${r.note ? esc(short(r.note, 80)) : '<span class="muted">-</span>'}</td>
+      <td class="wrap">${r.note ? `<button type="button" class="account-note-summary" data-account-note-preview="${esc(r.id)}" title="点击查看完整备注">${esc(r.note)}</button>` : '<span class="muted">-</span>'}</td>
       <td>${_totpAction(r)}</td>
       <td>${_codexCell(r)}</td>
       <td class="muted">${esc(r.registered_at || '-')}</td>
@@ -3916,5 +3916,6 @@ setInterval(() => { if (!$('#tab-accounts').classList.contains('hidden')) pollAc
 {% include 'workflow_driver_status.html' %}
 </script>
 {% include 'promo_details.html' %}
+{% include 'account_details.html' %}
 </body>
 </html>

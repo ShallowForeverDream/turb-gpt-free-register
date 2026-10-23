@@ -343,7 +343,10 @@ def _follow_low_traffic_callback(session: BrowserSession, url: str, referer: str
             callback_seen |= parts.path.startswith("/api/auth/callback/")
         else:
             headers = session.get_auth_navigate_headers(referer=referer)
-        resp = session.get(url, headers=headers, allow_redirects=False)
+        # Callback exchanges the one-time code server-side; don't abort it at
+        # the ordinary 30s API timeout and then replay an already-used code.
+        options = {"timeout": 90} if parts.hostname == "chatgpt.com" and parts.path.startswith("/api/auth/callback/") else {}
+        resp = session.get(url, headers=headers, allow_redirects=False, **options)
         resp.raise_for_status()
         if resp.status_code in (301, 302, 303, 307, 308) and resp.headers.get("location"):
             next_url = urljoin(url, resp.headers["location"])
@@ -384,7 +387,6 @@ def follow_oauth_callback(session: BrowserSession, continue_url: str, referer: s
 
     if getattr(session, "protocol_low_traffic", False) is True:
         final_url = _follow_low_traffic_callback(session, continue_url, referer)
-        session.log_cookie_names("oauth_callback_complete")
         logger.info("[OAuth回调] 完成，最终落点: %s", urlsplit(final_url).path)
         return final_url
 
@@ -397,7 +399,7 @@ def follow_oauth_callback(session: BrowserSession, continue_url: str, referer: s
         headers = session.get_auth_navigate_headers(referer=referer)
 
     logger.info(f"[OAuth回调] 跟随 continue_url 完成 OAuth 回调...")
-    resp = session.get(continue_url, headers=headers, allow_redirects=True)
+    resp = session.get(continue_url, headers=headers, allow_redirects=True, timeout=90)
     # 必须在本阶段暴露 callback 的 403/429；否则 BrowserSession 虽已熔断，
     # 错误却会延迟到 fetch_session，查活无法针对 callback 原请求重试。
     resp.raise_for_status()

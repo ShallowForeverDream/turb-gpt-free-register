@@ -75,6 +75,7 @@ class ProtocolTrafficTests(unittest.TestCase):
         final = account_export.follow_oauth_callback(session, start)
         self.assertEqual(final, "https://chatgpt.com/")
         self.assertEqual([call.args[0] for call in session.get.call_args_list], [start, callback])
+        self.assertEqual(session.get.call_args_list[-1].kwargs["timeout"], 90)
         session.protocol_traffic.skip.assert_called_once_with("post_callback_home_document")
         # AT remains a required, independent check; a cookie is not success.
         session.get.side_effect = None

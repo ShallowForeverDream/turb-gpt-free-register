@@ -1,0 +1,48 @@
+<style>
+table .account-password-text, table .account-password-text:hover {
+  border: 0 !important; background: transparent !important; box-shadow: none !important;
+  border-radius: 0; padding: 0; color: inherit; font: inherit; cursor: pointer;
+}
+table .account-note-summary, table .account-note-summary:hover {
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2;
+  overflow: hidden; white-space: normal; overflow-wrap: anywhere; text-align: left;
+  max-height: 2.9em; width: 100%; line-height: 1.45; font-family: inherit; font-size: inherit;
+  border: 0 !important; background: transparent !important; box-shadow: none !important;
+  padding: 0; color: inherit; cursor: pointer;
+}
+.account-note-popover {
+  position: fixed; margin: 0; padding: 16px; box-sizing: border-box;
+  width: min(440px, calc(100vw - 24px)); max-height: min(55vh, 420px); overflow: auto;
+  border: 1px solid #dce3ed; border-radius: 12px; background: #fff; color: #303744;
+  box-shadow: 0 8px 32px #14234026; font-size: 14px;
+}
+.account-note-popover p { margin: 8px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.account-note-popover button { float: right; border: 0; background: transparent; cursor: pointer; }
+</style>
+<script>
+document.addEventListener('click', (event) => {
+  const button = event.target.closest('[data-account-note-preview]');
+  if (!button) return;
+  const row = ACCOUNTS.find(item => Number(item.id) === Number(button.dataset.accountNotePreview));
+  if (!row?.note) return;
+  document.getElementById('accountNotePopover')?.remove();
+  const bubble = document.createElement('div');
+  bubble.id = 'accountNotePopover';
+  bubble.className = 'account-note-popover';
+  bubble.setAttribute('popover', 'auto');
+  const close = document.createElement('button');
+  close.textContent = '×';
+  close.setAttribute('aria-label', '关闭备注');
+  close.addEventListener('click', () => bubble.hidePopover());
+  const title = document.createElement('strong');
+  title.textContent = '完整备注';
+  const text = document.createElement('p');
+  text.textContent = row.note;
+  bubble.append(close, title, text);
+  document.body.appendChild(bubble);
+  bubble.showPopover();
+  const anchor = button.getBoundingClientRect();
+  bubble.style.left = `${Math.max(12, Math.min(anchor.left, innerWidth - bubble.offsetWidth - 12))}px`;
+  bubble.style.top = `${Math.max(12, Math.min(anchor.bottom + 8, innerHeight - bubble.offsetHeight - 12))}px`;
+});
+</script>

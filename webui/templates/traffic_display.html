@@ -1,0 +1,10 @@
+function formatTraffic(t) {
+  if (!t || !t.available) return '<span title="历史流量未记录，不能补算">未记录</span>';
+  const fmt = value => value == null || !Number.isFinite(Number(value))
+    ? '—' : `${(Math.max(0, Number(value)) / 1048576).toFixed(2)}MiB`;
+  const dynamic = t.dynamic_ip_bytes;
+  const history = !t.traffic_schema_version ? '；历史记录未单独计量动态 IP，不能补算' : '';
+  const scope = t.total_measurement_complete === false ? '；总计为已观测小计，详见统计范围' : '';
+  const title = `已统计总流量 / 动态 IP 隧道流量（均为上传+下载）；动态 IP 最终计费以代理商为准${history}${scope}；${t.note || ''}`;
+  return `<span class="flow-traffic-pair" style="white-space:nowrap" title="${esc(title)}">${fmt(t.total_bytes)}/${fmt(dynamic)}</span>`;
+}

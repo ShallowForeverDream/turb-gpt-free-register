@@ -2862,6 +2862,7 @@ def run_browser_use_registration(
             account_id = save_account_data(
                 email=email,
                 access_token=access_token,
+                session=context, session_info=session_info,
                 totp_secret=totp_secret,
                 email_source=resolve_email_source(email),
                 proxy_used=proxy or f"{provider_prefix}:{session_info_open.proxy_country_code or 'default'}",
@@ -2900,7 +2901,7 @@ def run_browser_use_registration(
                 from core.email_provider import release_email
                 release_email(
                     email,
-                    status="failed" if create_acknowledged else "available",
+                    status="failed_created" if create_acknowledged else "available",
                     note=f"BrowserUse注册失败: {str(exc)[:180]}",
                 )
         except Exception:

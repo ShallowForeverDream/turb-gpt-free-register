@@ -6,11 +6,11 @@ import logging
 import random
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime
 
 from config import proxy as proxy_cfg
-from core import db
+from core import db, account_concurrency
 from core.chatgpt_plan import check_account_plan
 
 logger = logging.getLogger(__name__)
@@ -34,8 +34,9 @@ def _float_setting(name: str, default: float, lower: float, upper: float) -> flo
 
 _WORKERS = _int_setting("PLAN_CHECK_WORKERS", 3, 1, 16)
 _QUEUE_LIMIT = _int_setting("PLAN_CHECK_QUEUE_LIMIT", 500, _WORKERS, 5000)
-_EXECUTOR = ThreadPoolExecutor(max_workers=_WORKERS, thread_name_prefix="plan-check")
+_EXECUTOR = ThreadPoolExecutor(max_workers=16, thread_name_prefix="plan-check")
 _QUEUE_SLOTS = threading.BoundedSemaphore(_QUEUE_LIMIT)
+_EXECUTION_SLOTS = account_concurrency.SLOTS
 _RATE_LOCK = threading.Lock()
 _NEXT_REQUEST_AT = 0.0
 
@@ -66,16 +67,23 @@ def _run_plan_check(
     trigger: str,
     proxy: str | None,
     timezone_offset_min: str,
+    existing_session=None,
 ) -> dict:
+    acquired = False
     try:
+        _EXECUTION_SLOTS.acquire()
+        acquired = True
         if not db.mark_account_plan_check_running(account_id):
             return {"ok": False, "error": "账号已删除或套餐查询状态已被重置"}
 
+        session_args = {"existing_session": existing_session} if existing_session is not None else {}
         _wait_for_rate_slot()
         result = check_account_plan(
             access_token,
             proxy=proxy,
             timezone_offset_min=timezone_offset_min,
+            **session_args,
+            **({"max_attempts": 1} if trigger == "registration_final" else {}),
         )
 
         recheck_delay = _registration_recheck_delay()
@@ -95,6 +103,7 @@ def _run_plan_check(
                 proxy=proxy,
                 timezone_offset_min=timezone_offset_min,
                 max_attempts=1,
+                **session_args,
             )
             if recheck_result.get("ok"):
                 result = recheck_result
@@ -135,6 +144,8 @@ def _run_plan_check(
         logger.exception("[Plan] 后台查询异常: %s", email)
         return result
     finally:
+        if acquired:
+            _EXECUTION_SLOTS.release()
         _QUEUE_SLOTS.release()
 
 
@@ -147,8 +158,9 @@ def enqueue_account_plan_check(
     proxy: str | None = None,
     timezone_offset_min: str = "-",
     return_future: bool = False,
+    existing_session=None,
 ) -> dict:
-    """把查询放入统一线程池；重复查询或队列满时不提交。"""
+    """独立查询用线程池；借用注册会话时在原线程执行，仍遵守队列与并发限制。"""
     from core.workflow_driver import require_driver_ready
     try:
         require_driver_ready()
@@ -168,8 +180,7 @@ def enqueue_account_plan_check(
 
     try:
         from core.workflow_driver import submit_with_driver
-        future = submit_with_driver(
-            _EXECUTOR, _run_plan_check,
+        args = dict(
             account_id=account_id,
             email=email,
             access_token=access_token,
@@ -177,6 +188,11 @@ def enqueue_account_plan_check(
             proxy=proxy,
             timezone_offset_min=str(timezone_offset_min or "-"),
         )
+        if existing_session is not None:
+            future = Future()
+            future.set_result(_run_plan_check(**args, existing_session=existing_session))
+        else:
+            future = submit_with_driver(_EXECUTOR, _run_plan_check, **args)
     except Exception as exc:
         _QUEUE_SLOTS.release()
         result = {
@@ -202,7 +218,7 @@ def enqueue_account_plan_check(
 
 def queue_settings() -> dict:
     return {
-        "workers": _WORKERS,
+        "workers": account_concurrency.queue_settings()["workers"],
         "queue_limit": _QUEUE_LIMIT,
         "min_interval": _float_setting("PLAN_CHECK_MIN_INTERVAL", 0.4, 0.0, 30.0),
         "jitter": _float_setting("PLAN_CHECK_JITTER", 0.3, 0.0, 30.0),

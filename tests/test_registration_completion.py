@@ -4,15 +4,38 @@ import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
-from core import protocol_traffic, registration_completion
+from core import db, protocol_traffic, registration_completion
 from core.workflow_driver import submit_with_driver
 from webui.app import _account_secret_value, _compact_account_for_list, create_app
 from tests.test_forwarded_imap_and_account_import import storage
 
 
 class RegistrationCompletionTests(unittest.TestCase):
+    def test_completion_runs_before_owner_closes_and_only_once(self):
+        events = []
+        session = SimpleNamespace(closed=False)
+        @registration_completion.complete_registration_flow
+        def register():
+            try:
+                return registration_completion.complete_registration_result(
+                    {"success": True, "account_id": 99999, "access_token": "initial"}, session=session)
+            finally:
+                session.closed = True
+                events.append("closed")
+        def finish(aid, *, session):
+            self.assertFalse(session.closed)
+            events.append("finished")
+            return {"status": "success"}
+        with patch.object(registration_completion, "finish_account", side_effect=finish) as complete, \
+             patch.object(db, "get_account", return_value={"access_token": "activated", "totp_secret": "fixture"}):
+            result = register()
+        complete.assert_called_once()
+        self.assertEqual(events, ["finished", "closed"])
+        self.assertEqual(result["access_token"], "activated")
+        self.assertEqual(result["totp_secret"], "fixture")
+
     def test_saved_plan_proxy_uses_pool_upstream_until_child_finishes(self):
         future = Future()
         future.set_result({"ok": True})
@@ -71,6 +94,39 @@ class RegistrationCompletionTests(unittest.TestCase):
         self.assertEqual(events, ["password", "send"])
         self.assertGreater(sent_at, 0)
         resend.assert_not_called()
+
+    def test_direct_email_verification_does_not_send_again_or_recapture_baseline(self):
+        import main
+        before_send = Mock()
+        with patch.object(main, "send_email_otp") as send, patch.object(main.time, "time", return_value=200):
+            password, after_ts = main._prepare_registration_otp(
+                object(), "fixture@gmail.com", "https://auth.openai.com/email-verification",
+                before_send=before_send, issued_after=100,
+            )
+        self.assertIsNone(password)
+        self.assertEqual(after_ts, 100)
+        send.assert_not_called()
+        before_send.assert_not_called()
+
+    def test_password_signup_keeps_its_new_send_state_and_time_bound(self):
+        import main
+        events = []
+        with patch("core.openai_auth.generate_registration_password", return_value="fixture-password"), \
+             patch("core.openai_auth.request_password_sentinel_bundle", return_value={}), \
+             patch.object(main, "build_sentinel_header", return_value=("fixture-header", None)), \
+             patch.object(main, "human_delay"), patch.object(main.time, "time", return_value=200), \
+             patch("core.openai_auth.register_user", side_effect=lambda *a: events.append("password") or {"continue_url": "/api/accounts/email-otp/send"}), \
+             patch("core.openai_auth.navigate_email_otp_send", side_effect=lambda *a: events.append("send")) as navigate, \
+             patch.object(main, "send_email_otp") as send:
+            password, after_ts = main._prepare_registration_otp(
+                object(), "fixture@gmail.com", "https://auth.openai.com/create-account/password",
+                before_send=lambda: events.append("snapshot"), issued_after=100,
+            )
+        self.assertEqual(events, ["snapshot", "password", "send"])
+        self.assertEqual(after_ts, 200)
+        self.assertEqual(password, "fixture-password")
+        self.assertEqual(navigate.call_args.args[1], "/api/accounts/email-otp/send")
+        send.assert_not_called()
 
     def test_unknown_auth_page_does_not_wait_for_unsent_mail(self):
         import main
@@ -133,14 +189,15 @@ class RegistrationCompletionTests(unittest.TestCase):
                  patch("config.register.AUTO_PLAN_CHECK_AFTER_REGISTER", True), \
                  patch("config.twofa.ENABLE_2FA", True), \
                  patch("core.plan_check_service.enqueue_account_plan_check", side_effect=enqueue("plan")), \
+                 patch("core.password_setup.set_missing_password", return_value={"ok": True, "status": "skipped"}), \
                  patch("core.twofa_service.enqueue_account_totp_setup", side_effect=enqueue("twofa")):
                 result = register()
-        self.assertEqual(events, ["plan", "twofa"])
-        self.assertEqual(result["network_traffic"]["total_bytes"], 90)
+        self.assertEqual(events, ["plan", "twofa", "plan"])
+        self.assertEqual(result["network_traffic"]["total_bytes"], 120)
         self.assertEqual(result["completion"]["status"], "success")
         self.assertIsNone(protocol_traffic.current_traffic())
         self.assertFalse(registration_completion.completion_managed())
-        self.assertEqual(save.call_args.kwargs["traffic"]["total_bytes"], 90)
+        self.assertEqual(save.call_args.kwargs["traffic"]["total_bytes"], 120)
 
     def test_disabled_post_steps_do_not_enqueue(self):
         with patch("core.registration_completion.db.get_account", return_value={"email": "fixture@example.test", "access_token": "fixture"}), \
@@ -172,7 +229,86 @@ class RegistrationCompletionTests(unittest.TestCase):
         def register():
             return {"success": True, "account_id": 99999}
         with patch("core.registration_completion.finish_account", return_value={"status": "partial"}):
-            self.assertTrue(register()["success"])
+            result = register()
+        self.assertTrue(result["success"])
+        self.assertEqual(result["account_id"], 99999)
+        self.assertEqual(result["status"], "partial_success")
+
+    def test_explicit_deactivation_overrides_saved_registration_success(self):
+        @registration_completion.complete_registration_flow
+        def register():
+            return {"success": True, "account_id": 99999}
+        with patch("core.registration_completion.finish_account", return_value={"status": "deactivated"}):
+            result = register()
+        self.assertFalse(result["success"])
+        self.assertEqual(result["status"], "disabled")
+        self.assertEqual(result["account_id"], 99999)
+        self.assertIn("account_deactivated", result["error"])
+
+    def test_final_revoked_token_keeps_twofa_but_marks_partial(self):
+        from core import db
+        with tempfile.TemporaryDirectory() as tmp, patch.multiple(db, **storage(Path(tmp))):
+            aid = db.insert_account(email="fixture@outlook.com", access_token="old-at")
+            def setup(**kwargs):
+                db.update_account_liveness(aid, {"ok": True, "access_token": "fresh-at"})
+                return {"ok": True}
+            final = {"ok": False, "http_status": 401,
+                     "response_preview": '{"error":{"code":"token_revoked"}}'}
+            with patch("config.register.AUTO_PLAN_CHECK_AFTER_REGISTER", True), \
+                 patch("config.twofa.ENABLE_2FA", True), \
+                 patch("core.registration_completion._wait_plan_check", side_effect=[{"ok": True}, final]) as plan, \
+                 patch("core.twofa_service.enqueue_account_totp_setup", side_effect=setup):
+                result = registration_completion.finish_account(aid)
+            self.assertEqual(plan.call_count, 2)
+            self.assertEqual(plan.call_args.args[0]["trigger"], "registration_final")
+            self.assertEqual(plan.call_args.args[0]["access_token"], "fresh-at")
+            self.assertEqual(result["status"], "partial")
+            self.assertEqual(result["twofa"], "success")
+            self.assertEqual(result["credential_validation"], "invalid")
+            self.assertEqual(db.get_account(aid)["live_check_status"], "action_required")
+            self.assertFalse(db.get_account(aid).get("archived", False))
+
+    def test_deactivation_during_twofa_stops_before_final_check(self):
+        from core import db
+        with tempfile.TemporaryDirectory() as tmp, patch.multiple(db, **storage(Path(tmp))):
+            aid = db.insert_account(email="fixture@outlook.com", access_token="fixture")
+            def setup(**kwargs):
+                db.update_account_liveness(aid, {"ok": False, "status": "deactivated", "error": "account_deactivated"})
+                return {"ok": False}
+            with patch("config.register.AUTO_PLAN_CHECK_AFTER_REGISTER", True), \
+                 patch("config.twofa.ENABLE_2FA", True), \
+                 patch("core.registration_completion._wait_plan_check", return_value={"ok": True}) as plan, \
+                 patch("core.twofa_service.enqueue_account_totp_setup", side_effect=setup):
+                result = registration_completion.finish_account(aid)
+            plan.assert_called_once()
+            self.assertEqual(result["status"], "deactivated")
+
+    def test_final_check_has_one_attempt_and_no_eligibility_recheck(self):
+        from core import plan_check_service
+        with patch.object(db, "mark_account_plan_check_running", return_value=True), \
+             patch.object(db, "update_account_plan_check"), \
+             patch.object(plan_check_service, "_QUEUE_SLOTS"), \
+             patch.object(plan_check_service, "_wait_for_rate_slot"), \
+             patch.object(plan_check_service, "check_account_plan", return_value={"ok": True, "current_plan_type": "free"}) as check:
+            plan_check_service._run_plan_check(account_id=99999, email="fixture@outlook.com", access_token="fixture",
+                                               trigger="registration_final", proxy=None, timezone_offset_min="0")
+        check.assert_called_once()
+        self.assertEqual(check.call_args.kwargs["max_attempts"], 1)
+
+    def test_valid_token_clears_old_action_required_state(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.multiple(db, **storage(Path(tmp))):
+            aid = db.insert_account(email="fixture@outlook.com", access_token="fixture")
+            db.update_account_liveness(aid, {"ok": False, "status": "action_required", "error_code": "token_revoked"})
+            self.assertEqual(registration_completion._record_token_check(aid, {"ok": True}), "valid")
+            self.assertEqual(db.get_account(aid)["live_check_status"], "live")
+
+    def test_token_check_network_error_is_not_account_deactivation(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.multiple(db, **storage(Path(tmp))):
+            aid = db.insert_account(email="fixture@outlook.com", access_token="fixture")
+            result = registration_completion._record_token_check(aid, {"ok": False, "http_status": None, "error": "TLS timeout"})
+            self.assertEqual(result, "failed")
+            self.assertNotEqual(db.get_account(aid).get("live_check_status"), "deactivated")
+            self.assertFalse(db.get_account(aid).get("archived", False))
 
     def test_invalid_callback_is_not_replayed_and_uses_one_normal_login(self):
         import main

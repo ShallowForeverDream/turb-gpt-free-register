@@ -12,7 +12,7 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse
 
-from core import db
+from core import db, account_concurrency
 from core.email_provider import (
     acquire_email_from_source, email_material_line,
     release_email_if_unconsumed, wait_for_otp,
@@ -20,7 +20,7 @@ from core.email_provider import (
 from core.session import BrowserSession, close_browser_session
 
 logger = logging.getLogger(__name__)
-_EXECUTOR = ThreadPoolExecutor(max_workers=3, thread_name_prefix="email-change")
+_EXECUTOR = ThreadPoolExecutor(max_workers=16, thread_name_prefix="email-change")
 _SLOTS = threading.BoundedSemaphore(100)
 _RUNNING: set[int] = set()
 _LOCK = threading.Lock()
@@ -396,6 +396,7 @@ def _check_live_in_current_session(
 
 
 @unified_workflow("email_change")
+@account_concurrency.limited
 def _run(account_id: int, source: str) -> dict:
     new_email = ""
     session = None
@@ -468,6 +469,9 @@ def _run(account_id: int, source: str) -> dict:
         )
         _append_log(account_id, "新邮箱 OTP 服务端验证成功，开始更新本地账号记录")
 
+        if source == "smsbower_mail":
+            from core.smsbower_mail_client import mark_account_created
+            mark_account_created(new_email)
         stage = "更新本地账号"
         db_started = time.monotonic()
         db.finish_account_email_change(
@@ -495,6 +499,9 @@ def _run(account_id: int, source: str) -> dict:
             logger.warning("[邮箱换绑] 原会话查活失败 account_id=%s: %s", account_id, str(live_exc)[:300])
             live_result = _enqueue_live_check_after_change(account_id, new_email)
             live_mode = "queued"
+        if source == "smsbower_mail" and live_result.get("ok"):
+            from core.smsbower_mail_client import mark_success_closed
+            mark_success_closed(new_email)
         logger.info("[邮箱换绑] 成功 account_id=%s new=%s；已执行换绑后查活", account_id, new_email)
         _append_log(account_id, f"换绑任务完成：live_check_mode={live_mode} total={_cost(task_started)}")
         return {

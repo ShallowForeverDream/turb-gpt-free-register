@@ -1,0 +1,279 @@
+// Reparent the existing controls: their listeners and queue semantics stay intact.
+const workspaceSuffix = document.getElementById('regWorkersV2') ? 'V2' : '';
+function syncWorkspaceAccountControls() {
+  const values=ACCOUNT_COLUMN_FILTER_STATE.status?.values || [];
+  SHOW_ARCHIVED_ACCOUNTS=values.length===1 && values[0]==='archived';
+  const toggle=document.getElementById('workspaceArchiveToggle');
+  if(toggle){toggle.textContent=SHOW_ARCHIVED_ACCOUNTS?'未归档':'已归档';toggle.title='切换到'+toggle.textContent+'账号';}
+  const count=ACCOUNT_SELECTED.size;
+  const hint=document.getElementById('workspaceAccountSelection');if(hint)hint.textContent=`已选 ${count}`;
+  const group=document.getElementById('workspaceSetGroup');if(group)group.disabled=!count;
+}
+function toggleWorkspaceArchive() {
+  syncWorkspaceAccountControls();
+  ACCOUNT_COLUMN_FILTER_STATE.status={values:[SHOW_ARCHIVED_ACCOUNTS?'unarchived':'archived']};
+  syncWorkspaceAccountControls();ACCOUNT_SELECTED.clear();PAGERS.accounts.page=1;
+  document.dispatchEvent(new Event('account-column-filters-updated'));loadAccounts();
+}
+async function setWorkspaceAccountGroup() {
+  const ids=[...ACCOUNT_SELECTED].map(Number);if(!ids.length)return;
+  const group=prompt(`为选中的 ${ids.length} 个账号设置分组（留空移出分组）`,'');
+  if(group===null)return;if(group.trim().length>100){showToast('分组名称不能超过100字');return;}
+  try{await api('/api/accounts/group-bulk',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({account_ids:ids,group:group.trim()})});await loadAccounts();}
+  catch(error){showToast('设置分组失败：'+error.message);}
+}
+function mountWorkspaceLayout() {
+  const id=base=>document.getElementById(base+workspaceSuffix);
+  const slot=name=>document.querySelector(`[data-workspace-slot="${name}"]`);
+  function move(base,target,label){const node=id(base);if(!node)return null;if(label)node.textContent=label;slot(target).append(node);return node;}
+  move('btnCheckSelectedLive','basic','查活');move('btnCheckSelectedPlans','basic','查套餐');move('btnSetupSelectedTotp','basic','开2FA');
+  move('btnRetrySelectedCodex','codex','补跑');
+  const sms=document.createElement('button');sms.type='button';sms.className='btn jobs-tb-btn';sms.textContent='接码说明';sms.id='workspaceCodexSms';sms.title='短信验证说明（不购号、不执行登录）';
+  sms.addEventListener('click',()=>document.getElementById('codexSmsInfo').showModal());slot('codex').append(sms);
+  move('btnExtractSelectedLinks','business','提链');move('btnChangeSelectedEmails','business','换邮箱');
+  move('qAccounts','account');
+  const archive=document.createElement('button');archive.type='button';archive.id='workspaceArchiveToggle';archive.className='btn jobs-tb-btn';archive.addEventListener('click',toggleWorkspaceArchive);slot('account').append(archive);
+  if(!move('btnGroupSelectedAccounts','account','设置分组')){
+    const group=document.createElement('button');group.type='button';group.id='workspaceSetGroup';group.className='btn jobs-tb-btn';group.textContent='设置分组';group.addEventListener('click',setWorkspaceAccountGroup);slot('account').append(group);
+  }
+  move('codexBulkWorkers','concurrency');
+  move('saveAccountConcurrency','concurrency');move('accountConcurrencyHint','concurrency');move('btnRefreshAccounts','refresh','刷新');
+  move('btnDownloadSelectedCpa','export','下载CPA');move('btnCopySelectedLines','export','复制完整信息');move('btnDownloadSelectedTxt','export','导出TXT');
+  if(workspaceSuffix){document.getElementById('accountsFilterV2').style.display='none';document.getElementById('accountsToolbarV2').style.display='none';}
+  else{document.querySelector('.accounts-toolbar').style.display='none';document.body.classList.add('workspace-legacy');}
+  syncWorkspaceAccountControls();
+  const logs=document.getElementById('tab-register'),pool=document.getElementById('tab-outlook');
+  const registration=document.createElement('section');registration.className='workspace-registration';registration.id='poolRegistrationControls';
+  const tasks=document.createElement('details');tasks.className='workspace-registration';tasks.id='poolTaskControls';
+  const summary=document.createElement('summary');summary.textContent='注册任务控制';tasks.append(summary);
+  if(workspaceSuffix){
+    registration.append(logs.querySelector('.register-overview'));
+    registration.append(document.getElementById('jobsToolbarV2'));
+    const warning=document.getElementById('regWarnV2');if(warning)registration.append(warning);
+    tasks.append(document.getElementById('jobsPanelV2'));
+  }else{
+    registration.append(logs.querySelector('section'));
+    const stats=document.getElementById('statAccounts').closest('.stats');if(stats)registration.prepend(stats);
+    const logPanel=document.getElementById('logPanel');document.body.append(logPanel);logPanel.classList.add('workspace-legacy-log');
+    tasks.append(logs.querySelector('section'));
+  }
+  pool.prepend(registration);pool.append(tasks);
+  if(!workspaceSuffix){
+    for(const id of ['btnCancelPending','btnPauseRegistration','btnResumeRegistration','registrationPauseStatus']){
+      const control=document.getElementById(id);if(control)registration.append(control);
+    }
+    async function refreshIntake(){
+      try{
+        const state=await api('/api/jobs/pause-status');
+        document.getElementById('btnPauseRegistration').disabled=state.paused;
+        document.getElementById('btnResumeRegistration').disabled=!state.paused;
+        document.getElementById('registrationPauseStatus').textContent=`${state.paused?'已暂停补充':'自动补充中'} · 待启动 ${state.waiting_jobs||0} · 已准入 ${state.admitted_jobs||0}（含2FA）`;
+      }catch(error){}
+    }
+    for(const [id,action] of [['btnPauseRegistration','pause'],['btnResumeRegistration','resume']]){
+      document.getElementById(id).addEventListener('click',async()=>{
+        try{await api(`/api/jobs/${action}`,{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});await refreshIntake();}
+        catch(error){showToast('注册队列操作失败：'+error.message);}
+      });
+    }
+    refreshIntake();setInterval(refreshIntake,5000);
+  }
+  const importPool=id('btnImportSelectedPool');if(importPool)registration.append(importPool);
+  const workers=id('regWorkers'),saveWorkers=id('saveRegistrationConcurrency');
+  const workersLabel=workers?.closest('label');
+  if(workersLabel?.firstChild?.nodeType===Node.TEXT_NODE) workersLabel.firstChild.textContent='并发';
+  workers?.addEventListener('blur',event=>{
+    if(event.relatedTarget===saveWorkers || workersLabel?.contains(event.relatedTarget))return;
+    workers.value=getSavedRegistrationWorkers();
+  });
+  logs.replaceChildren(document.getElementById('workspaceLogTemplate').content.cloneNode(true));
+  document.getElementById('refreshLogHistory').addEventListener('click',refreshLogHistory);
+  const logFilters=document.getElementById('workspaceLogFilters');
+  logFilters.addEventListener('submit',event=>{
+    event.preventDefault();workspaceLogFilters=Object.fromEntries(new FormData(logFilters));workspaceLogPage=1;refreshLogHistory();
+  });
+  logFilters.addEventListener('reset',()=>{
+    workspaceLogFilters={};workspaceLogPage=1;refreshLogHistory();
+  });
+  document.getElementById('previousLogHistory').addEventListener('click',()=>{if(workspaceLogPage>1){workspaceLogPage--;refreshLogHistory();}});
+  document.getElementById('nextLogHistory').addEventListener('click',()=>{if(workspaceLogPage<workspaceLogPages){workspaceLogPage++;refreshLogHistory();}});
+  document.getElementById('workspaceLogRows').addEventListener('click',event=>{const button=event.target.closest('[data-history-log]');if(button)openWorkspaceProgress(Number(button.dataset.historyLog));});
+  const progressDialog=document.getElementById('workspaceProgressDialog');
+  for(const button of ['workspaceProgressClose','workspaceProgressDone'])document.getElementById(button).addEventListener('click',()=>progressDialog.close());
+  progressDialog.addEventListener('close',()=>{
+    // A queued close event from the previous view can arrive after reopening.
+    if(progressDialog.open)return;
+    clearInterval(workspaceProgressTimer);workspaceProgressController?.abort();workspaceProgressId=null;workspaceProgressGeneration++;
+  });
+  document.getElementById('workspaceProgressRawLog').addEventListener('click',()=>{
+    const jobId=workspaceProgressId;progressDialog.close();if(jobId!=null)openLog(jobId);
+  });
+  tasks.addEventListener('toggle',()=>{if(!tasks.open)return;if(workspaceSuffix)enableResizableTableHeaders('.jobs-table-v2','jobs');else enableLegacyResizableHeaders('.jobs-table','jobs');refreshJobs();});
+}
+const WORKSPACE_PROGRESS_STAGES=[
+  ['任务入队',null],
+  ['打开登录入口',/\[注册\] 开始|登录页|获取 OAuth Providers/i],
+  ['发起身份授权',/\[步骤[234]\]|OAuth Signin|authorize URL/i],
+  ['邮箱首次发码',/email-verification|待首次发送|首次发码|accounts\.google\.com|signin\/identifier|登录方式/i],
+  ['API / 邮箱接码',/ICAPI|SMSBower签名API|等待验证码|收到.*验证码|已取得.*验证码|轮询取码|自动.*OTP/i],
+  ['验证码验证',/步骤10\]|验证码验证成功|邮箱.*验证通过/i],
+  ['资料建号 / 登录态保存',/步骤1[123]\]|创建接口返回成功|\[Session\] 成功|\[登录态\] 已拿到|\[DB\] 账号已保存|注册完成/i],
+];
+const WORKSPACE_TWOFA_STAGES=[
+  ['登录态预热',/开始设置|开始后台设置|预热|复用当前注册会话/i],
+  ['重认证授权',/阶段1|重认证.*(?:CSRF|signin|authorize)|跟随.*authorize/i],
+  ['邮箱首次发码',/落点|首次发码|待首次发送|无待首次发送|不重发/i],
+  ['API / 邮箱接码',/ICAPI|SMSBower签名API|自动等待|收到邮箱.*OTP|已取得.*验证码/i],
+  ['邮箱验证码验证',/提交.*OTP|OTP 验证通过/i],
+  ['注册 TOTP',/阶段2|enroll/i],
+  ['激活 TOTP / 复核登录态',/正在激活|TOTP 激活完成|2FA 设置完成|TOTP 已激活|激活后.*Session/i],
+];
+const WORKSPACE_CODEX_STAGES=[
+  ['发起 Codex 授权',/Codex.*(?:开始|启动|authorize|OAuth)|operation=codex/i],
+  ['邮箱验证码 / 2FA',/邮箱|email-otp|TOTP|验证器/i],
+  ['手机短信发码 / API 接码',/SMS|接码|手机号|短信|phone-otp|phone_number/i],
+  ['工作区选择',/workspace|工作区/i],
+  ['回调兑换 / 凭据保存',/callback|回调|兑换|凭据|成功[:：]|CPA.*(?:保存|成功)/i],
+];
+function workspaceLogRecords(log) {
+  let phase='registration';
+  return String(log||'').split(/\r?\n/).map(text=>{
+    if(/\[Job \d+\] 开始注册任务/.test(text))phase='registration';
+    else if(/\[2FA\]|开始设置 2FA|\[收尾\] 开启 2FA|operation=twofa/.test(text))phase='twofa';
+    else if(/\[密码\]/.test(text))phase='password';
+    else if(/\[Codex(?:\]|\[)|\[CODEX\]|operation=codex/.test(text))phase='codex';
+    return {text,phase};
+  });
+}
+function workspaceProgressGroup(key,title,stages,text,state,finished) {
+  const observed=stages.reduce((latest,[,pattern],i)=>pattern?.test(text)?i:latest,-1);
+  const failed=['failed','blocked','deactivated'].includes(state);
+  const resolved=state==='skipped'?'skipped':state==='success'?'success':failed?'failed'
+    :observed>=0?(finished?'failed':'running'):['queued','pending'].includes(state)?'pending':'not_started';
+  return {key,title,state:resolved,index:observed,steps:stages.map(([label,pattern],i)=>{
+    let status='pending';
+    if(resolved==='skipped')status='skipped';
+    else if(resolved==='success')status=key==='codex'&&i===2&&!pattern.test(text)?'skipped':'success';
+    else if(i<observed)status='success';
+    else if(i===observed)status=resolved==='failed'?'failed':'running';
+    return {label,status};
+  })};
+}
+function workspaceProgressModel(log,job={},progress={}) {
+  // Retry rows append to the same file. Earlier attempts must not complete the current run.
+  const full=String(log||''),starts=[...full.matchAll(/\[Job \d+\] 开始注册任务/g)];
+  const source=starts.length?full.slice(starts[starts.length-1].index):full,status=String(job.status||'');
+  const finished=['success','already_registered','partial_success','failed','stopped','cancelled','blocked','disabled','attention_required','network_error','mail_timeout'].includes(status);
+  const success=['success','already_registered'].includes(status);
+  const note=String(job.status_message||job.error_message||'').replace(/(?:https?:\/\/|socks5h?:\/\/)\S+/g,'[链接已隐藏]').replace(/\b\d{6}\b/g,'[验证码已隐藏]').slice(0,240);
+  const records=workspaceLogRecords(source),text=phase=>records.filter(r=>r.phase===phase).map(r=>r.text).join('\n');
+  const reg=text('registration'),twofa=text('twofa'),password=text('password'),codex=text('codex');
+  const regState=progress.registration==='success'||job.account_id||success||twofa.trim()||codex.trim()?'success':'';
+  const twofaState=/twofa=failed|\[2FA\] (?:失败|后台异常)/.test(source)?'failed'
+    :/2FA 设置完成|TOTP 已激活|\[2FA\] 完成[:：]/.test(twofa)?'success'
+    :/twofa=skipped|跳过 2FA/.test(source)?'skipped'
+    :progress.twofa&&progress.twofa!=='unknown'?progress.twofa:'';
+  const codexState=/\[Codex\].*成功[:：]/.test(codex)?'success'
+    :/Codex.*(?:跳过|skipped)/i.test(source)?'skipped'
+    :/\[Codex\].*失败[:：]/.test(codex)?'failed'
+    :progress.codex&&progress.codex!=='unknown'?progress.codex:'';
+  const groups=[workspaceProgressGroup('registration','第一部分 · 注册',WORKSPACE_PROGRESS_STAGES,reg,regState,finished),
+    workspaceProgressGroup('twofa','第二部分 · 2FA',WORKSPACE_TWOFA_STAGES,twofa,twofaState,finished),
+    workspaceProgressGroup('codex','第三部分 · Codex 授权',WORKSPACE_CODEX_STAGES,codex,codexState,finished)];
+  if(password.trim()||progress.password&&progress.password!=='unknown'){
+    const state=/\[密码\] 未完成/.test(password)?'failed'
+      :/\[密码\].*(?:跳过|不改动已有密码)/.test(password)?'skipped'
+      :/\[密码\] 设置完成/.test(password)?'success'
+      :progress.password&&progress.password!=='unknown'?progress.password:finished?'failed':'running';
+    const group=groups[1];group.title='第二部分 · 2FA / GPT 密码';
+    group.steps.push({label:'补设 GPT 密码（已有密码跳过）',status:state});
+    if(['running','failed','blocked'].includes(state))group.state=state==='blocked'?'failed':state;
+  }
+  const active=groups.find(g=>g.state==='running')||groups.find(g=>g.state==='failed')||groups.find(g=>g.state==='pending')||groups[0];
+  const index=Math.max(0,groups[0].index);
+  return {index,status,finished,success,note,groups,current:active.title,thirdParty:/accounts\.google\.com|signin\/identifier/i.test(reg)};
+}
+let workspaceProgressId=null,workspaceProgressTimer=null,workspaceProgressController=null,workspaceProgressFlight=null,workspaceProgressGeneration=0;
+let workspaceProgressExpanded=new Map();
+function openWorkspaceProgress(jobId) {
+  if(!Number.isSafeInteger(jobId)||jobId<1)return;
+  const dialog=document.getElementById('workspaceProgressDialog');
+  workspaceProgressId=jobId;
+  workspaceProgressExpanded=new Map();
+  workspaceProgressGeneration++;workspaceProgressController?.abort();
+  document.getElementById('workspaceProgressTitle').textContent=`任务 #${jobId} · 全流程进度`;
+  document.getElementById('workspaceProgressSummary').textContent='读取阶段信息…';
+  document.getElementById('workspaceProgressSteps').replaceChildren();
+  document.getElementById('workspaceProgressNote').textContent='';
+  if(!dialog.open)dialog.showModal();clearInterval(workspaceProgressTimer);
+  workspaceProgressTimer=setInterval(refreshWorkspaceProgress,5000);
+  refreshWorkspaceProgress();
+}
+async function refreshWorkspaceProgress() {
+  if(workspaceProgressId==null||workspaceProgressFlight===workspaceProgressGeneration)return;
+  const id=workspaceProgressId,generation=workspaceProgressGeneration;workspaceProgressFlight=generation;
+  workspaceProgressController=new AbortController();
+  try {
+    const result=await api(`/api/jobs/${id}/log`,{signal:workspaceProgressController.signal});
+    if(workspaceProgressId!==id||workspaceProgressGeneration!==generation)return;
+    const model=workspaceProgressModel(result.log,result.job,result.progress);
+    const summary=document.getElementById('workspaceProgressSummary');
+    const status={pending:'排队中',running:'运行中',success:'已完成',failed:'已停止',blocked:'入口受阻',stopped:'已停止',cancelled:'已取消',partial_success:'部分完成',already_registered:'已注册',disabled:'已停用'}[model.status]||model.status||'状态待同步';
+    summary.dataset.state=model.success?'success':model.finished?'failed':'running';
+    summary.textContent=model.success?`${status} · 点击各部分展开详情；未启用项显示跳过`:`${status} · ${model.current}`;
+    const list=document.getElementById('workspaceProgressSteps');list.replaceChildren();
+    const labels={success:'已完成',failed:'已停止 / 未完成',running:'进行中',pending:'等待中',skipped:'跳过',not_started:'未开始'};
+    for(const group of model.groups){
+      const section=document.createElement('details'),heading=document.createElement('summary'),badge=document.createElement('span'),steps=document.createElement('ol');
+      section.className='workspace-progress-group';section.dataset.state=group.state;
+      section.open=workspaceProgressExpanded.has(group.key)?workspaceProgressExpanded.get(group.key)
+        :['running','failed'].includes(group.state)||(group.key==='registration'&&!model.finished&&group.state!=='success');
+      heading.textContent=group.title;badge.textContent=labels[group.state];heading.append(badge);
+      heading.addEventListener('click',event=>{event.preventDefault();section.open=!section.open;workspaceProgressExpanded.set(group.key,section.open);});
+      steps.className='workspace-progress-steps';
+      for(const step of group.steps){
+        const item=document.createElement('li'),name=document.createElement('strong'),state=document.createElement('span');
+        name.textContent=step.label;state.textContent=labels[step.status];
+        item.className={success:'is-done',failed:'is-stopped',running:'is-current',skipped:'is-skipped'}[step.status]||'';
+        item.append(name,state);steps.append(item);
+      }
+      section.append(heading,steps);list.append(section);
+    }
+    document.getElementById('workspaceProgressNote').textContent=model.thirdParty && !model.success
+      ? '页面转到了第三方身份提供方；这不等于已发送邮箱验证码。'+(model.note?' '+model.note:'')
+      : (model.note || (model.finished?'该任务已结束。':'仅根据已记录的日志推断进度，等待更多日志。'));
+    if(model.finished)clearInterval(workspaceProgressTimer);
+  }catch(error){if(workspaceProgressId===id&&workspaceProgressGeneration===generation&&error.name!=='AbortError')document.getElementById('workspaceProgressSummary').textContent='阶段信息加载失败：'+error.message;}
+  finally{if(workspaceProgressFlight===generation)workspaceProgressFlight=null;}
+}
+let workspaceLogPage=1,workspaceLogPages=1,workspaceLogRequest=0,workspaceLogAbort=null,workspaceLogSignature='',workspaceLogFilters={};
+function workspaceDateTime(value){
+  if(typeof formatDateTime==='function')return formatDateTime(value);
+  if(!value)return '-';
+  const date=new Date(value);
+  return Number.isNaN(date.getTime())?String(value):date.toLocaleString('zh-CN',{hour12:false});
+}
+async function refreshLogHistory() {
+  const request=++workspaceLogRequest;workspaceLogAbort?.abort();workspaceLogAbort=new AbortController();
+  try{
+    const query=new URLSearchParams({paged:'1',page:String(workspaceLogPage),page_size:'20',...workspaceLogFilters});
+    const data=await api(`/api/jobs?${query}`,{signal:workspaceLogAbort.signal});
+    if(request!==workspaceLogRequest)return;
+    workspaceLogPages=Math.max(1,Math.ceil(Number(data.total||0)/20));
+    if(workspaceLogPage>workspaceLogPages){workspaceLogPage=workspaceLogPages;return refreshLogHistory();}
+    const signature=JSON.stringify({page:workspaceLogPage,filters:workspaceLogFilters,items:data.items,total:data.total,counts:data.status_counts,waiting:data.waiting_jobs});
+    if(signature===workspaceLogSignature)return;
+    workspaceLogSignature=signature;
+    const counts=data.status_counts||{};
+    document.getElementById('workspaceLogSummary').textContent=`筛选结果 ${data.total||0} 条 · 全局运行 ${counts.running||0} · 待启动 ${data.waiting_jobs||0}（轮到时才进入日志）`;
+    const labels={pending:'排队',running:'运行中',success:'成功',failed:'失败',blocked:'入口受阻',stopped:'已停止',cancelled:'已取消',disabled:'停用',partial_success:'部分成功',attention_required:'待人工核验',network_error:'网络异常',mail_timeout:'收码超时'};
+    document.getElementById('workspaceLogRows').innerHTML=(data.items||[]).map(job=>{
+      const status=String(job.display_status||job.status||''),state=/^[a-z_]+$/.test(status)?status:'unknown';
+      return `<tr data-state="${state}"><td>#${esc(job.id)}</td><td><span class="history-state">${esc(labels[status]||status||'-')}</span></td><td class="history-email">${esc(job.email)}</td><td>${esc(workspaceDateTime(job.started_at))}</td><td>${esc(workspaceDateTime(job.completed_at))}</td><td>${formatTraffic(job.network_traffic)}</td><td>${esc(short(job.status_message||job.error_message,180))}</td><td><button type="button" class="btn jobs-tb-btn" data-history-log="${Number(job.id)}">查看进度</button></td></tr>`;
+    }).join('')||'<tr><td colspan="8">暂无注册记录</td></tr>';
+    document.getElementById('workspaceLogPage').textContent=`${workspaceLogPage} / ${workspaceLogPages} 页`;
+    document.getElementById('previousLogHistory').disabled=workspaceLogPage<=1;
+    document.getElementById('nextLogHistory').disabled=workspaceLogPage>=workspaceLogPages;
+  }catch(error){if(error.name!=='AbortError'&&request===workspaceLogRequest)document.getElementById('workspaceLogSummary').textContent='日志列表加载失败：'+error.message;}
+}
+mountWorkspaceLayout();

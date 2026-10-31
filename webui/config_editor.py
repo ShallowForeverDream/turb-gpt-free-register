@@ -299,10 +299,6 @@ EDITABLE_FIELDS = [
         ],
     },
     {
-        "key": "TWOFA_WORKERS", "file": "twofa.py", "type": "int", "group": "功能开关",
-        "label": "2FA并发数", "help": "同时执行的2FA设置任务数，默认4，范围1-16；修改后需重启服务",
-    },
-    {
         "key": "TWOFA_QUEUE_LIMIT", "file": "twofa.py", "type": "int", "group": "功能开关",
         "label": "2FA队列容量", "help": "允许排队等待的2FA任务总数，默认200",
     },
@@ -337,11 +333,11 @@ EDITABLE_FIELDS = [
     },
     {
         "key": "OTP_MAX_WAIT", "file": "email.py", "type": "int", "group": "邮箱 / OTP",
-        "label": "OTP 最长等待(秒)", "help": "等待验证码邮件的最长秒数，超时判失败",
+        "label": "OTP 最长等待(秒)", "help": "等待验证码邮件的最长秒数；IMAP 单轮最多180秒，连续3轮超时结束当前任务，不标记邮箱停用",
     },
     {
         "key": "OTP_POLL_INTERVAL", "file": "email.py", "type": "int", "group": "邮箱 / OTP",
-        "label": "OTP 轮询间隔(秒)", "help": "每隔多少秒查一次新邮件",
+        "label": "OTP 轮询间隔(秒)", "help": "一般来源的新邮件查询间隔；IMAP 此值仅控制本地缓存检查，远端共享收件箱每60秒最多刷新一次，优先读24小时内缓存",
     },
     {
         "key": "GENERIC_API_PROXY", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
@@ -350,7 +346,7 @@ EDITABLE_FIELDS = [
     },
     {
         "key": "EMAIL_SOURCE", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
-        "label": "邮箱来源", "help": "可填单个或多个，逗号分隔并按顺序兜底：outlook,generic_api,imap,cloudflare_domain,cloudflare,gptmail,mailnest,cloudmail,remail",
+        "label": "邮箱来源", "help": "可填单个或多个，逗号分隔并按顺序兜底：outlook,generic_api,imap,cloudflare_domain,cloudflare,gptmail,mailnest,cloudmail,remail,smsbower_mail",
     },
     {
         "key": "IMAP_MAILBOX", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
@@ -358,7 +354,7 @@ EDITABLE_FIELDS = [
     },
     {
         "key": "FORWARDED_IMAP_PASSWORD", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
-        "label": "转发收件箱 IMAP 授权码", "help": "Apple 邮箱转发到同一收件箱时使用；授权码保存在 .env，不是 163 网页登录密码",
+        "label": "旧版转发授权码（仅兼容旧记录）", "help": "新导入邮箱使用下方按具体收件箱区分的授权码，不会共用此项；历史配置保留，不用于覆盖导入时的收件地址",
         "storage": "env", "secret": True,
     },
     {
@@ -473,6 +469,39 @@ EDITABLE_FIELDS = [
     {
         "key": "CLOUDMAIL_RANDOM_LOCAL_LENGTH", "file": "email.py", "type": "int", "group": "邮箱 / OTP",
         "label": "CloudMail随机名前缀长度", "help": "生成邮箱 local-part 的长度，建议 10-16",
+    },
+    {
+        "key": "SMSBOWER_MAIL_API_KEY", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
+        "label": "SMSBower Gmail API Key", "help": "可留空复用接码平台的 SMSBOWER_API_KEY；仅当邮箱接口使用另一个 Key 时填写，保存在 .env",
+        "storage": "env", "secret": True,
+    },
+    {
+        "key": "SMSBOWER_MAIL_API_BASE", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
+        "label": "SMSBower Gmail API 地址", "help": "默认 https://smsbower.page/api/mail；不要填写手机接码的 handler_api 地址",
+    },
+    {
+        "key": "SMSBOWER_MAIL_SERVICE", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
+        "label": "SMSBower Gmail 服务代码", "help": "OpenAI / ChatGPT 使用 dr；保存配置后可在本页“查询服务目录”核对当前代码",
+    },
+    {
+        "key": "SMSBOWER_MAIL_DOMAIN", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
+        "label": "SMSBower Gmail 域名", "help": "默认 gmail.com；该接口领取的是临时 Gmail 地址，不含 Gmail 密码或 OAuth",
+    },
+    {
+        "key": "SMSBOWER_MAIL_ALIAS_LENGTH", "file": "email.py", "type": "int", "group": "邮箱 / OTP",
+        "label": "SMSBower Gmail 别名长度", "help": "0=原样使用供应商地址；3~16=本地生成 +随机别名，仍按原 mailId 收码",
+    },
+    {
+        "key": "SMSBOWER_MAIL_ACTIVATION_WAIT", "file": "email.py", "type": "int", "group": "邮箱 / OTP",
+        "label": "SMSBower Gmail 等货(秒)", "help": "No mails yet 时的总等待秒数；0=只领取一次，余额不足立即失败",
+    },
+    {
+        "key": "SMSBOWER_MAIL_ACTIVATION_RETRY_INTERVAL", "file": "email.py", "type": "int", "group": "邮箱 / OTP",
+        "label": "SMSBower Gmail 等货间隔(秒)", "help": "无库存重试间隔；默认 5 秒",
+    },
+    {
+        "key": "SMSBOWER_MAIL_REQUEST_TIMEOUT", "file": "email.py", "type": "int", "group": "邮箱 / OTP",
+        "label": "SMSBower Gmail 超时(秒)", "help": "邮箱接口单次 HTTP 请求超时，默认 20 秒",
     },
     {
         "key": "REMAIL_API_BASE", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
@@ -613,10 +642,6 @@ EDITABLE_FIELDS = [
         "label": "新账号资格复查延迟(秒)", "help": "新注册 free 账号未发现试用资格或首次查询失败时复查一次；0 表示关闭",
     },
     {
-        "key": "PLAN_CHECK_WORKERS", "file": "proxy.py", "type": "int", "group": "代理池",
-        "label": "套餐查询并发数", "help": "自动、手动和批量查套餐共用；Agent Token 生成使用独立队列；建议 2-4 个线程",
-    },
-    {
         "key": "PLAN_CHECK_QUEUE_LIMIT", "file": "proxy.py", "type": "int", "group": "代理池",
         "label": "套餐查询队列上限", "help": "防止异常批量操作无限堆积，建议 100-1000",
     },
@@ -641,10 +666,6 @@ EDITABLE_FIELDS = [
     {
         "key": "EXTRACT_LINK_TYPE", "file": "extract_link.py", "type": "str", "group": "提链",
         "label": "提链类型", "help": "支持 pix / upi / kakao_pay / ideal",
-    },
-    {
-        "key": "EXTRACT_LINK_WORKERS", "file": "extract_link.py", "type": "int", "group": "提链",
-        "label": "提链并发数", "help": "批量提链后台线程数，建议 1-4",
     },
     # ---- Codex 配置 ----
     {
@@ -713,7 +734,7 @@ EDITABLE_FIELDS = [
     },
     {
         "key": "SMS_MAX_PRICE", "file": "codex.py", "type": "str", "group": "接码平台",
-        "label": "最高号码价格", "help": "透传给接码平台的 maxPrice；留空不限。SMSBower 可用它筛选价格/号码等级",
+        "label": "最高号码价格", "help": "透传 maxPrice；留空不限。SMSBower 严格保留此上限，不自动加价；GOLD 等级需同时指定已核实的供应商 ID",
     },
     {
         "key": "SMS_MAX_RETRIES", "file": "codex.py", "type": "int", "group": "接码平台",
@@ -743,7 +764,7 @@ EDITABLE_FIELDS = [
     },
     {
         "key": "SMSBOWER_PROVIDER_IDS", "file": "codex.py", "type": "str", "group": "接码平台",
-        "label": "SMSBower 供应商筛选", "help": "可选，供应商 ID 用逗号分隔；留空由平台自动选择",
+        "label": "SMSBower 供应商筛选", "help": "供应商 ID 用逗号分隔；严格保留所选条件，无库存立即停止，不自动放宽。GOLD 2377 可填写 2377",
     },
     {
         "key": "SMSBOWER_EXCEPT_PROVIDER_IDS", "file": "codex.py", "type": "str", "group": "接码平台",
@@ -862,11 +883,11 @@ def _find_assignment_value_node(source: str, key: str):
     return None
 
 
-def _parse_value_from_source(source: str, key: str, vtype: str):
+def _parse_value_from_source(source: str, key: str, vtype: str, assignments=None):
     """从源码里解析 KEY 的当前值。失败返回 None。"""
     if vtype == "list_str_multiline":
         # 用 AST 解析整个模块，取这个赋值的 list 字面量
-        value_node = _find_assignment_value_node(source, key)
+        value_node = assignments.get(key) if assignments is not None else _find_assignment_value_node(source, key)
         if value_node is None:
             return None
         try:
@@ -878,7 +899,7 @@ def _parse_value_from_source(source: str, key: str, vtype: str):
         return None
 
     # 标量：优先 AST 取默认值，避免 env_str("KEY", "") 被当成普通字符串。
-    value_node = _find_assignment_value_node(source, key)
+    value_node = assignments.get(key) if assignments is not None else _find_assignment_value_node(source, key)
     if value_node is not None:
         value = _literal_default_from_expr(value_node)
         if value is not None:
@@ -938,11 +959,28 @@ def get_config() -> list[dict]:
     env_file_values = read_env_file()
 
     out = []
-    for field in EDITABLE_FIELDS:
+    # Request-local parsing only: each source file is read/parsed once, while
+    # the next request still sees freshly edited source and environment values.
+    sources = {}
+    from core.imap_receivers import credential_fields
+    for field in [*EDITABLE_FIELDS, *credential_fields()]:
         key = field["key"]
-        path = _config_path(field["file"])
-        source = path.read_text(encoding="utf-8") if path.exists() else ""
-        fallback = _parse_value_from_source(source, key, field["type"])
+        filename = field["file"]
+        if filename not in sources:
+            path = _config_path(filename)
+            source = path.read_text(encoding="utf-8") if path.exists() else ""
+            assignments = {}
+            try:
+                for node in ast.parse(source).body:
+                    targets = node.targets if isinstance(node, ast.Assign) else [node.target] if isinstance(node, ast.AnnAssign) else []
+                    for target in targets:
+                        if isinstance(target, ast.Name):
+                            assignments.setdefault(target.id, node.value)
+            except SyntaxError:
+                pass
+            sources[filename] = source, assignments
+        source, assignments = sources[filename]
+        fallback = _parse_value_from_source(source, key, field["type"], assignments)
 
         if key in env_file_values:
             raw_env_value = env_file_values[key]
@@ -1106,13 +1144,11 @@ def update_config(updates: dict) -> dict:
 
     updated, ignored = [], []
     env_updates: dict[str, str] = {}
-    current_values = {
-        item["key"]: item.get("value")
-        for item in get_config()
-    }
+    fields = {item["key"]: item for item in get_config()}
+    current_values = {key: item.get("value") for key, item in fields.items()}
 
     for key, value in updates.items():
-        field = _FIELD_BY_KEY.get(key)
+        field = fields.get(key)
         if field is None:
             ignored.append(key)
             continue

@@ -107,6 +107,8 @@ class BrowserSession:
         # proxy=""    → 禁用代理（直连）
         # proxy="..." → 使用指定代理，不套用代理池上游
         self.protocol_traffic = current_traffic()
+        self._owner_thread_id = threading.get_ident()
+        self._closed = False
         self.protocol_low_traffic = bool(self.protocol_traffic and self.protocol_traffic.low_traffic)
         self._proxy_pool_relay = None
         if proxy is None:
@@ -129,7 +131,10 @@ class BrowserSession:
                 from core.proxy_chain import ProxyChainRelay
                 self._proxy_pool_relay = ProxyChainRelay(transport_proxy).start()
                 transport_proxy = self._proxy_pool_relay.proxy_url
-            self.protocol_traffic.attach_proxy(self._proxy_pool_relay)
+            from core.protocol_traffic import is_proxy_pool_target
+            dynamic_ip = is_proxy_pool_target(self.proxy_target)
+            self.protocol_traffic.attach_proxy(self._proxy_pool_relay, dynamic_ip=dynamic_ip)
+            self.protocol_traffic.register_proxy_route(transport_proxy, dynamic_ip=dynamic_ip)
         # Keep the actual transport endpoint separately from the logical
         # target proxy.  A failed TLS tunnel can then be rebuilt without
         # changing the account route or fingerprint.
@@ -262,6 +267,7 @@ class BrowserSession:
         try:
             self.session.close()
         finally:
+            self._closed = True
             relay, self._proxy_pool_relay = self._proxy_pool_relay, None
             if relay is not None:
                 relay.close()
@@ -301,7 +307,7 @@ class BrowserSession:
                 except Exception:
                     continue
             self._cf_cookie_seen = self.cf_cookie_snapshot()
-        logger.info("[网络] 已重建 curl transport，保留 Cookie/设备身份：proxy=%s", self.proxy or "direct")
+        logger.info("[网络] 已重建 curl transport，保留 Cookie/设备身份：proxy=%s", mask_proxy_url(self.proxy or "direct"))
 
     def __enter__(self):
         return self
@@ -845,14 +851,14 @@ class BrowserSession:
         except Exception as exc:
             if meter is not None:
                 try:
-                    meter.record(url, getattr(exc, "response", None), failed=True)
+                    meter.record(url, getattr(exc, "response", None), failed=True, tunneled=self._proxy_pool_relay is not None)
                 except Exception:
                     meter.unknown += 1
                     logger.debug("[协议流量] 无法计量失败请求", exc_info=True)
             raise
         if meter is not None:
             try:
-                meter.record(url, response)
+                meter.record(url, response, tunneled=self._proxy_pool_relay is not None)
             except Exception:
                 meter.unknown += 1
                 logger.debug("[协议流量] 无法计量请求", exc_info=True)

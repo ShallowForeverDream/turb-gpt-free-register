@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 import requests
+from core.mail_traffic import record_mail_http
 
 from config import email as _email_cfg
 from core.otp_utils import extract_otp, looks_like_openai_email
@@ -101,7 +102,9 @@ def gen_token(email: str | None = None, password: str | None = None, path: str |
                 json={"email": email, "password": password},
                 headers={"Accept": "application/json"},
                 timeout=REQUEST_TIMEOUT,
+                proxies={"http": "", "https": "", "all": ""},
             )
+            record_mail_http(resp)
             payload = resp.json()
         except Exception as exc:
             last_error = f"{token_path}: {type(exc).__name__}: {exc}"
@@ -143,7 +146,9 @@ def _request(path: str, body: dict | None = None):
             json=body or {},
             headers={"Authorization": _token(), "Accept": "application/json"},
             timeout=REQUEST_TIMEOUT,
+            proxies={"http": "", "https": "", "all": ""},
         )
+        record_mail_http(resp)
     except requests.RequestException as exc:
         raise CloudMailError(f"CloudMail 请求失败 ({path}): {type(exc).__name__}: {exc}") from exc
 
@@ -166,9 +171,10 @@ def _request_raw(method: str, path: str, *, body: dict | None = None, token: str
         headers["Authorization"] = token
     try:
         if method.upper() == "GET":
-            resp = requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
+            resp = requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT, proxies={"http": "", "https": "", "all": ""})
         else:
-            resp = requests.post(url, json=body or {}, headers=headers, timeout=REQUEST_TIMEOUT)
+            resp = requests.post(url, json=body or {}, headers=headers, timeout=REQUEST_TIMEOUT, proxies={"http": "", "https": "", "all": ""})
+        record_mail_http(resp)
     except requests.RequestException as exc:
         raise CloudMailError(f"CloudMail 请求失败 ({path}): {type(exc).__name__}: {exc}") from exc
 

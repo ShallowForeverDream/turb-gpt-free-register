@@ -1,0 +1,9 @@
+{% for key, label, column in [
+  ('id','ID','col-id'), ('status','状态','col-archive'), ('email','邮箱','col-email'),
+  ('group','分组','col-group'), ('source','来源','col-source'), ('email_otp','邮箱验证码','col-small'),
+  ('token','Token','col-token'), ('gpt_password','GPT密码','col-password'), ('mail_password','邮箱密码','col-password'),
+  ('plan','套餐','col-plan'), ('note','备注','col-note'), ('twofa','2FA','col-small'), ('codex','CODEX','col-status'),
+  ('registered_at','注册时间','col-time'), ('traffic','总/动态IP','col-traffic'), ('actions','操作','col-actions')
+] %}
+<th class="{{ column }}" data-account-column="{{ key }}"><span class="account-col-heading"><span>{{ label }}</span><button type="button" class="account-filter-toggle" data-account-filter="{{ key }}" aria-label="{{ label }}筛选" aria-haspopup="dialog" aria-expanded="false" title="筛选{{ label }}"><span aria-hidden="true">·</span></button></span></th>
+{% endfor %}

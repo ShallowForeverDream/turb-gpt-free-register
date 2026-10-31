@@ -16,19 +16,76 @@ import json
 import threading
 import time
 import uuid
+from datetime import date
 from urllib.parse import urlparse
 
 from flask import Flask, Response, jsonify, make_response, render_template, request
 import pyotp
 
-from core import codex_retry_service, db, plan_check_service, extract_link_service, codex_agent_service, live_check_service
+from core import codex_retry_service, db, plan_check_service, extract_link_service, codex_agent_service, live_check_service, account_concurrency
 from webui.auth import init_auth, register_auth_routes
 from core import registration_service as svc
 from webui import config_editor
 
 logger = logging.getLogger(__name__)
+_CONCURRENCY_SETTINGS_LOCK = threading.Lock()
 
-_POOL_SOURCE_VALUES = frozenset(("all", "outlook", "generic_api", "imap", "cloudflare_domain"))
+_POOL_SOURCE_VALUES = frozenset(("all", "outlook", "generic_api", "imap", "icloud", "cloudflare_domain"))
+
+
+def _job_history_filters():
+    filters = {k: str(request.args.get(k) or "").strip() for k in
+               ("q", "status", "source", "date_from", "date_to")}
+    statuses = {"pending", "running", "stopping", "success", "failed", "stopped", "cancelled",
+                "blocked", "disabled", "partial_success", "already_registered"}
+    if filters["status"] and filters["status"] not in statuses:
+        raise ValueError("日志状态筛选不合法")
+    if len(filters["q"]) > 200 or len(filters["source"]) > 40:
+        raise ValueError("日志筛选内容过长")
+    for key in ("date_from", "date_to"):
+        if filters[key]:
+            filters[key] = date.fromisoformat(filters[key]).isoformat()
+    if filters["date_from"] and filters["date_to"] and filters["date_from"] > filters["date_to"]:
+        raise ValueError("起始日期不能晚于结束日期")
+    return {k: v for k, v in filters.items() if v}
+
+
+def _job_progress_state(job):
+    """Return statuses only, never credentials; don't apply a later account to an old failure."""
+    account = svc._account_for_job(job)
+    if account and not job.get("account_id"):
+        created = str(account.get("created_at") or "")
+        if (not created or created < str(job.get("started_at") or job.get("created_at") or "")
+                or job.get("completed_at") and created > str(job["completed_at"])):
+            account = None
+    if not account:
+        return {}
+    completion = account.get("flow_completion") or {}
+    if not isinstance(completion, dict):
+        completion = {}
+    allowed = {"success", "failed", "skipped", "blocked", "queued", "pending", "running", "retrying", "deactivated"}
+    def status(value):
+        return value if isinstance(value, str) and value in allowed else "unknown"
+    progress = {"registration": "success" if account.get("access_token") else "unknown",
+            "twofa": status(completion.get("twofa") or account.get("totp_setup_status")),
+            "codex": status(account.get("codex_status")),
+            "plan": status(completion.get("plan") or account.get("plan_check_status"))}
+    password_status = account.get("password_setup_status") or completion.get("password")
+    if password_status:
+        progress["password"] = status({"already_set": "skipped", "uncertain": "failed"}.get(password_status, password_status))
+    return progress
+
+
+def _saved_registration_workers(data):
+    if "workers" in data:
+        int(data["workers"])  # Legacy field is validated, but Save owns the limit.
+    return svc.get_executor_workers()
+
+
+def _account_column_filters_arg():
+    from core.account_column_filters import normalize_filters
+    raw = request.args.get("filters")
+    return normalize_filters(raw) if raw is not None and raw.strip() else None
 
 
 def _pool_source_arg(default: str = "outlook") -> str:
@@ -90,6 +147,8 @@ def _compact_account_for_list(row: dict) -> dict:
         "id": row.get("id"),
         "email": row.get("email"),
         "has_access_token": bool(str(row.get("access_token") or "").strip()),
+        "has_session_token": bool(row.get("session_token")),
+        "has_session_json": bool(row.get("session_json")),
         "totp_enabled": bool(row.get("totp_secret")),
         "codex_agent_has_token": bool(str(row.get("codex_agent_token") or "").strip()),
     }
@@ -176,9 +235,14 @@ def _account_secret_value(row: dict, field: str) -> str:
             # Forwarded Apple addresses have no password of their own here.
             # Never expose the shared receiver's IMAP authorization code.
             return str(row.get("mail_password") or "")
-        return ""
+        return str(row.get("mail_password") or "")
     if field == "access_token":
         return str(row.get("access_token") or "")
+    if field == "session_token":
+        return str(row.get("session_token") or "")
+    if field == "session_json":
+        info = row.get("session_json")
+        return json.dumps(info, ensure_ascii=False, indent=2) if isinstance(info, dict) and info else ""
     if field == "copy_line":
         try:
             from core.db import _account_line
@@ -218,7 +282,7 @@ def _account_secret_value(row: dict, field: str) -> str:
             return str(_account_full_export_line(row) or "")
         except Exception:
             return ""
-    raise ValueError("field 仅支持 access_token/copy_line/codex_agent_token/totp_secret/totp_code/password/mail_password/login_credentials/full_export")
+    raise ValueError("field 仅支持 access_token/session_token/session_json/copy_line/codex_agent_token/totp_secret/totp_code/password/mail_password/login_credentials/full_export")
 
 
 def _compact_job_for_list(row: dict) -> dict:
@@ -230,7 +294,7 @@ def _compact_job_for_list(row: dict) -> dict:
     for key in (
         "parent_job_id", "retry_attempt", "email", "started_at", "completed_at",
         "display_status", "retryable", "retry_action", "retry_label",
-        "manual_otp_required",
+        "manual_otp_required", "failure_code", "status_message", "needs_manual_review", "retry_reason",
     ):
         value = row.get(key)
         if value is not None and value != "" and value is not False:
@@ -277,7 +341,7 @@ def create_app(auth_code: str | None = None, *, local_no_auth: bool = False) -> 
 
     @app.after_request
     def _compress_json_response(response: Response):
-        """默认对 JSON API 响应启用 gzip，减少本地前端拉取大列表的传输体积。"""
+        """Compress JSON lists and browser HTML without changing download streams."""
         accept_encoding = (request.headers.get("Accept-Encoding") or "").lower()
         # 默认开启 gzip：浏览器会自动带 gzip；本地脚本未带 Accept-Encoding 时也压缩。
         # 只有客户端明确声明 identity 且没有 gzip 时，才按明文返回。
@@ -289,7 +353,9 @@ def create_app(auth_code: str | None = None, *, local_no_auth: bool = False) -> 
         ):
             return response
         mimetype = (response.mimetype or "").lower()
-        if mimetype != "application/json":
+        if mimetype not in {"application/json", "text/html"}:
+            return response
+        if mimetype == "text/html" and "gzip" not in accept_encoding:
             return response
         data = response.get_data()
         if not data or len(data) < 1024:
@@ -417,7 +483,7 @@ def create_app(auth_code: str | None = None, *, local_no_auth: bool = False) -> 
         pool = {"total": 0, "available": 0, "used": 0, "failed": 0}
         for src in parse_email_sources(_email_cfg.EMAIL_SOURCE):
             # GPTMail/MailNest/CloudMail 地址按需生成，不属于本地邮箱池。
-            if src in ("gptmail", "mailnest", "cloudmail", "cloudflare"):
+            if src in ("gptmail", "mailnest", "cloudmail", "cloudflare", "smsbower_mail"):
                 continue
             one = (
                 db.generic_api_email_pool_summary() if src == "generic_api"
@@ -446,31 +512,86 @@ def create_app(auth_code: str | None = None, *, local_no_auth: bool = False) -> 
     @app.post("/api/accounts/import")
     def api_registered_accounts_import():
         from core.import_formats import parse_registered_accounts, parse_registered_accounts_xlsx
+        from core.account_transfer import parse_selected_text, parse_selected_xlsx, validate_fields
 
         if request.content_length and request.content_length > 8_500_000:
             return jsonify({"ok": False, "error": "上传内容超过 8 MB"}), 413
+        fields = None
         if request.files:
             upload = request.files.get("file")
-            if upload is None or not str(upload.filename or "").lower().endswith(".xlsx"):
-                return jsonify({"ok": False, "error": "请选择 .xlsx 文件"}), 400
+            filename = str(upload.filename or "").lower() if upload else ""
+            if upload is None or not filename.endswith((".xlsx", ".txt", ".csv", ".tsv")):
+                return jsonify({"ok": False, "error": "请选择 .xlsx、.txt、.csv 或 .tsv 文件"}), 400
             content = upload.stream.read(8_000_001)
             if len(content) > 8_000_000:
-                return jsonify({"ok": False, "error": "Excel 文件超过 8 MB"}), 413
+                return jsonify({"ok": False, "error": "文件超过 8 MB"}), 413
             try:
-                records, invalid = parse_registered_accounts_xlsx(content)
+                if request.form.get("fields") is not None:
+                    fields = validate_fields(request.form.get("fields"), importing=True)
+                if filename.endswith(".xlsx"):
+                    records, invalid = (parse_selected_xlsx(content, fields) if fields is not None
+                                        else parse_registered_accounts_xlsx(content))
+                else:
+                    try:
+                        text = content.decode("utf-16" if content.startswith((b"\xff\xfe", b"\xfe\xff")) else "utf-8-sig")
+                    except UnicodeError:
+                        raise ValueError("文本文件请保存为 UTF-8 或带 BOM 的 UTF-16 编码") from None
+                    records, invalid = (parse_selected_text(text, fields) if fields is not None
+                                        else parse_registered_accounts(text))
             except ValueError as exc:
                 return jsonify({"ok": False, "error": str(exc)}), 400
         else:
             data = request.get_json(silent=True) or {}
+            if not isinstance(data, dict):
+                return jsonify({"ok": False, "error": "导入参数必须为对象"}), 400
             text = str(data.get("text") or "")
             if len(text) > 2_000_000:
                 return jsonify({"ok": False, "error": "导入内容超过 2 MB"}), 413
-            records, invalid = parse_registered_accounts(text)
+            try:
+                if "fields" in data:
+                    fields = validate_fields(data["fields"], importing=True)
+                records, invalid = (parse_selected_text(text, fields) if fields is not None
+                                    else parse_registered_accounts(text))
+            except ValueError as exc:
+                return jsonify({"ok": False, "error": str(exc)}), 400
         if not records:
-            return jsonify({"ok": False, "error": "未解析到有效账号；需要 邮箱、GPT 密码、2FA 密钥、access token 四列"}), 400
+            return jsonify({"ok": False, "error": "未解析到有效账号；请核对邮箱列和所选字段顺序" if fields is not None else
+                            "未解析到有效账号；需要 邮箱、GPT 密码、2FA 密钥、access token 四列"}), 400
         inserted, skipped = db.import_registered_gpt_accounts(records)
         return jsonify({"ok": True, "parsed": len(records), "invalid": invalid,
                         "inserted": inserted, "skipped": skipped})
+
+    @app.get("/api/accounts/transfer-schema")
+    def api_account_transfer_schema():
+        from core.account_transfer import transfer_schema
+        return jsonify(transfer_schema())
+
+    @app.post("/api/accounts/export-fields")
+    def api_accounts_export_fields():
+        from core.account_transfer import export_text, validate_fields
+        data = request.get_json(silent=True) or {}
+        if not isinstance(data, dict):
+            return jsonify({"ok": False, "error": "导出参数必须为对象"}), 400
+        ids = data.get("ids")
+        try:
+            fields = validate_fields(data.get("fields"))
+            if not isinstance(ids, list) or not ids or len(ids) > 5000:
+                raise ValueError("请选择 1–5000 个账号")
+            if any(isinstance(value, bool) or not isinstance(value, (int, str)) for value in ids):
+                raise ValueError("账号 ID 格式无效")
+            ids = list(dict.fromkeys(int(value) for value in ids))
+            if any(value < 1 for value in ids):
+                raise ValueError("账号 ID 格式无效")
+        except (ValueError, TypeError):
+            return jsonify({"ok": False, "error": "请选择有效账号和导出字段（单次最多 5000 个账号）"}), 400
+        rows = [db.get_account(value) for value in ids]
+        if any(row is None for row in rows):
+            return jsonify({"ok": False, "error": "部分所选账号已不存在，请刷新后重试"}), 404
+        from datetime import datetime
+        filename = "gpt-accounts-" + datetime.now().strftime("%Y%m%d-%H%M%S") + ".txt"
+        return Response("\ufeff" + export_text(rows, fields, _account_secret_value), mimetype="text/plain",
+                        headers={"Content-Disposition": f'attachment; filename="{filename}"',
+                                 "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
 
     @app.post("/api/accounts/import-pool")
     def api_registered_accounts_import_pool():
@@ -482,6 +603,10 @@ def create_app(auth_code: str | None = None, *, local_no_auth: bool = False) -> 
 
     @app.get("/api/accounts")
     def api_accounts():
+        try:
+            column_filters = _account_column_filters_arg()
+        except ValueError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
         limit = request.args.get("limit", default=500, type=int)
         archived = str(request.args.get("archived", default="0") or "0").lower()
         plan_filter = str(request.args.get("plan", default="") or "").lower()
@@ -505,15 +630,31 @@ def create_app(auth_code: str | None = None, *, local_no_auth: bool = False) -> 
             page = max(1, int(page_arg or 1))
             page_size = max(1, min(500, int(page_size_arg or limit or 50)))
             offset = (page - 1) * page_size
-            result = db.list_accounts_page(limit=page_size, offset=offset, archived=archived, plan_filter=plan_filter, codex_filter=codex_filter, q=q, date_from=date_from, date_to=date_to, totp_filter=totp_filter, email_suffix=email_suffix, account_group=account_group)
+            result = db.list_accounts_page(limit=page_size, offset=offset, archived=archived, plan_filter=plan_filter, codex_filter=codex_filter, q=q, date_from=date_from, date_to=date_to, totp_filter=totp_filter, email_suffix=email_suffix, account_group=account_group, column_filters=column_filters)
             result["items"] = [_compact_account_for_list(r) for r in (result.get("items") or [])]
             result.update({"ok": True, "page": page, "page_size": page_size, "compact": True})
             return jsonify(result)
-        return jsonify(db.list_accounts(limit=limit, archived=archived, plan_filter=plan_filter, codex_filter=codex_filter, q=q, date_from=date_from, date_to=date_to, totp_filter=totp_filter, email_suffix=email_suffix, account_group=account_group))
+        rows = db.list_accounts(limit=limit, archived=archived, plan_filter=plan_filter, codex_filter=codex_filter, q=q, date_from=date_from, date_to=date_to, totp_filter=totp_filter, email_suffix=email_suffix, account_group=account_group, column_filters=column_filters)
+        for row in rows:
+            # Keep the legacy list contract, but don't add newly saved secrets
+            # to it. Session credentials are available only via explicit copy.
+            row["has_session_token"] = bool(row.pop("session_token", None))
+            row["has_session_json"] = bool(row.pop("session_json", None))
+        return jsonify(rows)
+
+    @app.get("/api/accounts/filter-options")
+    def api_account_filter_options():
+        try:
+            return jsonify(db.list_account_filter_options(str(request.args.get("column") or ""),
+                column_filters=_account_column_filters_arg(), q=request.args.get("q", ""),
+                search=request.args.get("search", ""), limit=request.args.get("limit", 80, type=int),
+                offset=request.args.get("offset", 0, type=int)))
+        except ValueError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
 
     @app.get("/api/accounts/<int:acc_id>/email-otp")
     def api_account_email_otp(acc_id: int):
-        """读取已保存 IMAP 来源账号最近收到的 ChatGPT 邮箱验证码。
+        """读取账号关联邮箱的现有验证码；通用 API 复用原导入素材。
 
         这里只查已有邮件，不触发登录或发送验证码；窗口短暂轮询是为了
         覆盖 IMAP 收件箱刚刚同步完成的情况。
@@ -523,25 +664,40 @@ def create_app(auth_code: str | None = None, *, local_no_auth: bool = False) -> 
             return jsonify({"ok": False, "error": "账号不存在"}), 404
         email = str(acc.get("email") or "").strip()
         source = str(acc.get("email_source") or "").strip().lower()
-        if source not in {"imap", "outlook"}:
-            return jsonify({"ok": False, "error": "该账号没有可查询的 IMAP / Outlook 邮箱来源"}), 400
+        if source not in {"imap", "outlook", "generic_api"}:
+            return jsonify({"ok": False, "error": "该账号没有可查询的 IMAP / Outlook / API 邮箱来源"}), 400
         if not email:
             return jsonify({"ok": False, "error": "账号邮箱为空"}), 400
         try:
             from core.email_provider import wait_for_otp
             # 仅查询最近 15 分钟，避免把历史验证码误认为当前验证码。
-            code = wait_for_otp(
-                email,
-                after_ts=time.time() - 15 * 60,
-                max_wait=2,
-                poll_interval=1,
-                settle_seconds=0,
-                email_source=source,
-                force_service=True,
-            )
+            if source == "generic_api":
+                from core.generic_api_mail_client import query_latest_otp
+                code = query_latest_otp(email)
+            else:
+                code = wait_for_otp(
+                    email, after_ts=time.time() - 15 * 60,
+                    max_wait=2, poll_interval=1, settle_seconds=0,
+                    email_source=source, force_service=True,
+                )
         except Exception as exc:
-            return jsonify({"ok": False, "error": str(exc)[:300], "email": email}), 404
-        return jsonify({"ok": True, "id": acc_id, "email": email, "code": str(code)})
+            if getattr(exc, "error_code", "") == "imap_fetch_quota_exceeded":
+                return jsonify({"ok": False, "error": str(exc), "error_code": exc.error_code,
+                                "retryable": False, "email": email}), 429
+            if getattr(exc, "error_code", "") == "imap_receiver_configuration":
+                return jsonify({"ok": False, "error": str(exc), "error_code": exc.error_code, "retryable": False}), 400
+            if getattr(exc, "error_code", "") == "mail_otp_freshness_unverified":
+                from core.otp_freshness import failure_message
+                return jsonify({"ok": False, "error": "验证码时效无法确认：" + failure_message(exc),
+                                "error_code": "mail_otp_freshness_unverified", "retryable": False}), 409
+            logger.warning("[账号邮箱] 验证码查询失败 source=%s error_type=%s", source, type(exc).__name__)
+            return jsonify({"ok": False, "error": "暂未获取到验证码，请确认邮件已到达、邮箱 API 或收件配置可用后再试"}), 404
+        code = str(code or "").strip()
+        if len(code) != 6 or not code.isascii() or not code.isdigit():
+            return jsonify({"ok": False, "error": "最近没有找到邮箱验证码"}), 404
+        response = jsonify({"ok": True, "id": acc_id, "email": email, "code": code})
+        response.headers["Cache-Control"] = "no-store"
+        return response
 
     @app.get("/api/accounts/groups")
     def api_account_groups():
@@ -550,6 +706,10 @@ def create_app(auth_code: str | None = None, *, local_no_auth: bool = False) -> 
     @app.get("/api/accounts/plan-check-status")
     def api_account_plan_check_status():
         """套餐查询轻量状态，不返回 Token、邮箱密码等敏感字段。"""
+        try:
+            column_filters = _account_column_filters_arg()
+        except ValueError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
         limit = request.args.get("limit", default=5000, type=int)
         archived = str(request.args.get("archived", default="0") or "0").lower()
         plan_filter = str(request.args.get("plan", default="") or "").lower()
@@ -571,11 +731,13 @@ def create_app(auth_code: str | None = None, *, local_no_auth: bool = False) -> 
             page = max(1, int(page_arg or 1))
             page_size = max(1, min(500, int(page_size_arg or limit or 50)))
             offset = (page - 1) * page_size
-            snapshot = db.list_account_plan_check_statuses(limit=page_size, offset=offset, archived=archived, plan_filter=plan_filter, codex_filter=codex_filter, q=q, date_from=date_from, date_to=date_to, totp_filter=totp_filter, email_suffix=email_suffix, account_group=account_group)
+            snapshot = db.list_account_plan_check_statuses(limit=page_size, offset=offset, archived=archived, plan_filter=plan_filter, codex_filter=codex_filter, q=q, date_from=date_from, date_to=date_to, totp_filter=totp_filter, email_suffix=email_suffix, account_group=account_group, column_filters=column_filters)
             snapshot.update({"page": page, "page_size": page_size})
         else:
-            snapshot = db.list_account_plan_check_statuses(limit=max(1, min(5000, limit)), archived=archived, plan_filter=plan_filter, codex_filter=codex_filter, q=q, date_from=date_from, date_to=date_to, totp_filter=totp_filter, email_suffix=email_suffix, account_group=account_group)
+            snapshot = db.list_account_plan_check_statuses(limit=max(1, min(5000, limit)), archived=archived, plan_filter=plan_filter, codex_filter=codex_filter, q=q, date_from=date_from, date_to=date_to, totp_filter=totp_filter, email_suffix=email_suffix, account_group=account_group, column_filters=column_filters)
         snapshot["queue"] = plan_check_service.queue_settings()
+        if request.args.get("revision") and request.args["revision"] == snapshot.get("revision"):
+            return jsonify({key: value for key, value in {**snapshot, "unchanged": True}.items() if key != "items"})
         return jsonify(snapshot)
 
 
@@ -590,7 +752,9 @@ def create_app(auth_code: str | None = None, *, local_no_auth: bool = False) -> 
             value = _account_secret_value(acc, field)
         except ValueError as exc:
             return jsonify({"ok": False, "error": str(exc)}), 400
-        return jsonify({"ok": True, "id": acc_id, "field": field, "value": value})
+        response = jsonify({"ok": True, "id": acc_id, "field": field, "value": value})
+        response.headers["Cache-Control"] = "no-store"
+        return response
 
     @app.post("/api/accounts/secret-bulk")
     def api_accounts_secret_bulk():
@@ -790,7 +954,7 @@ def create_app(auth_code: str | None = None, *, local_no_auth: bool = False) -> 
         """给单个账号排队换绑邮箱。Body {source}."""
         data = request.get_json(silent=True) or {}
         source = str(data.get("source") or "").strip().lower()
-        allowed = {"outlook", "generic_api", "imap", "cloudflare_domain", "cloudflare", "gptmail", "mailnest", "cloudmail", "remail"}
+        allowed = {"outlook", "generic_api", "imap", "cloudflare_domain", "cloudflare", "gptmail", "mailnest", "cloudmail", "remail", "smsbower_mail"}
         if source not in allowed:
             return jsonify({"ok": False, "error": "请选择有效的邮箱来源"}), 400
         acc = db.get_account(acc_id)
@@ -809,7 +973,7 @@ def create_app(auth_code: str | None = None, *, local_no_auth: bool = False) -> 
         data = request.get_json(silent=True) or {}
         ids = data.get("account_ids") or data.get("ids") or []
         source = str(data.get("source") or "").strip().lower()
-        allowed = {"outlook", "generic_api", "imap", "cloudflare_domain", "cloudflare", "gptmail", "mailnest", "cloudmail", "remail"}
+        allowed = {"outlook", "generic_api", "imap", "cloudflare_domain", "cloudflare", "gptmail", "mailnest", "cloudmail", "remail", "smsbower_mail"}
         if source not in allowed:
             return jsonify({"ok": False, "error": "请选择有效的邮箱来源"}), 400
         if not isinstance(ids, list) or not ids:
@@ -1022,6 +1186,11 @@ def create_app(auth_code: str | None = None, *, local_no_auth: bool = False) -> 
             return jsonify({"ok": False, "error": "account_ids 必须是非空数组"}), 400
         if len(ids) > 500:
             return jsonify({"ok": False, "error": "单次最多查活 500 个账号"}), 400
+        try:
+            int(data.get("workers", account_concurrency.queue_settings()["workers"]))
+            workers = account_concurrency.queue_settings()["workers"]
+        except (TypeError, ValueError):
+            return jsonify({"ok": False, "error": "workers 非法"}), 400
 
         account_ids: list[int] = []
         skipped: list[dict] = []
@@ -1081,6 +1250,7 @@ def create_app(auth_code: str | None = None, *, local_no_auth: bool = False) -> 
             "failed": failed,
             "failed_count": len(failed),
             "skipped": skipped,
+            "workers": workers,
             "queue": live_check_service.queue_settings(),
         }), 202
 
@@ -1795,6 +1965,51 @@ def create_app(auth_code: str | None = None, *, local_no_auth: bool = False) -> 
     # ----------------------------------------------------------
     # 邮箱池
     # ----------------------------------------------------------
+    @app.get("/api/outlook/email-otp")
+    def api_pool_email_otp():
+        """Read an imported mailbox without claiming it or sending a new OTP."""
+        email = str(request.args.get("email") or "").strip()
+        source = str(request.args.get("source") or "").strip().lower()
+        readers = {
+            "outlook": db.get_outlook_by_email,
+            "imap": db.get_imap_email_by_email,
+            "generic_api": db.get_generic_api_email_by_email,
+            "cloudflare_domain": db.get_domain_email_by_email,
+        }
+        if source not in readers:
+            return jsonify({"ok": False, "error": "请选择具体的邮箱来源"}), 400
+        if not email:
+            return jsonify({"ok": False, "error": "邮箱地址不能为空"}), 400
+        mailbox = readers[source](email)
+        if not mailbox:
+            return jsonify({"ok": False, "error": "该来源的邮箱池中找不到此邮箱"}), 404
+        email = str(mailbox.get("email") or email)
+        try:
+            from core.email_provider import wait_for_otp
+            code = str(wait_for_otp(
+                email, after_ts=time.time() - 15 * 60,
+                max_wait=2, poll_interval=1, settle_seconds=0,
+                email_source=source, force_service=True,
+            ) or "").strip()
+        except Exception as exc:
+            # Mail client errors may contain OAuth responses or credentials.
+            logger.warning("[邮箱池] 验证码查询失败 source=%s error_type=%s", source, type(exc).__name__)
+            if getattr(exc, "error_code", "") == "imap_fetch_quota_exceeded":
+                return jsonify({"ok": False, "error": str(exc), "error_code": exc.error_code,
+                                "retryable": False}), 429
+            if getattr(exc, "error_code", "") == "imap_receiver_configuration":
+                return jsonify({"ok": False, "error": str(exc), "error_code": exc.error_code, "retryable": False}), 400
+            if getattr(exc, "error_code", "") == "mail_otp_freshness_unverified":
+                from core.otp_freshness import failure_message
+                return jsonify({"ok": False, "error": "验证码时效无法确认：" + failure_message(exc),
+                                "error_code": "mail_otp_freshness_unverified", "retryable": False}), 409
+            return jsonify({"ok": False, "error": "暂未获取到验证码，请确认邮件已到达、邮箱收件配置可用后再试"}), 404
+        if len(code) != 6 or not code.isascii() or not code.isdigit():
+            return jsonify({"ok": False, "error": "最近没有找到邮箱验证码"}), 404
+        response = jsonify({"ok": True, "email": email, "source": source, "code": code})
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
     @app.get("/api/outlook")
     def api_outlook():
         status = request.args.get("status") or None
@@ -1935,10 +2150,18 @@ def create_app(auth_code: str | None = None, *, local_no_auth: bool = False) -> 
             inserted, skipped = db.import_imap_emails(records)
         else:
             inserted, skipped = db.import_outlook_accounts(records)
+        receiver = None
+        if source == "forwarded_imap":
+            from core.imap_receivers import imported_fields
+            from config.env_loader import env_str
+            fields = imported_fields(inbox=forwarded_inbox, server=imap_server, port=imap_port, ssl=imap_ssl)
+            receiver = {"inbox": forwarded_inbox, "server": imap_server,
+                        "auth_configured": bool(env_str(fields["imap_auth_key"], ""))}
         return jsonify({
             "ok": True,
             "inserted": inserted,
             "updated": updated,
+            "receiver": receiver,
             "skipped": skipped,
             "parsed": len(records),
             "invalid": invalid,
@@ -2567,11 +2790,12 @@ def create_app(auth_code: str | None = None, *, local_no_auth: bool = False) -> 
 
         data = request.get_json(silent=True) or {}
         ids = data.get("account_ids") or data.get("ids") or []
-        workers = data.get("workers", 1)
+        workers = data.get("workers", account_concurrency.queue_settings()["workers"])
         if not isinstance(ids, list) or not ids:
             return jsonify({"ok": False, "error": "account_ids 必须是非空数组"}), 400
         try:
-            workers = max(1, min(16, int(workers)))
+            int(workers)  # Validate legacy requests; only Save changes the page limit.
+            workers = account_concurrency.queue_settings()["workers"]
         except (TypeError, ValueError):
             return jsonify({"ok": False, "error": "workers 必须是数字"}), 400
         if len(ids) > 500:
@@ -2621,7 +2845,7 @@ def create_app(auth_code: str | None = None, *, local_no_auth: bool = False) -> 
 
         def _bulk_runner(items: list[dict], max_workers: int, batch: str):
             logger.info(f"[Codex 批量补跑] 启动 batch={batch} count={len(items)} workers={max_workers}")
-            with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix=f"codex-bulk-{batch}") as ex:
+            with ThreadPoolExecutor(max_workers=16, thread_name_prefix=f"codex-bulk-{batch}") as ex:
                 futures = [ex.submit(_run_codex_retry_worker, it["email"], batch_label=f"{batch} #{idx}/{len(items)}", clear_log=False) for idx, it in enumerate(items, 1)]
                 for fut in as_completed(futures):
                     try:
@@ -2720,25 +2944,33 @@ def create_app(auth_code: str | None = None, *, local_no_auth: bool = False) -> 
         page_size_arg = request.args.get("page_size", default=None, type=int)
         from config import email as _email_cfg
         manual_otp_required = not bool(getattr(_email_cfg, "USE_EMAIL_SERVICE", True))
+        queue = svc.registration_pause_status()
         if paged or page_arg is not None or page_size_arg is not None:
             page = max(1, int(page_arg or 1))
             page_size = max(1, min(500, int(page_size_arg or limit or 50)))
-            result = db.list_jobs_page(
-                limit=page_size, offset=(page - 1) * page_size
-            )
+            try:
+                filters = _job_history_filters()
+            except ValueError as exc:
+                return jsonify({"ok": False, "error": str(exc)}), 400
+            result = db.list_jobs_page(limit=page_size, offset=(page - 1) * page_size,
+                                       history_only=True,
+                                       **({"filters": filters} if filters else {}))
             rows = result.get("items") or []
             for row in rows:
                 row["manual_otp_required"] = manual_otp_required
                 row.update(svc.get_retry_info(row))
+                row.update(svc.job_display_info(row, queue))
             result.update({"ok": True, "page": page, "page_size": page_size})
             result["items"] = [_compact_job_for_list(r) for r in rows]
-            result["status_counts"] = db.job_status_counts()
+            result["status_counts"] = db.job_status_counts(history_only=True)
+            result["waiting_jobs"] = queue.get("waiting_jobs", 0)
             result["compact"] = True
             return jsonify(result)
-        rows = db.list_jobs(limit=max(1, int(limit or 1)))
+        rows = db.list_jobs(limit=max(1, int(limit or 1)), history_only=True)
         for row in rows:
             row["manual_otp_required"] = manual_otp_required
             row.update(svc.get_retry_info(row))
+            row.update(svc.job_display_info(row, queue))
         return jsonify(rows)
 
     @app.post("/api/jobs")
@@ -2768,16 +3000,25 @@ def create_app(auth_code: str | None = None, *, local_no_auth: bool = False) -> 
             normalized_selected = normalized
             selected = normalized
 
-        # workers 控制本次新提交任务使用的线程池；若和上次不同，服务层会为新任务切换到新池。
+        # 保存按钮统一控制本页并发；旧页面的任务请求不能覆盖新保存的值。
         try:
-            workers = max(1, min(16, int(data.get("workers", 3))))
+            workers = _saved_registration_workers(data)
         except (TypeError, ValueError):
             return jsonify({"ok": False, "error": "workers 非法"}), 400
 
         # 提交前先确认池里有足够可用邮箱，给前端一个温和提示（不阻断）
         from config import email as _email_cfg
         from config import register as _register_cfg
-        from core.email_provider import parse_email_sources
+        from core.email_provider import parse_email_sources, _VALID_SOURCES
+        requested_source = str(data.get("email_source") or "").strip().lower()
+        if requested_source == "configured":
+            requested_source = ""
+        if requested_source and requested_source not in _VALID_SOURCES:
+            return jsonify({"ok": False, "error": "不支持的邮箱类型"}), 400
+        if requested_source and normalized_selected and any(item["source"] != requested_source for item in normalized_selected):
+            return jsonify({"ok": False, "error": "所选邮箱与本次邮箱类型不一致，请统一选择"}), 400
+        if requested_source and not bool(getattr(_email_cfg, "USE_EMAIL_SERVICE", True)) and not normalized_selected:
+            return jsonify({"ok": False, "error": "请先开启自动取邮箱+收码，再按邮箱类型注册"}), 400
         if not bool(getattr(_email_cfg, "USE_EMAIL_SERVICE", True)) and not normalized_selected:
             reg_email = str(getattr(_register_cfg, "REGISTER_EMAIL", "") or "").strip()
             if not reg_email:
@@ -2791,14 +3032,17 @@ def create_app(auth_code: str | None = None, *, local_no_auth: bool = False) -> 
                     "error": "手动模式建议每次只跑 1 个任务（同一 REGISTER_EMAIL）。请把数量设为 1。",
                 }), 400
             if normalized_selected:
-                claimed, skipped = db.claim_pool_emails(normalized_selected, note="注册页手动选择")
+                claimed, skipped = db.claim_pool_emails(normalized_selected, note="注册页手动选择", reserve=False)
                 if skipped:
                     return jsonify({"ok": False, "error": "部分所选邮箱不可用", "skipped": skipped}), 409
                 selected = [{"email": x["email"], "source": x["source"]} for x in claimed]
             submit_kwargs = {"count": count, "workers": workers}
             if selected:
                 submit_kwargs["selected_emails"] = selected
-            jobs = svc.submit_registration(**submit_kwargs)
+            try:
+                jobs = svc.submit_registration(**submit_kwargs)
+            except ValueError as exc:
+                return jsonify({"ok": False, "error": str(exc)}), 409
             return jsonify({
                 "ok": True,
                 "submitted": len(jobs),
@@ -2806,7 +3050,15 @@ def create_app(auth_code: str | None = None, *, local_no_auth: bool = False) -> 
                 "warning": f"手动 OTP 模式：将使用 {reg_email}；验证码请在任务页提交",
                 "workers": workers,
             })
-        sources = parse_email_sources(_email_cfg.EMAIL_SOURCE)
+        sources = (list(dict.fromkeys(item["source"] for item in normalized_selected)) if normalized_selected
+                   else parse_email_sources(requested_source or _email_cfg.EMAIL_SOURCE))
+        if bool(getattr(_email_cfg, "USE_EMAIL_SERVICE", True)) and "imap" in sources:
+            from core.imap_receivers import validate_registration_receivers
+            from core.imap_mail_client import ImapConfigurationError
+            try:
+                validate_registration_receivers(normalized_selected, count, sources)
+            except ImapConfigurationError as exc:
+                return jsonify({"ok": False, "error": str(exc), "error_code": exc.error_code}), 400
         if "gptmail" in sources:
             api_key = str(getattr(_email_cfg, "GPTMAIL_API_KEY", "") or "").strip()
             if not api_key:
@@ -2856,6 +3108,12 @@ def create_app(auth_code: str | None = None, *, local_no_auth: bool = False) -> 
                     "ok": False,
                     "error": "已选择 cloudmail 邮箱来源，请填写 CloudMail Token（配置 → 邮箱 / OTP）。",
                 }), 400
+        if "smsbower_mail" in sources:
+            from core.smsbower_mail_client import validate_configuration, SmsBowerMailError
+            try:
+                validate_configuration()
+            except SmsBowerMailError as exc:
+                return jsonify({"ok": False, "error": str(exc)}), 400
         if "remail" in sources:
             api_base = str(getattr(_email_cfg, "REMAIL_API_BASE", "") or "").strip()
             api_key = str(getattr(_email_cfg, "REMAIL_API_KEY", "") or "").strip()
@@ -2890,7 +3148,7 @@ def create_app(auth_code: str | None = None, *, local_no_auth: bool = False) -> 
                     "ok": False,
                     "error": "Remail 服务模式只能填写 code 或 purchase（配置 → 邮箱 / OTP）。",
                 }), 400
-        if "gptmail" in sources or "mailnest" in sources or "cloudmail" in sources or "remail" in sources or "cloudflare" in sources:
+        if "gptmail" in sources or "mailnest" in sources or "cloudmail" in sources or "remail" in sources or "cloudflare" in sources or "smsbower_mail" in sources:
             # 临时邮箱在任务开始时动态生成，不需要本地邮箱池容量提示。
             warning = ""
         elif "cloudflare_domain" in sources:
@@ -2925,15 +3183,21 @@ def create_app(auth_code: str | None = None, *, local_no_auth: bool = False) -> 
             if pool.get("available", 0) < count:
                 warning = f"可用邮箱仅 {pool.get('available', 0)} 个，少于任务数 {count}，不足的会失败"
         if normalized_selected:
-            claimed, skipped = db.claim_pool_emails(normalized_selected, note="注册页手动选择")
+            claimed, skipped = db.claim_pool_emails(normalized_selected, note="注册页手动选择", reserve=False)
             if skipped:
                 return jsonify({"ok": False, "error": "部分所选邮箱不可用", "skipped": skipped}), 409
             selected = [{"email": x["email"], "source": x["source"]} for x in claimed]
         submit_kwargs = {"count": count, "workers": workers}
+        if requested_source:
+            submit_kwargs["email_source"] = requested_source
         if selected:
             submit_kwargs["selected_emails"] = selected
-        jobs = svc.submit_registration(**submit_kwargs)
-        return jsonify({"ok": True, "submitted": len(jobs), "jobs": jobs, "warning": warning, "workers": workers})
+        try:
+            jobs = svc.submit_registration(**submit_kwargs)
+        except ValueError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 409
+        return jsonify({"ok": True, "submitted": len(jobs), "jobs": jobs, "warning": warning,
+                        "workers": workers, "email_sources": sources})
 
     @app.get("/api/manual-otp/waiting")
     def api_manual_otp_waiting():
@@ -2966,17 +3230,62 @@ def create_app(auth_code: str | None = None, *, local_no_auth: bool = False) -> 
         cancelled = svc.cancel_pending_jobs()
         return jsonify({"ok": True, "cancelled": cancelled})
 
+    @app.route("/api/jobs/concurrency", methods=["GET", "POST"])
+    def api_job_concurrency():
+        from core import twofa_service
+        with _CONCURRENCY_SETTINGS_LOCK:
+            if request.method == "POST":
+                data = request.get_json(silent=True) or {}
+                if not isinstance(data, dict):
+                    return jsonify({"ok": False, "error": "并发配置必须为 JSON 对象"}), 400
+                workers = data.get("workers", svc.get_executor_workers())
+                twofa_workers = data.get("twofa_workers", twofa_service.queue_settings()["workers"])
+                if any(isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 16
+                       for value in (workers, twofa_workers)):
+                    return jsonify({"ok": False, "error": "注册及 2FA 并发必须是 1-16 的整数"}), 400
+                from config.env_loader import write_env_values
+                updates = {"REGISTRATION_WORKERS": str(workers), "TWOFA_WORKERS": str(twofa_workers)}
+                if "twofa_workers" in data:
+                    updates["ACCOUNT_WORKERS"] = str(twofa_workers)
+                write_env_values(updates)
+                svc.configure_workers(workers)
+                twofa_service.configure_workers(twofa_workers)
+            return jsonify({"ok": True, "workers": svc.get_executor_workers(),
+                            "twofa_workers": twofa_service.queue_settings()["workers"],
+                            "restart_required": False})
+
+    @app.route("/api/accounts/concurrency", methods=["GET", "POST"])
+    def api_account_concurrency():
+        with _CONCURRENCY_SETTINGS_LOCK:
+            if request.method == "POST":
+                data = request.get_json(silent=True)
+                if not isinstance(data, dict) or set(data) != {"workers"}:
+                    return jsonify({"ok": False, "error": "请提交 workers 并发整数"}), 400
+                workers = data["workers"]
+                if isinstance(workers, bool) or not isinstance(workers, int) or not 1 <= workers <= 16:
+                    return jsonify({"ok": False, "error": "账号页并发必须是 1-16 的整数"}), 400
+                from config.env_loader import write_env_values
+                write_env_values({"ACCOUNT_WORKERS": str(workers)})
+                account_concurrency.configure_workers(workers)
+            return jsonify({"ok": True, **account_concurrency.queue_settings(), "scope": "accounts",
+                "features": ["live_check", "plan", "twofa", "codex", "codex_agent", "extract_link", "email_change"],
+                "restart_required": False})
+
     @app.get("/api/jobs/pause-status")
     def api_jobs_pause_status():
         return jsonify({"ok": True, **svc.registration_pause_status()})
 
     @app.post("/api/jobs/pause")
     def api_jobs_pause():
-        return jsonify({"ok": True, "message": "注册已暂停", **svc.pause_registration()})
+        return jsonify({"ok": True, "message": "已暂停补充邮箱；正在注册及2FA的邮箱继续运行", **svc.pause_registration()})
 
     @app.post("/api/jobs/resume")
     def api_jobs_resume():
         return jsonify({"ok": True, "message": "注册已继续", **svc.resume_registration()})
+
+    @app.post("/api/jobs/stop")
+    def api_jobs_stop_intake():
+        return jsonify({"ok": True, "message": "已结束本批剩余任务；已开始的注册和2FA继续完成", **svc.stop_registration()})
 
     @app.post("/api/jobs/<int:job_id>/stop")
     def api_job_stop(job_id: int):
@@ -2991,7 +3300,7 @@ def create_app(auth_code: str | None = None, *, local_no_auth: bool = False) -> 
         """重试失败/停止/取消任务；服务端自动判断完整注册或 Codex 补跑。"""
         data = request.get_json(silent=True) or {}
         try:
-            workers = max(1, min(16, int(data.get("workers", svc.get_executor_workers()))))
+            workers = _saved_registration_workers(data)
         except (TypeError, ValueError):
             return jsonify({"ok": False, "error": "workers 非法"}), 400
         result = svc.retry_job(job_id, workers=workers)
@@ -3009,7 +3318,7 @@ def create_app(auth_code: str | None = None, *, local_no_auth: bool = False) -> 
         if len(job_ids) > 500:
             return jsonify({"ok": False, "error": "单次最多重试 500 个任务"}), 400
         try:
-            workers = max(1, min(16, int(data.get("workers", svc.get_executor_workers()))))
+            workers = _saved_registration_workers(data)
         except (TypeError, ValueError):
             return jsonify({"ok": False, "error": "workers 非法"}), 400
 
@@ -3099,10 +3408,13 @@ def create_app(auth_code: str | None = None, *, local_no_auth: bool = False) -> 
         job = db.get_job(job_id)
         if not job:
             return jsonify({"ok": False, "error": "任务不存在"}), 404
+        job.update(svc.get_retry_info(job))
+        job.update(svc.job_display_info(job))
         return jsonify({
             "ok": True,
             "job": job,
             "log": svc.read_job_log(job_id),
+            "progress": _job_progress_state(job),
         })
 
     # ----------------------------------------------------------
@@ -3121,6 +3433,37 @@ def create_app(auth_code: str | None = None, *, local_no_auth: bool = False) -> 
     # ----------------------------------------------------------
     # 配置读写
     # ----------------------------------------------------------
+    @app.get("/api/runtime/registration")
+    def api_registration_runtime():
+        """Report loaded policies only; no mailbox, key or account data."""
+        import main as registration
+        from core import generic_api_mail_client as mail
+        from core.sms_provider import SMSBOWER_SELECTION_POLICY
+        from core.auth_diagnostics import PHONE_DIAGNOSTIC_POLICY
+        from config import codex as sms_config
+        from core.account_export import TWOFA_OTP_DELIVERY_MODE
+        return jsonify({
+            "otp_delivery": getattr(registration, "REGISTRATION_OTP_DELIVERY_MODE", "legacy"),
+            "icapi_policy": getattr(mail, "ICAPI_OTP_POLICY", "legacy"),
+            "icapi_delay_seconds": getattr(mail, "ICAPI_OTP_DELAY_SECONDS", None),
+            "icapi_max_attempts": getattr(mail, "ICAPI_OTP_MAX_ATTEMPTS", None),
+            "smsbower_signature_policy": mail.SIGNATURE_OTP_POLICY,
+            "queue_policy": svc.REGISTRATION_QUEUE_POLICY,
+            "job_history_policy": "batch_rows_visible_after_start",
+            "post_2fa_password_policy": "add_missing_only_after_totp",
+            "session_save_policy": "actual_session_json_and_chatgpt_cookie",
+            "account_email_otp_sources": ["imap", "outlook", "generic_api"],
+            "account_api_otp_query_policy": "read_existing_once_no_send",
+            "sms_selection_policy": SMSBOWER_SELECTION_POLICY,
+            "phone_diagnostic_policy": PHONE_DIAGNOSTIC_POLICY,
+            "phone_request_contract": "frontend_optional_channel",
+            "phone_channel_selection": "auth_page_offered_sms_no_whatsapp_fallback",
+            "sms_selection": {key: getattr(sms_config, key) for key in (
+                "SMS_PROVIDER", "SMS_SERVICE", "SMS_COUNTRY", "SMSBOWER_PROVIDER_IDS",
+                "SMS_MAX_PRICE", "SMS_MAX_RETRIES", "SMSBOWER_USE_V2")},
+            "twofa_otp_delivery": TWOFA_OTP_DELIVERY_MODE,
+        })
+
     @app.get("/api/config")
     def api_config_get():
         return jsonify(config_editor.get_config())
@@ -3212,6 +3555,26 @@ def create_app(auth_code: str | None = None, *, local_no_auth: bool = False) -> 
             })
         except Exception as exc:
             logger.exception("获取 CloudMail 域名失败")
+            return jsonify({"ok": False, "error": f"{type(exc).__name__}: {exc}"}), 400
+
+    @app.get("/api/smsbower-mail/services")
+    def api_smsbower_mail_services():
+        """只读查询 SMSBower 邮箱服务目录；不领取邮箱。"""
+        try:
+            from core.smsbower_mail_client import list_services
+            return jsonify({"ok": True, "services": list_services()})
+        except Exception as exc:
+            logger.exception("查询 SMSBower 邮箱服务目录失败")
+            return jsonify({"ok": False, "error": f"{type(exc).__name__}: {exc}"}), 400
+
+    @app.get("/api/smsbower-mail/prices")
+    def api_smsbower_mail_prices():
+        """只读查询 SMSBower Gmail 价格与库存；不领取邮箱。"""
+        try:
+            from core.smsbower_mail_client import get_prices
+            return jsonify({"ok": True, "data": get_prices()})
+        except Exception as exc:
+            logger.exception("查询 SMSBower Gmail 库存失败")
             return jsonify({"ok": False, "error": f"{type(exc).__name__}: {exc}"}), 400
 
     @app.post("/api/config")

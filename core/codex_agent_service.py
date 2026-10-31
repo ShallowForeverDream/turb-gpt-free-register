@@ -13,7 +13,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from config import proxy as proxy_cfg
-from core import db
+from core import db, account_concurrency
 from core.session import close_browser_session
 
 logger = logging.getLogger(__name__)
@@ -51,7 +51,7 @@ def _int_setting(name: str, default: int, lower: int, upper: int) -> int:
 
 _WORKERS = _int_setting("PLAN_CHECK_WORKERS", 3, 1, 16)
 _QUEUE_LIMIT = _int_setting("PLAN_CHECK_QUEUE_LIMIT", 500, _WORKERS, 5000)
-_EXECUTOR = ThreadPoolExecutor(max_workers=_WORKERS, thread_name_prefix="codex-agent")
+_EXECUTOR = ThreadPoolExecutor(max_workers=16, thread_name_prefix="codex-agent")
 _QUEUE_SLOTS = threading.BoundedSemaphore(_QUEUE_LIMIT)
 _RATE_LOCK = threading.Lock()
 _NEXT_REQUEST_AT = 0.0
@@ -110,6 +110,7 @@ def _safe_email_filename(email: str) -> str:
 
 
 @unified_workflow("codex_agent")
+@account_concurrency.limited
 def _run_generate(*, account_id: int, email: str, access_token: str, trigger: str, verify_task: bool) -> dict:
     env = None
     relay = None

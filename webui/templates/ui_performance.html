@@ -1,0 +1,39 @@
+// Copy references live only as long as the rows which own them.
+const copyScopes = new Map();
+let activeCopyScope = null;
+function rememberCopyId(id) {
+  if (activeCopyScope !== null) copyScopes.get(activeCopyScope).add(id);
+}
+function withCopyScope(scope, render) {
+  const oldKeys = copyScopes.get(scope) || new Set();
+  const newKeys = new Set();
+  copyScopes.set(scope, newKeys);
+  const previous = activeCopyScope;
+  activeCopyScope = scope;
+  try {
+    const result = render();
+    for (const id of oldKeys) copyStore.delete(id);
+    return result;
+  } catch (error) {
+    for (const id of newKeys) copyStore.delete(id);
+    copyScopes.set(scope, oldKeys);
+    throw error;
+  }
+  finally { activeCopyScope = previous; }
+}
+
+// One request at a time, only while this page is visible. A slow request must
+// not grow an interval backlog, and actions must not create extra poll loops.
+function pollVisiblePage(tab, callback, interval) {
+  let running = false;
+  const tick = async () => {
+    if (document.hidden || running) return;
+    if (tab && document.getElementById('tab-'+tab)?.classList.contains('hidden')) return;
+    running = true;
+    try { await callback(); }
+    finally { running = false; }
+  };
+  const timer = setInterval(tick, interval);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) tick(); });
+  return timer;
+}

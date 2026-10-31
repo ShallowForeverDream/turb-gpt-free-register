@@ -1,0 +1,29 @@
+function getAccountsGroup() {
+  const select = document.getElementById('accountGroupFilterV2') || document.getElementById('accountGroupFilter');
+  return (select?.value || '').trim();
+}
+let accountGroupLoadGeneration = 0;
+async function loadAccountGroups() {
+  const select = document.getElementById('accountGroupFilterV2') || document.getElementById('accountGroupFilter');
+  if (!select) return;
+  const generation = ++accountGroupLoadGeneration;
+  try {
+    const data = await api('/api/accounts/groups');
+    if (generation !== accountGroupLoadGeneration) return;
+    const current = select.value;
+    const groups = [...new Set((data.groups || []).filter(g => typeof g === 'string' && g && g !== '__ungrouped__'))];
+    // Keep an active filter if its last account was just moved out of it.
+    if (current && current !== '__ungrouped__' && !groups.includes(current)) groups.push(current);
+    const entries = [['', '全部分组'], ['__ungrouped__', '未分组'], ...groups.map(g => [g, g])];
+    const options = entries.map(([value, label]) => {
+      const option = document.createElement('option');
+      option.value = value;
+      option.textContent = label;
+      return option;
+    });
+    select.replaceChildren(...options);
+    select.value = current;
+  } catch (error) {
+    if (generation === accountGroupLoadGeneration) showToast('加载账号分组失败：' + error.message);
+  }
+}

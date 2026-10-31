@@ -1,47 +1,101 @@
-$('#btnImportRegistered').addEventListener('click', async () => {
-  const input = $('#registeredImportText');
-  const button = $('#btnImportRegistered');
-  const result = $('#registeredImportResult');
-  if (!input.value.trim()) { result.textContent = '请先粘贴四列账号数据'; return; }
-  button.disabled = true;
-  result.textContent = '导入中…';
+let accountTransferSchema = null, accountTransferFlight = null, accountExportIds = [];
+async function loadAccountTransferFields() {
+  if (accountTransferSchema) return accountTransferSchema;
+  if (accountTransferFlight) return accountTransferFlight;
+  accountTransferFlight = api('/api/accounts/transfer-schema').then(schema => {
+    for (const mode of ['Import','Export']) {
+      const container = document.getElementById('account'+mode+'Fields');
+      container.replaceChildren();
+      for (const field of schema.fields) {
+        if (mode==='Import' && !field.importable) continue;
+        const label=document.createElement('label'), input=document.createElement('input');
+        input.type='checkbox';input.value=field.key;
+        input.checked=mode==='Import' ? schema.default_import_fields.includes(field.key) : field.key==='email';
+        if (mode==='Import' && field.key==='email') input.disabled=true;
+        label.append(input,document.createTextNode(field.label));container.append(label);
+      }
+    }
+    accountTransferSchema=schema;
+    updateAccountImportOrder();
+    return schema;
+  }).finally(()=>{accountTransferFlight=null;});
+  return accountTransferFlight;
+}
+function selectedTransferFields(mode) {
+  return [...document.querySelectorAll('#account'+mode+'Fields input:checked')].map(input=>input.value);
+}
+function updateAccountImportOrder() {
+  const labels=new Map((accountTransferSchema?.fields||[]).map(f=>[f.key,f.label]));
+  document.getElementById('accountImportOrder').textContent='本次列顺序：'+selectedTransferFields('Import').map(key=>labels.get(key)).join(' → ');
+}
+async function openAccountImportDialog() {
   try {
-    const response = await api('/api/accounts/import', {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({text: input.value}),
-    });
-    result.textContent = `新增 ${response.inserted}，重复 ${response.skipped}，格式错误 ${response.invalid}`;
-    input.value = '';
-    loadAccounts();
-    loadSummary();
-  } catch (error) {
-    result.textContent = '导入失败：' + error.message;
-  } finally {
-    button.disabled = false;
-  }
+    await loadAccountTransferFields();
+    document.getElementById('registeredImportResult').textContent='';
+    document.getElementById('accountImportDialog').showModal();
+  } catch(error) {showToast('导入字段加载失败：'+error.message);}
+}
+async function openAccountExportDialog() {
+  const ids=[...ACCOUNT_SELECTED].map(Number);
+  if(!ids.length){showToast('请先选择账号');return;}
+  try {
+    await loadAccountTransferFields();accountExportIds=ids;
+    document.getElementById('accountExportCount').textContent=`导出已选 ${ids.length} 个账号；请选择字段。`;
+    document.getElementById('accountExportResult').textContent='';
+    document.getElementById('accountExportDialog').showModal();
+  } catch(error) {showToast('导出字段加载失败：'+error.message);}
+}
+document.getElementById('openAccountImport').addEventListener('click',openAccountImportDialog);
+document.getElementById('accountImportFields').addEventListener('change',updateAccountImportOrder);
+document.querySelectorAll('[data-close-dialog]').forEach(button=>button.addEventListener('click',()=>document.getElementById(button.dataset.closeDialog).close()));
+document.getElementById('accountImportDialog').addEventListener('close',()=>{
+  document.getElementById('registeredImportText').value='';document.getElementById('registeredImportFile').value='';
 });
-
-$('#btnImportRegisteredFile').addEventListener('click', async () => {
-  const fileInput = $('#registeredImportFile');
-  const button = $('#btnImportRegisteredFile');
-  const result = $('#registeredImportResult');
-  const file = fileInput.files && fileInput.files[0];
-  if (!file) { result.textContent = '请先选择 .xlsx 文件'; return; }
-  if (!file.name.toLowerCase().endsWith('.xlsx')) { result.textContent = '仅支持 .xlsx 文件'; return; }
-  if (file.size > 8_000_000) { result.textContent = 'Excel 文件超过 8 MB'; return; }
-  const form = new FormData();
-  form.append('file', file);
-  button.disabled = true;
-  result.textContent = '导入中…';
-  try {
-    const response = await api('/api/accounts/import', {method: 'POST', body: form});
-    result.textContent = `新增 ${response.inserted}，重复 ${response.skipped}，格式错误 ${response.invalid}`;
-    fileInput.value = '';
-    loadAccounts();
-    loadSummary();
-  } catch (error) {
-    result.textContent = '导入失败：' + error.message;
-  } finally {
-    button.disabled = false;
+document.getElementById('accountExportDialog').addEventListener('close',()=>{accountExportIds=[];});
+let accountImportBusy=false;
+async function importSelectedAccountFields(fromFile) {
+  if(accountImportBusy)return;
+  const result=document.getElementById('registeredImportResult');
+  const fields=selectedTransferFields('Import');
+  let options;
+  if(fromFile){
+    const file=document.getElementById('registeredImportFile').files?.[0];
+    if(!file){result.textContent='请先选择文件';return;}
+    if(!/\.(xlsx|txt|csv|tsv)$/i.test(file.name)){result.textContent='仅支持 .xlsx / .txt / .csv / .tsv';return;}
+    if(file.size>8_000_000){result.textContent='文件超过 8 MB';return;}
+    const body=new FormData();body.append('file',file);body.append('fields',JSON.stringify(fields));
+    options={method:'POST',body};
+  }else{
+    const text=document.getElementById('registeredImportText').value;
+    if(!text.trim()){result.textContent='请先粘贴账号数据';return;}
+    options={method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text,fields})};
   }
+  accountImportBusy=true;
+  const buttons=['btnImportRegistered','btnImportRegisteredFile'].map(id=>document.getElementById(id));
+  buttons.forEach(b=>b.disabled=true);result.textContent='导入中…';
+  try{
+    const response=await api('/api/accounts/import',options);
+    result.textContent=`新增 ${response.inserted}，重复 ${response.skipped}，格式错误 ${response.invalid}`;
+    document.getElementById(fromFile?'registeredImportFile':'registeredImportText').value='';
+    await loadAccounts();loadSummary();
+  }catch(error){result.textContent='导入失败：'+error.message;}
+  finally{accountImportBusy=false;buttons.forEach(b=>b.disabled=false);}
+}
+document.getElementById('btnImportRegistered').addEventListener('click',()=>importSelectedAccountFields(false));
+document.getElementById('btnImportRegisteredFile').addEventListener('click',()=>importSelectedAccountFields(true));
+document.getElementById('downloadAccountFields').addEventListener('click',async(event)=>{
+  const button=event.currentTarget,result=document.getElementById('accountExportResult');
+  const fields=selectedTransferFields('Export'),ids=[...accountExportIds];
+  if(!fields.length){result.textContent='请至少选择一个字段';return;}
+  if(!ids.length){result.textContent='请重新选择账号';return;}
+  button.disabled=true;result.textContent='生成文件中…';
+  try{
+    const response=await fetch('/api/accounts/export-fields',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ids,fields})});
+    if(!response.ok){const error=await response.json().catch(()=>({}));throw Error(error.error||`HTTP ${response.status}`);}
+    const blob=await response.blob(),url=URL.createObjectURL(blob),link=document.createElement('a');
+    link.href=url;link.download='gpt-accounts-'+new Date().toISOString().replace(/[:.]/g,'-')+'.txt';
+    document.body.append(link);link.click();setTimeout(()=>{URL.revokeObjectURL(url);link.remove();},1000);
+    result.textContent=`已导出 ${ids.length} 个账号的 ${fields.length} 个字段`;
+  }catch(error){result.textContent='导出失败：'+error.message;}
+  finally{button.disabled=false;}
 });

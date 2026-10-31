@@ -104,6 +104,7 @@ class CloudMailClientTests(unittest.TestCase):
             json={"email": "user", "password": "pass"},
             headers={"Accept": "application/json"},
             timeout=cloudmail_client.REQUEST_TIMEOUT,
+            proxies={"http": "", "https": "", "all": ""},
         )
 
 

@@ -22,6 +22,7 @@ from email.utils import parsedate_to_datetime
 from typing import Any
 
 import requests
+from core.mail_traffic import record_mail_http
 
 from config import email as _email_cfg
 from core.otp_utils import extract_otp, looks_like_openai_email
@@ -196,7 +197,9 @@ def _request(
             json=json_body,
             params=query or None,
             timeout=_timeout(),
+            proxies={"http": "", "https": "", "all": ""},
         )
+        record_mail_http(response)
     except requests.RequestException as exc:
         raise CFTempMailError(f"Cloudflare 请求失败 ({path}): {type(exc).__name__}: {exc}") from exc
 

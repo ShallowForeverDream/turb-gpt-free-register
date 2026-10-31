@@ -36,6 +36,7 @@ from urllib.parse import urlencode
 from pathlib import Path
 
 from curl_cffi.requests import Session as CurlSession
+from core.mail_traffic import track_mail_session, track_imap_connection
 
 from config import (
     OUTLOOK_ACCOUNTS_FILE,
@@ -81,7 +82,8 @@ def _cache_key(email: str) -> str:
 
 
 def _http_session() -> CurlSession:
-    s = CurlSession(impersonate=IMPERSONATE)
+    # An explicit empty libcurl proxy also disables *_PROXY environment fallback.
+    s = CurlSession(impersonate=IMPERSONATE, trust_env=False, proxies={"all": ""})
     s.headers.update({
         "User-Agent": USER_AGENT,
         "Origin": OUTLOOK_API_BASE.rstrip("/"),
@@ -89,7 +91,7 @@ def _http_session() -> CurlSession:
         "Accept": "*/*",
     })
     s.timeout = 30
-    return s
+    return track_mail_session(s)
 
 
 # ============================================================
@@ -393,13 +395,13 @@ def _is_remote_disabled_error(exc: Exception | str) -> bool:
 
 
 def _ms_http() -> CurlSession:
-    s = CurlSession(impersonate=IMPERSONATE)
+    s = CurlSession(impersonate=IMPERSONATE, trust_env=False, proxies={"all": ""})
     s.headers.update({
         "User-Agent": USER_AGENT,
         "Accept": "application/json",
     })
     s.timeout = 30
-    return s
+    return track_mail_session(s)
 
 
 def _token_looks_jwt(token: str) -> bool:
@@ -805,6 +807,7 @@ def _fetch_imap_direct_messages(account: OutlookAccount) -> list[dict]:
             token_source = "entra_outlook"
         auth_string = f"user={account.email}\x01auth=Bearer {token}\x01\x01"
         mail = imaplib.IMAP4_SSL("outlook.office365.com", 993, timeout=30)
+        track_imap_connection(mail)
         mail.authenticate("XOAUTH2", lambda _challenge: auth_string.encode("utf-8"))
         out = []
         for folder in ("INBOX", "Junk"):

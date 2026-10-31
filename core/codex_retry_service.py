@@ -6,7 +6,7 @@ import threading
 import time
 from pathlib import Path
 
-from core import db
+from core import db, account_concurrency
 
 logger = logging.getLogger(__name__)
 
@@ -162,6 +162,7 @@ def request_stop(email: str) -> dict:
     return {"ok": True, "message": "已发送停止信号", "state": "stopped", "running": True, "injected": injected}
 
 
+@account_concurrency.limited
 def run_worker(
     email: str,
     *,

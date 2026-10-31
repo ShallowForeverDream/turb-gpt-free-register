@@ -8,18 +8,34 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 
-from core import db
+from core import db, account_concurrency
 from core.account_liveness import check_account_liveness, log_path
 from core.chatgpt_plan import _mask_proxy, open_plan_check_proxy, resolve_plan_check_route
 
 logger = logging.getLogger(__name__)
 
 _WORKERS = 1
+_MAX_WORKERS = 16
 _QUEUE_LIMIT = 500
-_EXECUTOR = ThreadPoolExecutor(max_workers=_WORKERS, thread_name_prefix="live-check")
+_EXECUTOR = ThreadPoolExecutor(max_workers=_MAX_WORKERS, thread_name_prefix="live-check")
 _QUEUE_SLOTS = threading.BoundedSemaphore(_QUEUE_LIMIT)
 _RUNNING: set[int] = set()
 _LOCK = threading.Lock()
+_CAPACITY = threading.Condition(_LOCK)
+_EXECUTION_SLOTS = account_concurrency.SLOTS
+
+
+def configure_workers(workers: int) -> None:
+    """Adjust the shared limit without stranding jobs in an old executor."""
+    global _WORKERS
+    workers = max(1, min(_MAX_WORKERS, int(workers)))
+    with _CAPACITY:
+        previous = _WORKERS
+        _WORKERS = workers
+        account_concurrency.configure_workers(workers)
+        _CAPACITY.notify_all()
+    if previous != workers:
+        logger.info("[查活] 并发线程数从 %s 调整为 %s", previous, workers)
 
 
 def is_checking(email: str) -> bool:
@@ -40,8 +56,13 @@ def _append_log(email: str, line: str, *, clear: bool = False) -> None:
 
 def _run_live_check(*, account_id: int, email: str, proxy: str | None, trigger: str) -> dict:
     relay = None
+    acquired = False
     try:
-        with _LOCK:
+        _EXECUTION_SLOTS.acquire()
+        acquired = True
+        with _CAPACITY:
+            while int(account_id) in _RUNNING:
+                _CAPACITY.wait()
             _RUNNING.add(int(account_id))
         if not db.mark_account_live_check_running(account_id):
             _append_log(email, "[查活] 账号已删除或查活状态已被重置，取消执行")
@@ -117,11 +138,16 @@ def _run_live_check(*, account_id: int, email: str, proxy: str | None, trigger: 
             pass
         return result
     finally:
-        if relay is not None:
-            relay.close()
-        with _LOCK:
-            _RUNNING.discard(int(account_id))
-        _QUEUE_SLOTS.release()
+        try:
+            if relay is not None:
+                relay.close()
+        finally:
+            with _CAPACITY:
+                _RUNNING.discard(int(account_id))
+                _CAPACITY.notify_all()
+            if acquired:
+                _EXECUTION_SLOTS.release()
+            _QUEUE_SLOTS.release()
 
 
 def enqueue_account_live_check(*, account_id: int, email: str, trigger: str = "manual", proxy: str | None = None) -> dict:
@@ -140,7 +166,7 @@ def enqueue_account_live_check(*, account_id: int, email: str, trigger: str = "m
         _QUEUE_SLOTS.release()
         return {"accepted": False, "busy": True, "error": "该账号正在查活"}
 
-    _append_log(email, f"[查活] 已入队 account_id={account_id} trigger={trigger}", clear=True)
+    _append_log(email, f"[查活] 已入队 account_id={account_id} trigger={trigger} workers={queue_settings()['workers']}", clear=True)
     try:
         from core.workflow_driver import submit_with_driver
         submit_with_driver(
@@ -173,4 +199,6 @@ def enqueue_account_live_check(*, account_id: int, email: str, trigger: str = "m
 
 
 def queue_settings() -> dict:
-    return {"workers": _WORKERS, "queue_limit": _QUEUE_LIMIT}
+    with _LOCK:
+        return {"workers": account_concurrency.queue_settings()["workers"],
+                "queue_limit": _QUEUE_LIMIT, "running": len(_RUNNING)}

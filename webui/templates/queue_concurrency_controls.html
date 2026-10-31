@@ -1,0 +1,48 @@
+// Save is page-scoped; editing one page never changes the other page's limit.
+const PAGE_WORKERS = {registration: 3, accounts: 3};
+function getSavedAccountWorkers() { return PAGE_WORKERS.accounts; }
+function getSavedRegistrationWorkers() { return PAGE_WORKERS.registration; }
+(function bindConcurrencyControls() {
+  const suffix = document.getElementById('regWorkersV2') ? 'V2' : '';
+  const pages = [
+    {name:'registration', label:'注册页', input:'regWorkers', button:'saveRegistrationConcurrency', hint:'concurrencyHint', url:'/api/jobs/concurrency'},
+    {name:'accounts', label:'账号页', input:'codexBulkWorkers', button:'saveAccountConcurrency', hint:'accountConcurrencyHint', url:'/api/accounts/concurrency'},
+  ];
+  for (const page of pages) {
+    const field=document.getElementById(page.input+suffix), button=document.getElementById(page.button+suffix);
+    const hint=document.getElementById(page.hint+suffix);
+    if (!field || !button) continue;
+    let dirty=false, version=0;
+    function status(prefix='当前') {
+      if (hint) hint.textContent=`${prefix}：${PAGE_WORKERS[page.name]} 并发`+(dirty?'（有未保存修改）':'')+
+        (page.name==='accounts'?'；本页全部后台任务共用':'；包含后续套餐/2FA');
+    }
+    field.addEventListener('input',()=>{dirty=true;status();});
+    async function load() {
+      const token=++version;
+      try {
+        const state=await api(page.url);
+        if (version!==token) return;
+        PAGE_WORKERS[page.name]=state.workers;
+        if (!dirty) field.value=state.workers;
+        status();
+      } catch(error) {if(hint)hint.textContent='并发配置加载失败，请刷新后重试';}
+    }
+    button.addEventListener('click',async()=>{
+      const value=Number(field.value);
+      if(!Number.isInteger(value)||value<1||value>16){showToast(`${page.label}并发请输入1-16的整数`);return;}
+      button.disabled=true;
+      version++;
+      try {
+        const state=await api(page.url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({workers:value})});
+        PAGE_WORKERS[page.name]=state.workers;
+        dirty=Number(field.value)!==state.workers;
+        if(!dirty)field.value=state.workers;
+        status('已保存');
+        showToast(`${page.label}并发已保存，排队及后续任务实时按新上限运行；正在运行的任务不中断`);
+      } catch(error) {showToast('保存并发失败：'+error.message);}
+      finally {button.disabled=false;}
+    });
+    load();
+  }
+})();

@@ -10,6 +10,9 @@ from webui.app import create_app
 
 
 class ImapMailClientTests(unittest.TestCase):
+    def tearDown(self):
+        imap_client.close_shared_imap_connections()
+
     @staticmethod
     def _storage_patches(root: Path) -> dict:
         return {
@@ -44,7 +47,7 @@ class ImapMailClientTests(unittest.TestCase):
             self.assertIs(imap_client._connect(account), mail)
         constructor.assert_called_once_with("imap.example.com", 143)
         mail.login.assert_called_once_with("user@example.com", "pw")
-        mail.select.assert_called_once_with("INBOX")
+        mail.select.assert_called_once_with("INBOX", readonly=True)
 
     def test_webui_can_import_imap_material(self):
         with tempfile.TemporaryDirectory() as td, patch.multiple(db, **self._storage_patches(Path(td))):

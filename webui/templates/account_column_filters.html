@@ -1,0 +1,162 @@
+// Values within a column are ORed; separate columns are ANDed server-side.
+let ACCOUNT_COLUMN_FILTER_STATE = {status:{values:['unarchived']}};
+function getAccountColumnFiltersQuery() { return JSON.stringify(ACCOUNT_COLUMN_FILTER_STATE); }
+function accountColumnFilterValue(draft, fields) {
+  const result = {};
+  if (draft.values?.size) result.values = [...draft.values];
+  for (const [name, input] of Object.entries(fields)) {
+    const value = input.value.trim();
+    if (!value) continue;
+    if (['min','max','dynamic_min','dynamic_max'].includes(name)) {
+      const number = Number(value);
+      if (!Number.isFinite(number) || number < 0) throw Error('流量范围请输入非负数');
+      result[name] = number;
+    } else result[name] = value;
+  }
+  if (result.from && result.to && result.from > result.to) throw Error('开始日期不能晚于结束日期');
+  for (const [low, high] of [['min','max'],['dynamic_min','dynamic_max']]) {
+    if (result[low] != null && result[high] != null && result[low] > result[high]) throw Error('最小流量不能大于最大流量');
+  }
+  return result;
+}
+(function bindAccountColumnFilters() {
+  const buttons = [...document.querySelectorAll('[data-account-filter]')];
+  if (!buttons.length) return;
+  let panel = null, anchor = null, controller = null, generation = 0, searchTimer = null;
+  function indicators() {
+    for (const button of buttons) {
+      const selected = !!ACCOUNT_COLUMN_FILTER_STATE[button.dataset.accountFilter];
+      button.classList.toggle('is-filtered', selected);
+      button.querySelector('span').textContent = selected ? '■' : '·';
+      button.title = `${button.getAttribute('aria-label')}：${selected ? '已选择' : '未筛选'}`;
+    }
+  }
+  function close() {
+    generation++;
+    controller?.abort(); controller = null;
+    clearTimeout(searchTimer);
+    if (anchor) anchor.setAttribute('aria-expanded','false');
+    panel?.remove(); panel = null; anchor = null;
+  }
+  document.addEventListener('account-column-filters-updated', indicators);
+  function refresh() {
+    if (typeof syncWorkspaceAccountControls === 'function') syncWorkspaceAccountControls();
+    indicators(); ACCOUNT_SELECTED.clear(); PAGERS.accounts.page = 1;
+    loadAccounts();
+  }
+  function element(tag, text, className) {
+    const node = document.createElement(tag);
+    if (text != null) node.textContent = text;
+    if (className) node.className = className;
+    return node;
+  }
+  function open(button) {
+    if (anchor === button) { close(); return; }
+    close(); anchor = button; button.setAttribute('aria-expanded','true');
+    const key = button.dataset.accountFilter, token = generation;
+    const current = ACCOUNT_COLUMN_FILTER_STATE[key] || {};
+    const draft = {values:new Set(current.values || [])};
+    const fields = {}, dynamic = ['id','email','group','source'].includes(key);
+    let options = [], hasMore = false, searchValue = '', offset = 0, requestId = 0;
+    const labels = new Map();
+    panel = element('section', null, 'account-column-popup');
+    panel.setAttribute('role','dialog'); panel.setAttribute('aria-label',button.getAttribute('aria-label'));
+    const header = element('header'), title = element('strong',button.getAttribute('aria-label'));
+    const dismiss = element('button','×'); dismiss.type='button'; dismiss.setAttribute('aria-label','取消筛选'); dismiss.onclick=close;
+    header.append(title,dismiss);
+    const inputs = element('div',null,'account-filter-inputs');
+    function input(name, label, type='text', parent=inputs) {
+      const wrap = element('label',label), field = element('input'); field.type=type;
+      field.value=current[name] ?? ''; field.setAttribute('aria-label',label);
+      if (type==='number') {field.min='0';field.step='any';}
+      if (name==='text') field.maxLength=200;
+      wrap.append(field);parent.append(wrap);fields[name]=field;return field;
+    }
+    if (['id','email','group','source','note'].includes(key)) input('text','包含关键词（可留空）');
+    if (key==='registered_at') {
+      const range=element('div',null,'account-filter-range');inputs.append(range);
+      input('from','开始日期（含当天）','date',range);input('to','结束日期（含当天）','date',range);
+      fields.to.min=fields.from.value;fields.from.max=fields.to.value;
+      fields.from.addEventListener('change',()=>{fields.to.min=fields.from.value;});
+      fields.to.addEventListener('change',()=>{fields.from.max=fields.to.value;});
+      inputs.append(element('div','按实际注册时间筛选，未知时间不使用导入时间代替。','account-filter-note'));
+    }
+    if (key==='traffic') {
+      const range=element('div',null,'account-filter-range');inputs.append(range);
+      input('min','最小总流量 MiB','number',range);input('max','最大总流量 MiB','number',range);
+      input('dynamic_min','最小动态IP MiB','number',range);input('dynamic_max','最大动态IP MiB','number',range);
+    }
+    let searchInput;
+    if (dynamic) {
+      const label=element('label','搜索候选值（保留已选项）');searchInput=element('input');searchInput.type='search';searchInput.maxLength=200;
+      searchInput.setAttribute('aria-label','搜索候选值');label.append(searchInput);inputs.append(label);
+    }
+    const tools=element('div',null,'account-filter-tools'), all=element('button',dynamic?'选择当前结果':'全选'), none=element('button','清空选择');
+    all.type=none.type='button';tools.append(all,none);
+    const list=element('div','加载选项…','account-filter-options'), selected=element('div',null,'account-filter-note');
+    const more=element('button','加载更多'), error=element('div','', 'account-filter-error');more.type='button';more.hidden=true;
+    const actions=element('div',null,'account-filter-actions'), clear=element('button','清除此列'), apply=element('button','应用','filter-apply');
+    clear.type=apply.type='button';actions.append(clear,apply);
+    panel.append(header,inputs,tools,list,more,selected,error,actions);document.body.append(panel);
+    function summary() { selected.textContent=`已选 ${draft.values.size} 项；同列多选为“或”，不同列为“且”`; }
+    function position() {
+      const rect=button.getBoundingClientRect(), width=Math.min(340,window.innerWidth-16);
+      panel.style.width=`${width}px`;panel.style.maxHeight=`${window.innerHeight-16}px`;panel.style.overflowY='auto';
+      panel.style.left=`${Math.max(8,Math.min(rect.right-width,window.innerWidth-width-8))}px`;
+      panel.style.top=`${Math.max(8,Math.min(rect.bottom+6,window.innerHeight-Math.min(panel.scrollHeight,window.innerHeight-16)-8))}px`;
+    }
+    function render() {
+      list.replaceChildren();
+      const visible = new Set(options.map(option=>option.value));
+      const retained = [...draft.values].filter(value=>!visible.has(value)).map(value=>({value,
+        label:(labels.get(value) || (value==='__ungrouped__'?'未分组':value==='__unknown__'?'未知来源':key==='id'?'#'+value:value))+'（已选）'}));
+      for (const option of [...retained,...options]) {
+        const label=element('label',null,'account-filter-option'), check=element('input');
+        check.type='checkbox';check.checked=draft.values.has(option.value);check.value=option.value;
+        check.addEventListener('change',()=>{
+          if (check.checked && draft.values.size>=200) {check.checked=false;error.textContent='每列最多选择200项';return;}
+          check.checked?draft.values.add(option.value):draft.values.delete(option.value);summary();
+        });
+        label.append(check,element('span',option.label));list.append(label);
+      }
+      if (!options.length) list.append(element('span','没有匹配选项','account-filter-note'));
+      more.hidden=!hasMore;summary();position();
+    }
+    async function load(reset) {
+      const id=++requestId;controller?.abort();controller=new AbortController();
+      if(reset){offset=0;options=[];list.textContent='加载选项…';}
+      more.disabled=true;
+      try {
+        const query=document.getElementById('qAccountsV2')?.value || document.getElementById('qAccounts')?.value || '';
+        const url=`/api/accounts/filter-options?column=${encodeURIComponent(key)}&filters=${encodeURIComponent(getAccountColumnFiltersQuery())}&q=${encodeURIComponent(query)}&search=${encodeURIComponent(searchValue)}&offset=${offset}`;
+        const data=await api(url,{signal:controller.signal});
+        if(generation!==token || id!==requestId || !panel)return;
+        const seen=new Set(options.map(option=>option.value));
+        for(const item of data.items || []){labels.set(item.value,item.label);if(!seen.has(item.value)){options.push(item);seen.add(item.value);}}
+        offset+=data.items?.length || 0;hasMore=!!data.has_more;render();
+      } catch (failure) {
+        if(generation===token && id===requestId && failure.name!=='AbortError') {list.textContent='选项加载失败';error.textContent=failure.message;}
+      } finally {if(generation===token && id===requestId)more.disabled=false;}
+    }
+    all.onclick=()=>{if(new Set([...draft.values,...options.map(x=>x.value)]).size>200){error.textContent='每列最多选择200项';return;}options.forEach(x=>draft.values.add(x.value));render();};
+    none.onclick=()=>{draft.values.clear();render();};
+    more.onclick=()=>load(false);
+    if(searchInput)searchInput.addEventListener('input',()=>{searchValue=searchInput.value;clearTimeout(searchTimer);searchTimer=setTimeout(()=>load(true),200);});
+    clear.onclick=()=>{delete ACCOUNT_COLUMN_FILTER_STATE[key];close();refresh();};
+    apply.onclick=()=>{
+      try {
+        const value=accountColumnFilterValue(draft,fields);
+        Object.keys(value).length?ACCOUNT_COLUMN_FILTER_STATE[key]=value:delete ACCOUNT_COLUMN_FILTER_STATE[key];
+        close();refresh();
+      } catch (failure) {error.textContent=failure.message;}
+    };
+    panel.addEventListener('keydown',event=>{if(event.key==='Escape'){event.preventDefault();close();button.focus();}});
+    position();
+    load(true);(searchInput || Object.values(fields)[0] || dismiss).focus();
+  }
+  for(const button of buttons)button.addEventListener('click',event=>{event.stopPropagation();open(button);});
+  document.addEventListener('pointerdown',event=>{if(panel&&!panel.contains(event.target)&&!anchor?.contains(event.target))close();});
+  window.addEventListener('resize',close);
+  document.addEventListener('scroll',event=>{if(panel&&!panel.contains(event.target))close();},true);
+  indicators();
+})();

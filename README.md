@@ -65,6 +65,7 @@ IPWO 住宅代理提供覆盖195+国家和地区的住宅 IP 资源，支持多�
 - 转发到统一 IMAP 收件箱的邮箱池：在“邮箱池 → 导入”选择“转发到同一 IMAP 收件箱”，每行仅填原邮箱地址；统一收件箱必须填写网页版显示的完整地址，`@163.com` 与 `@yeah.net` 不能混用。页面会按这两种域名建议 `imap.163.com` 或 `imap.yeah.net`，默认 SSL 端口为 `993`。再在“配置 → 邮箱 / OTP”保存该收件箱的 IMAP 客户端授权码。重新导入同一批地址会更新已有转发邮箱的收件箱配置，并保留邮箱池状态及已注册账号关联。已经注册 GPT 的邮箱可勾选“导入后标记为已注册 GPT 账号”，已有邮箱池素材也会标记已用并关联账号。此类素材存入通用 IMAP 池，注册新账号时启用 `USE_EMAIL_SERVICE=True` 并将 `EMAIL_SOURCE` 包含 `imap`。收码只接受邮件头或转发正文中明确指向该原邮箱地址、且在本次请求之后到达的验证码邮件。
 - GPTMail 临时邮箱 API：运行时随机生成邮箱并自动收取验证码
 - Remail 开放 API：按项目下单短效邮箱并自动收取验证码（`remail`）
+- SMSBower 临时 Gmail：通过 `getActivation/getCode/setStatus` 领取 Gmail 并自动收码（`smsbower_mail`）
 - `EMAIL_SOURCE` 支持多个来源组合，例如：
 
 ```python
@@ -383,6 +384,30 @@ Cloudflare Email Routing 需要把域名邮件转发到 QQ 邮箱。此模式不
 
 - `api-key`获取页面：https://mailnest.top/account
 - 项目代码获取页面：https://mailnest.top/buy-email。默认为`chatgpt001`，可以直接使用
+
+#### SMSBower 临时 Gmail（smsbower_mail）
+
+SMSBower 除了手机短信接码，也提供 getActivation / getCode / setStatus 邮箱接口。
+选择该来源时，程序会领取一个 @gmail.com 临时地址，并通过同一个 mailId 读取 OpenAI
+验证码；不会取得 Gmail 密码或 Google OAuth，也不需要走“使用 Google 登录”。
+
+```dotenv
+USE_EMAIL_SERVICE=True
+EMAIL_SOURCE=smsbower_mail
+SMSBOWER_API_KEY=你的_SMSBower_API_Key
+SMSBOWER_MAIL_API_BASE=https://smsbower.page/api/mail
+SMSBOWER_MAIL_SERVICE=dr
+SMSBOWER_MAIL_DOMAIN=gmail.com
+SMSBOWER_MAIL_ALIAS_LENGTH=0
+```
+
+SMSBOWER_API_KEY 与手机接码共用，在「配置 → 接码平台 → SMSBower」填写。邮箱接口参数与手机短信
+接口不同：取码使用 mailId，状态操作使用 id。取到一条码后程序自动调用 setStatus=5
+等待下一条；账号创建并完成全部邮件步骤后按 status=3 关闭，未创建账号而放弃时按 status=2
+取消。领取记录、已用码摘要、待核对操作和关闭状态立即写入 SQLite 的 mail_activations 表，
+不依赖账号创建成功才保存。注册、Codex 和自动 2FA 尚未完成时保留同一个激活；
+成功关闭后不会再次收码或自动重新购买，不能把临时激活当成长期 Gmail 登录能力。
+旧版账号记录没有关闭状态时会提示人工核对，不盲目恢复。详细边界见 [接入与源码对照](docs/smsbower_mail_review.md)。
 
 #### Remail 开放 API
 

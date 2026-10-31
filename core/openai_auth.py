@@ -7,8 +7,10 @@ OpenAI Auth 模块
 import json
 import logging
 import random
+import re
 import secrets
 import time
+from urllib.parse import urlsplit, parse_qsl
 
 from config import openai_protocol as _protocol_cfg
 from core.session import BrowserSession
@@ -29,6 +31,19 @@ def _rotate_document_navigation_id(session: BrowserSession) -> None:
 
 class EmailOtpInvalidError(RuntimeError):
     """邮箱验证码无效/过期，可重新发送后重试。"""
+
+
+def is_email_otp_rejection(response) -> bool:
+    """Retry only a rejected code, never an invalid auth session or access refusal."""
+    if getattr(response, "status_code", None) not in (400, 401, 422):
+        return False
+    code = _extract_error_code(response)
+    if code:
+        return code in {"wrong_email_otp_code", "invalid_otp", "invalid_email_otp",
+                        "email_otp_invalid", "incorrect_code", "otp_expired"}
+    text = str(getattr(response, "text", "") or "").lower()
+    return any(marker in text for marker in ("incorrect code", "invalid otp", "expired otp",
+        "invalid verification code", "verification code expired", "验证码无效", "验证码已过期", "验证码错误"))
 
 
 class AccountUnusableError(Exception):
@@ -289,8 +304,21 @@ def follow_authorize(session: BrowserSession, authorize_url: str) -> str:
             resp = session.get(authorize_url, headers=headers, allow_redirects=True)
             resp.raise_for_status()
             final_url = str(getattr(resp, "url", "") or "")
+            from core.auth_page_state import read_auth_page_session
+            session._registration_auth_page_state = read_auth_page_session(getattr(resp, "text", ""))
+            session._registration_auth_page_url = final_url
+            session._registration_initial_otp_attempted = False
+            session._registration_otp_ready_at = None
             _rotate_document_navigation_id(session)
-            logger.info(f"[步骤4] 重定向完成, 最终URL: {final_url}")
+            destination = urlsplit(final_url)
+            query_keys = sorted({k for k, _ in parse_qsl(destination.query)})
+            logger.info("[步骤4] 重定向完成, 最终URL: %s://%s%s；查询参数名=%s",
+                        destination.scheme, destination.hostname, destination.path, query_keys)
+            if destination.path.rstrip("/") == "/email-verification":
+                state = session._registration_auth_page_state
+                pending = (state or {}).get("passwordless_email_otp_send_pending")
+                logger.info("[步骤4] 验证页初始化状态：已识别=%s，待首次发送=%s",
+                            state is not None, pending if type(pending) is bool else "unknown")
             return final_url
         except Exception as exc:
             last_exc = exc
@@ -299,6 +327,12 @@ def follow_authorize(session: BrowserSession, authorize_url: str) -> str:
                 raise
             if attempt >= max_attempts:
                 break
+            # Like the reference project's bounded same-session TLS retries,
+            # keep OAuth state/cookies/route. Drop only a poisoned curl pool.
+            if _needs_transport_rebuild(exc):
+                reopen = getattr(session, "reopen_transport", None)
+                if callable(reopen):
+                    reopen()
             # 首次 403 常会同时刷新 __cf_bm；保留同一个 BrowserSession/Cookie
             # Jar，只清掉本地熔断后重试，不能重建会话丢掉该 Cookie。
             _reset_retryable_circuit(session)
@@ -307,10 +341,73 @@ def follow_authorize(session: BrowserSession, authorize_url: str) -> str:
                 f"[步骤4] authorize 临时失败 ({type(exc).__name__}: {str(exc)[:120]})，"
                 f"保留当前 session/deviceId/CF Cookie，{backoff:.1f}s 后重试..."
             )
-            time.sleep(backoff)
+            _interruptible_sleep(backoff)
 
     # 三次都失败：抛出最后一次异常
     raise last_exc if last_exc else RuntimeError("步骤4 重试耗尽但无异常记录")
+
+
+def initialize_passwordless_email_otp(session: BrowserSession, email: str, page_url: str) -> bool:
+    """Complete the page's pending *initial* delivery once, never a resend.
+
+    A protocol GET does not execute the email page's client loader. Only the
+    explicit server session flag permits this request. Access refusals and
+    uncertain delivery are terminal; no challenge replay or alternate route.
+    """
+    state = getattr(session, "_registration_auth_page_state", None)
+    if not isinstance(state, dict) or state.get("passwordless_email_otp_send_pending") is not True:
+        return False
+    destination = urlsplit(page_url)
+    if (destination.scheme != "https" or destination.netloc != "auth.openai.com"
+            or destination.path.rstrip("/") != "/email-verification"
+            or getattr(session, "_registration_auth_page_url", None) != page_url
+            or state.get("is_missing_session") is True or not state.get("session_id")
+            or str(state.get("email") or "").lower() != email.lower()
+            or state.get("email_verification_mode") not in (None, "passwordless_login", "passwordless_signup")):
+        raise RuntimeError("邮箱验证页会话不匹配，未发送验证码")
+    if getattr(session, "_registration_initial_otp_attempted", False):
+        raise RuntimeError("首次发码结果不确定，已停止，未重复发送")
+    session._registration_initial_otp_attempted = True
+    headers = session.get_auth_headers(referer=page_url)
+    # libcurl supplies application/x-www-form-urlencoded for an empty POST
+    # without an explicit type; Auth rejects that with unsupported_content_type.
+    headers["content-type"] = "application/json"
+    # This is the same authorize_continue initialization used by the page,
+    # not the email-OTP validate flow or a replay of captured credentials.
+    challenge = request_sentinel_token(session, "authorize_continue")
+    token, observer = build_sentinel_header(session, challenge, "authorize_continue")
+    headers["openai-sentinel-token"] = token
+    if observer:
+        headers["openai-sentinel-so-token"] = observer
+    logger.info("[OTP] 页面状态为待首次发送；执行页面初始化发码（非重发，仅一次）")
+    try:
+        resp = session.post("https://auth.openai.com/api/accounts/passwordless/send-otp",
+                            headers=headers, data="", allow_redirects=False)
+    except Exception:
+        raise RuntimeError("首次发码请求未确认完成，已停止，未自动重发") from None
+    if resp.status_code != 200:
+        # Report only a bounded error category, never the response/session body.
+        category = "other"
+        try:
+            error = resp.json().get("error", {})
+            code = error.get("code") if isinstance(error, dict) else None
+            if isinstance(code, str) and re.fullmatch(r"[a-z]{2,20}(?:_[a-z]{2,20}){1,4}", code):
+                category = code
+        except (ValueError, TypeError, AttributeError):
+            pass
+        check = "sentinel" if "sentinel" in str(getattr(resp, "text", "")).lower() else "unspecified"
+        raise RuntimeError(f"首次发码未完成（HTTP {resp.status_code}，类别={category}，校验={check}），已停止；请在正常浏览器中确认验证要求")
+    try:
+        payload = resp.json()
+        page_type = payload.get("page", {}).get("type")
+    except (ValueError, TypeError, AttributeError):
+        page_type = None
+    if page_type not in ("email_otp_verification", "email_otp_verification_registration"):
+        raise RuntimeError("首次发码响应未确认邮箱验证状态，已停止，未自动重发")
+    state["passwordless_email_otp_send_pending"] = False
+    session._registration_otp_ready_at = time.time()
+    logger.info("[OTP] 页面首次发码请求已确认，开始收码等待；不调用重发接口")
+    return True
 
 
 def request_sentinel_token(session: BrowserSession, flow: str) -> dict:
@@ -728,30 +825,25 @@ def validate_email_otp(session: BrowserSession, code: str, sentinel_header: str 
 
     body = json.dumps({"code": code})
 
-    logger.info(f"[步骤10] 提交邮箱验证码: {code}")
+    logger.info("[步骤10] 提交邮箱验证码（不记录验证码）")
     resp = session.post(url, headers=headers, data=body)
 
     if resp.status_code != 200:
         logger.error(f"[步骤10] 请求失败, 状态码: {resp.status_code}")
-        logger.error(f"[步骤10] 响应内容: {resp.text}")
         # 先看是不是"账号已废"——这类邮箱再试也没用，单独抛出让上层标 failed
         err_code = _extract_error_code(resp)
         if err_code in _ACCOUNT_DEAD_CODES:
             raise AccountUnusableError(
                 f"账号已废弃（{err_code}），邮箱不可再用", error_code=err_code,
             )
-        low = (resp.text or '').lower()
-        if resp.status_code in (400, 401, 422) and any(k in low for k in (
-            'invalid', 'incorrect', 'expired', 'code', 'otp', 'verification',
-            '验证码', '認証コード', '確認コード', 'コード'
-        )):
-            raise EmailOtpInvalidError(f"邮箱验证码无效或已过期: status={resp.status_code}, body={(resp.text or '')[:240]}")
+        if is_email_otp_rejection(resp):
+            raise EmailOtpInvalidError(f"邮箱验证码无效或已过期: status={resp.status_code}（不记录响应正文）")
         resp.raise_for_status()
 
     data = resp.json()
     page_type = data.get('page', {}).get('type')
     logger.info(f"[步骤10] 验证码验证成功: {page_type}")
-    logger.info(f"[步骤10] 验证响应摘要: {json.dumps(data, ensure_ascii=False)[:1000]}")
+    logger.info("[步骤10] 验证响应已收到（不记录会话数据或回调参数）")
     return data
 
 

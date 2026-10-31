@@ -1,5 +1,9 @@
 # -*- coding: utf-8 -*-
 import unittest
+import tempfile
+from pathlib import Path
+from core import db, registration_service
+from tests.test_forwarded_imap_and_account_import import storage
 from unittest.mock import patch
 
 from config import email as email_config
@@ -8,6 +12,14 @@ from webui.app import create_app
 
 class RemailWebUiTests(unittest.TestCase):
     def setUp(self):
+        root = tempfile.TemporaryDirectory()
+        self.addCleanup(root.cleanup)
+        state = patch.multiple(db, **storage(Path(root.name)), _DATA_DIR=Path(root.name), _LOG_DIR=Path(root.name)/"logs")
+        state.start()
+        self.addCleanup(state.stop)
+        workers = patch.object(registration_service, "get_executor_workers", return_value=1)
+        workers.start()
+        self.addCleanup(workers.stop)
         self.client = create_app(auth_code="test-auth").test_client()
         self.client.environ_base["HTTP_X_AUTH_CODE"] = "test-auth"
 

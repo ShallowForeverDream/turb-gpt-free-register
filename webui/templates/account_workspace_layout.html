@@ -1,0 +1,25 @@
+<div id="accountWorkspaceToolbar" class="workspace-toolbar" aria-label="GPT账号工具栏">
+  <div class="workspace-row">
+    <div class="workspace-group" data-workspace-slot="basic"><strong>基础</strong></div>
+    <div class="workspace-group" data-workspace-slot="codex"><strong>Codex</strong></div>
+    <div class="workspace-group" data-workspace-slot="business"><strong>业务</strong></div>
+  </div>
+  <div class="workspace-row">
+    <div class="workspace-group workspace-account-query" data-workspace-slot="account"><strong>账号</strong></div>
+    <div class="workspace-group" data-workspace-slot="concurrency"><strong>并发</strong></div>
+    <div class="workspace-group" data-workspace-slot="refresh"></div>
+  </div>
+  <div class="workspace-row">
+    <div class="workspace-group" data-workspace-slot="export"><strong>导出</strong></div>
+    <div class="workspace-group" data-workspace-slot="import"><strong>导入</strong>
+      <button type="button" class="btn jobs-tb-btn" id="openAccountImport">导入</button>
+    </div>
+    <span id="workspaceAccountSelection" class="muted" aria-live="polite">已选 0</span>
+  </div>
+</div>
+<dialog id="codexSmsInfo" class="workspace-dialog" aria-labelledby="codexSmsTitle">
+  <header><h2 id="codexSmsTitle">Codex · 短信验证</h2><button type="button" data-close-dialog="codexSmsInfo" aria-label="关闭">×</button></header>
+  <p>这是手机号短信验证，不是邮箱验证码。项目中已有短信平台适配代码；此入口仅说明功能，不会购号、扣费、发送短信或运行登录任务。</p>
+  <p>如正常登录要求验证手机号，请在官方登录页面按提示使用你自己的手机号完成验证。本轮未接入自动购号或自动绑定。</p>
+  <footer><button type="button" class="btn jobs-tb-btn" data-close-dialog="codexSmsInfo">知道了</button></footer>
+</dialog>

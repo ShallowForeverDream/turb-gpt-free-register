@@ -26,6 +26,8 @@ function harness() {
   };
   const context = vm.createContext({
     $, activeLogJob: null, logTimer: null, Blob,
+    openWorkspaceProgress(id) { context.visualId = id; },
+    closeLogModal() { context.activeLogJob = null; },
     updateModalScrollLock() {},
     api(url) { return new Promise((resolve, reject) => pending.push({url, resolve, reject})); },
     copyText(text) { copied.push(text); },
@@ -41,6 +43,17 @@ function harness() {
   vm.runInContext(source, context);
   return {context, $, pending, copied, downloads, blobs, intervals, revoked, timeouts};
 }
+
+test('level and keyword filtering persist during refresh without changing exported logs', async()=>{
+  const h=harness();h.context.openLog(1);
+  h.pending[0].resolve({log:'[INFO] first\n[ERROR] network\n[WARNING] retry',job:{status:'running'}});await flush();
+  h.$('#jobLogLevel').value='ERROR';h.$('#jobLogLevel').handlers.change();
+  assert.equal(h.$('#logContent').textContent,'[ERROR] network');
+  h.$('#jobLogQuery').value='missing';h.$('#jobLogQuery').handlers.input();
+  assert.equal(h.$('#logContent').textContent,'没有匹配的日志');
+  h.$('#btnCopyJobLog').handlers.click();assert.ok(h.copied[0].includes('[INFO] first'));
+  h.$('#btnJobLogVisual').handlers.click();assert.equal(h.context.visualId,1);assert.equal(h.context.activeLogJob,null);
+});
 
 const flush = () => new Promise(resolve => setImmediate(resolve));
 
@@ -125,4 +138,25 @@ test('polls do not overlap and failures preserve the displayed log', async () =>
   await polling;
   assert.equal(h.$('#logContent').textContent, 'keep this');
   assert.match(h.$('#jobLogStatus').textContent, /HTTP 401/);
+});
+
+test('paused tasks explain the wait even when no log exists', async () => {
+  const h = harness();
+  h.context.openLog(1);
+  h.pending[0].resolve({log:'',job:{status:'running',display_status:'paused',status_message:'已到达暂停点，等待继续'}});
+  await flush();
+  assert.match(h.$('#logContent').textContent, /等待继续/);
+  assert.match(h.$('#jobLogStatus').textContent, /暂停点/);
+  assert.equal(h.intervals.size, 1);
+  assert.equal(h.$('#btnCopyJobLog').disabled, true);
+});
+
+test('all terminal states stop polling and show their explanation', async () => {
+  for (const status of ['failed','blocked','disabled','partial_success','already_registered']) {
+    const h = harness(); h.context.openLog(1);
+    h.pending[0].resolve({log:'fixture',job:{status,status_message:'需要人工核验'}});
+    await flush();
+    assert.equal(h.intervals.size, 0);
+    assert.match(h.$('#jobLogStatus').textContent, /任务已结束.*人工核验/);
+  }
 });

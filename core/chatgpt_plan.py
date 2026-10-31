@@ -9,6 +9,7 @@ from core.workflow_driver import unified_workflow
 import logging
 import random
 import socket
+import threading
 import time
 import uuid
 from datetime import datetime, timezone
@@ -404,7 +405,9 @@ def check_account_plan(
     timeout: float | None = None,
     max_attempts: int | None = None,
     retry_delay: float | None = None,
+    existing_session: BrowserSession | None = None,
 ) -> dict:
+    """查询实时套餐；existing_session 优先于 proxy，且只允许在所属线程借用。"""
     token = normalize_token(token)
     if not token:
         return {"ok": False, "checked_at": now_iso(), "error": "token 为空"}
@@ -420,7 +423,22 @@ def check_account_plan(
         }
 
     try:
-        route = resolve_plan_check_route(proxy)
+        if existing_session is not None:
+            owner = getattr(existing_session, "_owner_thread_id", None)
+            if owner is not None and owner != threading.get_ident():
+                raise ValueError("注册会话不能跨线程借用")
+            if getattr(existing_session, "_closed", False) is True:
+                raise ValueError("注册会话已关闭，不能用于套餐查询")
+            selected = str(getattr(existing_session, "proxy_target", None)
+                           or getattr(existing_session, "proxy", "") or "")
+            route = {
+                "proxy_mode": "registration_session",
+                "network_route": "proxy" if selected else "direct",
+                "proxy_used": _mask_proxy(selected) or None,
+                "proxy_fallback_reason": None,
+            }
+        else:
+            route = resolve_plan_check_route(proxy)
     except Exception as exc:
         return {
             "ok": False,
@@ -444,24 +462,28 @@ def check_account_plan(
         }
 
     last_result: dict | None = None
-    identity = str(
-        claims.get("email") or claims.get("account_id") or normalize_token(token)[:32]
-    ).lower()
-    # 任务级随机 seed：同一查询的所有重试统一 device/session/Cookie；不同账号
-    # 或下一次查询不会复用旧浏览器身份。
-    task_seed = f"plan-check:{identity}:{uuid.uuid4()}"
-    env: BrowserSession | None = None
+    env: BrowserSession | None = existing_session
+    owns_session = existing_session is None
     relay = None
     try:
-        # 首次按代理真实出口自动生成语言/时区画像，随后整条查询链固定不漂移。
-        effective_proxy, relay = open_plan_check_proxy(
-            route, route["proxy"], timeout=timeout_seconds,
-        )
-        from core.workflow_driver import create_account_session
-        env = create_account_session(
-            proxy=effective_proxy, protocol_factory=BrowserSession,
-            detect_exit_geo=True, fingerprint_seed=task_seed,
-        )
+        if owns_session:
+            identity = str(claims.get("email") or claims.get("account_id") or token[:32]).lower()
+            # Independent checks own a fresh identity; registration checks keep
+            # the identity of their borrowed session, including retries.
+            task_seed = f"plan-check:{identity}:{uuid.uuid4()}"
+            effective_proxy, relay = open_plan_check_proxy(
+                route, route["proxy"], timeout=timeout_seconds,
+            )
+            from core.workflow_driver import create_account_session
+            env = create_account_session(
+                proxy=effective_proxy, protocol_factory=BrowserSession,
+                detect_exit_geo=True, fingerprint_seed=task_seed,
+            )
+            meter = getattr(env, "protocol_traffic", None)
+            session_relay = getattr(env, "_proxy_pool_relay", None)
+            if meter is not None and session_relay is not None:
+                from core.protocol_traffic import is_proxy_pool_target
+                meter.attach_proxy(session_relay, dynamic_ip=is_proxy_pool_target(route["proxy"]))
         effective_tz = str(timezone_offset_min or "").strip()
         if not effective_tz or effective_tz == "-":
             effective_tz = str(env.js_timezone_offset_min())
@@ -470,13 +492,22 @@ def check_account_plan(
             f"?timezone_offset_min={quote(effective_tz)}"
         )
         logger.info(
-            "[Plan] 统一会话已创建：proxy=%s device_id=%s oai_session_id=%s %s",
+            "[Plan] 会话来源=%s：proxy=%s device_id=%s oai_session_id=%s %s",
+            "new" if owns_session else "registration",
             route_meta.get("proxy_used") or route_meta.get("network_route") or "direct",
             str(env.device_id)[:12] + "...",
             str(env.oai_session_id)[:12] + "...",
             env.fingerprint_summary_text(),
         )
-        _warm_plan_session(env)
+        if owns_session:
+            _warm_plan_session(env)
+        else:
+            # OAuth/Session already established this Cookie jar. An extra home
+            # document cannot replace the live AT check below, and is redundant.
+            meter = getattr(env, "protocol_traffic", None)
+            if meter is not None:
+                meter.skip("plan_home_document_reused_session")
+            logger.info("[Plan] 复用注册会话，省略重复首页预热；继续实时查询套餐/AT")
 
         if getattr(env, "is_browser_workflow", False) is True:
             attempts = 1
@@ -577,7 +608,7 @@ def check_account_plan(
             **{k: v for k, v in claims.items() if k != "payload"},
         }
     finally:
-        if env is not None:
+        if env is not None and owns_session:
             try:
                 close_browser_session(env)
             except Exception:

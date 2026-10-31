@@ -1,11 +1,29 @@
 let jobLogText = '';
 let jobLogGeneration = 0;
 let jobLogPending = null;
+let jobLogJob = null;
+
+function renderJobLog() {
+  const level = $('#jobLogLevel').value || '', phase = $('#jobLogPhase').value || '';
+  const query = ($('#jobLogQuery').value || '').trim().toLowerCase();
+  const lines = typeof workspaceLogRecords === 'function' ? workspaceLogRecords(jobLogText)
+    : jobLogText.split(/\r?\n/).map(text => ({text, phase:'registration'}));
+  const filtered = lines.filter(line => (!level || line.text.includes(`[${level}]`))
+    && (!phase || line.phase === phase) && (!query || line.text.toLowerCase().includes(query)));
+  const content = $('#logContent'), previousScroll = content.scrollTop;
+  content.textContent = (level || phase || query ? filtered.map(line=>line.text).join('\n') : jobLogText)
+    || (jobLogText ? '没有匹配的日志' : jobLogJob?.status_message || '(暂无日志)');
+  content.scrollTop = $('#jobLogFollow').checked ? content.scrollHeight : previousScroll;
+  $('#jobLogMatchCount').textContent = `${filtered.length} / ${lines.length} 行 · 复制/下载保留完整日志`;
+}
 
 function openLog(jobId) {
   activeLogJob = jobId;
   jobLogGeneration++;
   jobLogText = '';
+  jobLogJob = null;
+  for (const id of ['jobLogQuery','jobLogLevel','jobLogPhase']) $('#'+id).value = '';
+  $('#jobLogMatchCount').textContent = '';
   $('#logJobId').textContent = jobId;
   $('#logPanel').classList.remove('hidden');
   updateModalScrollLock();
@@ -28,14 +46,13 @@ async function pollLog() {
     const r = await api(`/api/jobs/${jobId}/log`);
     if (activeLogJob !== jobId || jobLogGeneration !== generation) return;
     jobLogText = r.log || '';
-    const c = $('#logContent');
-    const previousScroll = c.scrollTop;
-    c.textContent = jobLogText || '(暂无日志)';
-    c.scrollTop = $('#jobLogFollow').checked ? c.scrollHeight : previousScroll;
+    jobLogJob = r.job || null;
+    renderJobLog();
     $('#btnCopyJobLog').disabled = !jobLogText;
     $('#btnDownloadJobLog').disabled = !jobLogText;
-    const finished = r.job && ['success','failed','stopped','cancelled'].includes(r.job.status);
-    $('#jobLogStatus').textContent = finished ? '任务已结束' : '每 5 秒刷新';
+    const finished = r.job && ['success','failed','stopped','cancelled','blocked','disabled','partial_success','already_registered'].includes(r.job.status);
+    const explanation = r.job?.status_message || '';
+    $('#jobLogStatus').textContent = finished ? ('任务已结束' + (explanation ? ' · ' + explanation : '')) : (explanation || '每 5 秒刷新');
     if (finished) clearInterval(logTimer);
   } catch (e) {
     if (activeLogJob === jobId && jobLogGeneration === generation) {
@@ -45,6 +62,16 @@ async function pollLog() {
     if (jobLogPending === generation) jobLogPending = null;
   }
 }
+
+for (const id of ['jobLogQuery','jobLogLevel','jobLogPhase']) {
+  $('#'+id).addEventListener(id === 'jobLogQuery' ? 'input' : 'change', renderJobLog);
+}
+$('#btnJobLogVisual').addEventListener('click', () => {
+  const id = activeLogJob;
+  if (id == null || typeof openWorkspaceProgress !== 'function') return;
+  closeLogModal();
+  openWorkspaceProgress(id);
+});
 
 $('#btnCopyJobLog').addEventListener('click', () => copyText(jobLogText));
 $('#btnDownloadJobLog').addEventListener('click', () => {

@@ -32,6 +32,7 @@ class GPTMailClientTests(unittest.TestCase):
             headers={"Accept": "application/json", "X-API-Key": "key-123"},
             params=None,
             timeout=20,
+            proxies={"http": "", "https": "", "all": ""},
         )
 
     @patch("core.gptmail_client.time.sleep")

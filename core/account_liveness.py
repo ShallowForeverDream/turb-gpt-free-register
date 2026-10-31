@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """已注册账号查活：优先复用已有 AT 预热后走 reauth OTP，成功刷新 AT 即视为正常。"""
 from core.workflow_driver import unified_workflow
+from core.account_session import session_cookie_token
 import logging
 from core.proxy_utils import mask_proxy_url
 import json
@@ -34,6 +35,7 @@ from core.account_export import (
     follow_oauth_callback,
 )
 from core.email_provider import wait_for_otp
+from core.imap_mail_client import ImapOtpTimeout
 
 logger = logging.getLogger(__name__)
 _LOG_DIR = Path(__file__).resolve().parent.parent / "注册日志"
@@ -93,6 +95,10 @@ _SESSION_FINGERPRINT_KEYS = {
 
 
 def _is_retryable_network_error(exc: BaseException) -> bool:
+    if isinstance(exc, ImapOtpTimeout):
+        # The three-round mail budget is handled by the OTP loop; never start
+        # another authentication flow just because those rounds were exhausted.
+        return False
     if isinstance(exc, AccountUnusableError) or _access_refusal_status(exc):
         return False
     text = str(exc or "").lower()
@@ -562,6 +568,7 @@ def _validate_reauth_with_retry(
 ) -> str:
     """提交 reauth OTP；验证码错误时重新发送并重新取码。"""
     current_otp: str | None = None
+    rejected_codes = set()
     last_exc: Exception | None = None
     for attempt in range(1, max_otp_attempts + 1):
         try:
@@ -571,6 +578,7 @@ def _validate_reauth_with_retry(
                     email,
                     after_ts=otp_after_ts,
                     email_source=email_source,
+                    **({"exclude_codes": rejected_codes} if rejected_codes else {}),
                 )
             human_delay("otp_input")
             continue_url = _validate_reauth_otp(session, current_otp)
@@ -592,7 +600,7 @@ def _validate_reauth_with_retry(
             status = _exception_status_code(exc)
             # reauth validate 的 403 可能是 Cloudflare/出口拦截；不要在同一已熔断
             # 会话上反复发送 OTP，交给上层的直连兜底处理。
-            retryable_otp = status in (400, 401, 422)
+            retryable_otp = isinstance(exc, ImapOtpTimeout) or status in (400, 401, 422)
             if attempt >= max_otp_attempts or not retryable_otp:
                 raise
             logger.warning(
@@ -601,6 +609,8 @@ def _validate_reauth_with_retry(
                 max_otp_attempts,
                 str(exc)[:180],
             )
+            if current_otp:
+                rejected_codes.add(current_otp)
             send_email_otp(session)
             otp_after_ts = time.time()
             current_otp = None
@@ -623,6 +633,10 @@ def _login_via_reauth(
     if dead_code:
         raise AccountUnusableError(f"账号已废弃（{dead_code}）", error_code=dead_code)
     human_delay("navigate")
+    if urlsplit(str(final_url or "")).path.rstrip("/") == "/email-verification":
+        otp_after_ts = time.time()
+        send_email_otp(session)
+        logger.info("[查活] 已显式触发重认证邮箱 OTP 发送")
     logger.info("[查活] 已跟随 reauth authorize URL，开始等待邮箱 OTP")
     continue_url = _validate_reauth_with_retry(
         session,
@@ -813,6 +827,7 @@ def _validate_with_retry(
     email_source: str | None = None,
 ) -> dict:
     current_otp = None
+    rejected_codes = set()
     last_exc: Exception | None = None
     for attempt in range(1, max_otp_attempts + 1):
         try:
@@ -822,6 +837,7 @@ def _validate_with_retry(
                     email,
                     after_ts=otp_after_ts,
                     email_source=email_source,
+                    **({"exclude_codes": rejected_codes} if rejected_codes else {}),
                 )
             result = validate_email_otp(session, current_otp, sentinel_header=None, so_header=None)
             return result
@@ -830,6 +846,7 @@ def _validate_with_retry(
             if attempt >= max_otp_attempts:
                 break
             logger.warning("[查活] OTP 无效/过期，重新发送后再取：%s", str(exc)[:180])
+            rejected_codes.add(current_otp)
             send_email_otp(session)
             # 以“重新发送请求完成后”为新基准，避免刚刚失败的上一封旧码再次被 after 容忍窗口命中。
             otp_after_ts = time.time()
@@ -837,10 +854,14 @@ def _validate_with_retry(
             time.sleep(1)
         except Exception as exc:
             # 提交 OTP 后的网络抖动（连接断开/超时/代理波动）：同一会话重发验证码再验证一次。
-            if attempt >= max_otp_attempts or not _is_retryable_network_error(exc):
+            if getattr(exc, "retryable", True) is False:
+                raise
+            if attempt >= max_otp_attempts or not (isinstance(exc, ImapOtpTimeout) or _is_retryable_network_error(exc)):
                 raise
             last_exc = exc
             logger.warning("[查活] OTP 验证网络抖动，重新发送后再取（%s/%s）：%s", attempt, max_otp_attempts, str(exc)[:180])
+            if current_otp:
+                rejected_codes.add(current_otp)
             try:
                 send_email_otp(session)
             except Exception:
@@ -916,7 +937,8 @@ def check_account_liveness(
                             "workspace_selected": getattr(browser, "_live_workspace_selected", None),
                             "fingerprint": browser.fingerprint_summary(),
                             "fingerprint_text": browser.fingerprint_summary_text(),
-                            "proxy_used": browser.proxy, "driver": driver_kind}
+                            "proxy_used": browser.proxy, "driver": driver_kind,
+                            "session_token": session_cookie_token(browser)}
             except BrowserActionRequired as exc:
                 return {"ok": False, "status": "action_required", "checked_at": checked_at,
                         "stage": "browser_login", "error": str(exc), "driver": driver_kind}
@@ -992,6 +1014,7 @@ def check_account_liveness(
             "checked_at": checked_at,
             "access_token": access_token,
             "session": session_info,
+            "session_token": session_cookie_token(session),
             "workspace_selected": getattr(session, "_live_workspace_selected", None),
             "proxy_used": session.proxy or None,
             "fingerprint": fp,
@@ -1014,12 +1037,14 @@ def check_account_liveness(
     except AccountUnusableError as exc:
         code = getattr(exc, "error_code", "") or detect_account_unusable_text(str(exc)) or "account_deactivated"
         logger.warning("[查活] 已废号：%s %s", email, code)
-        return {"ok": False, "status": "deactivated", "checked_at": checked_at, "error": code}
+        return {"ok": False, "status": "deactivated", "checked_at": checked_at,
+                "error": code, "error_code": code, "stage": "authentication"}
     except Exception as exc:
         code = detect_account_unusable_text(_exception_response_text(exc)) or detect_account_unusable_text(str(exc))
         if code:
             logger.warning("[查活] 已废号：%s %s", email, code)
-            return {"ok": False, "status": "deactivated", "checked_at": checked_at, "error": code}
+            return {"ok": False, "status": "deactivated", "checked_at": checked_at,
+                    "error": code, "error_code": code, "stage": "authentication"}
         refusal = _access_refusal_status(exc)
         if refusal:
             message = f"认证请求被拒绝或限流（HTTP {refusal}），已停止；账号状态未判定。请通过正常网页登录处理。"

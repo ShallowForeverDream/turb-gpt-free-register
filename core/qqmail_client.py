@@ -20,6 +20,7 @@ from pathlib import Path
 
 from config import email as _email_cfg
 from core.otp_utils import looks_like_openai_email, extract_otp
+from core.mail_traffic import track_imap_connection
 
 logger = logging.getLogger(__name__)
 
@@ -167,6 +168,7 @@ def _connect_imap() -> imaplib.IMAP4_SSL:
 
     try:
         mail = imaplib.IMAP4_SSL(server, port)
+        track_imap_connection(mail)
         mail.login(qq_email, password)
         mail.select("INBOX")
         return mail

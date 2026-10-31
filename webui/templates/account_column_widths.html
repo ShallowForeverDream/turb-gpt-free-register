@@ -1,0 +1,17 @@
+function tableColumnWidthStorageKey(prefix, key) {
+  const previous=`${prefix}:${key}`;
+  if(key!=='accounts')return previous;
+  const current=`${prefix}:accounts-columns16-v1`;
+  try {
+    if(localStorage.getItem(current)===null) {
+      const old=JSON.parse(localStorage.getItem(previous)||'{}'), migrated={};
+      const positions=[0,1,3,5,6,7,8,9,10,11,12,13,14,15,16];
+      positions.forEach((index,oldIndex)=>{
+        const width=Number(old[oldIndex]);
+        if(Number.isFinite(width)&&width>=48)migrated[index]=width;
+      });
+      localStorage.setItem(current,JSON.stringify(migrated));
+    }
+  } catch(error) {}
+  return current;
+}

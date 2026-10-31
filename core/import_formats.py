@@ -16,6 +16,31 @@ def valid_email(value: str) -> bool:
     return bool(_EMAIL.fullmatch(str(value or "").strip()))
 
 
+def normalize_generic_api_url(value: object) -> str:
+    """Accept exported host/path links without rewriting signed query strings."""
+    url = str(value or "").strip()
+    if url.startswith("-"):
+        candidate = url.lstrip("-")
+        if candidate.lower().startswith(("http://", "https://")):
+            url = candidate
+    if url.startswith("//"):
+        return "https:" + url
+    if (not url or "://" in url or url.startswith(("/", "?", "#"))
+            or re.match(r"^[a-z][a-z0-9+.-]*:(?![0-9]+(?:[/?#]|$))", url, re.I)):
+        return url
+    try:
+        parsed = urlparse("https://" + url)
+        host = parsed.hostname or ""
+        port = parsed.port
+    except ValueError:
+        return url
+    if (host == "localhost" or "." in host or ":" in host) and not any(
+        ch.isspace() for ch in parsed.netloc
+    ) and (port is None or 1 <= port <= 65535):
+        return "https://" + url
+    return url
+
+
 def _registered_account_from_parts(parts: list[str]) -> dict | None:
     if len(parts) < 4 or not valid_email(parts[0]):
         return None

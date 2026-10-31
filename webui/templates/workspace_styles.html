@@ -1,0 +1,108 @@
+<style>
+main>div{min-width:0}
+.workspace-toolbar{padding:12px 18px;background:var(--surface,#fff);border-bottom:1px solid var(--line,#e5e7eb)}
+.workspace-row{display:flex;align-items:center;flex-wrap:wrap;gap:14px 24px;padding:9px 0}
+.workspace-row+.workspace-row{border-top:1px solid var(--line,#eef0f4)}
+.workspace-group{display:flex;align-items:center;flex-wrap:wrap;gap:8px;min-width:0}
+.workspace-group>strong{font-size:12px;color:var(--muted,#64748b);font-weight:600;margin-right:2px}
+.workspace-group input[type=number]{width:70px;min-width:0;height:34px}
+.workspace-account-query>input{width:240px;max-width:100%;height:34px;border:1px solid var(--line,#dbe1ea);border-radius:6px;padding:0 10px}
+.workspace-toolbar .queue-concurrency-hint{max-width:220px;font-size:11px}
+.workspace-toolbar .el-input-number{width:90px}
+.workspace-toolbar button,.workspace-dialog button,.workspace-history button{cursor:pointer}
+.workspace-toolbar .jobs-tb-btn,.workspace-dialog .jobs-tb-btn,.workspace-history .jobs-tb-btn,.workspace-registration>.jobs-tb-btn{display:inline-flex;align-items:center;justify-content:center;min-height:34px;padding:6px 12px;border:1px solid var(--line,#dbe1ea);border-radius:6px;background:var(--surface,#fff);color:var(--text,#243047);font-family:inherit;font-size:13px;font-weight:500;line-height:1.4;white-space:nowrap}
+.workspace-toolbar .jobs-tb-btn:not(:disabled):hover,.workspace-dialog .jobs-tb-btn:hover,.workspace-history .jobs-tb-btn:not(:disabled):hover{border-color:#4878ed;color:#315ae9;background:#f2f6ff}
+.workspace-toolbar .jobs-tb-btn:disabled,.workspace-dialog .jobs-tb-btn:disabled,.workspace-history .jobs-tb-btn:disabled{opacity:.45;cursor:not-allowed}
+.workspace-toolbar input[type=number]{border:1px solid var(--line,#dbe1ea);border-radius:6px;padding:0 8px;background:var(--surface,#fff);color:inherit}
+.workspace-dialog{color:var(--text,#152238);background:var(--surface,#fff);border:1px solid var(--line,#dbe1ea);border-radius:12px;width:min(680px,92vw);max-height:88vh;padding:22px;box-shadow:0 20px 70px #0003}
+.workspace-dialog::backdrop{background:#11182766}
+.workspace-dialog header,.workspace-dialog footer{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.workspace-dialog header{margin-bottom:16px}.workspace-dialog footer{justify-content:flex-end;margin-top:18px}
+.workspace-dialog h2{margin:0;font-size:19px}.workspace-dialog p{font-size:13px;line-height:1.8;margin:12px 0}
+.workspace-dialog header button{border:0;background:none;font-size:24px;color:inherit}
+.workspace-progress-dialog{width:min(760px,94vw)}
+.workspace-progress-summary{padding:12px 14px;border-radius:9px;background:#eff5ff;color:#2a4f9b;font-weight:600;font-size:14px}
+.workspace-progress-summary[data-state=failed]{background:#fff1f1;color:#aa4343}
+.workspace-progress-summary[data-state=success]{background:#e9f9f0;color:#14784d}
+.workspace-progress-steps{display:grid;gap:8px;margin:16px 0;padding:0;list-style:none}
+.workspace-progress-steps li{display:flex;align-items:center;gap:12px;padding:10px 12px;border-radius:9px;border:1px solid #e2e8f2;background:#f7f9fc;color:#667589;font-size:13px}
+.workspace-progress-steps li::before{content:'○';font-size:17px;line-height:1}
+.workspace-progress-steps li strong{color:#26374d;font-size:13px;margin-right:auto}
+.workspace-progress-steps li.is-done{border-color:#b6e3d2;background:#effbf6;color:#247358}
+.workspace-progress-steps li.is-done::before{content:'✓';color:#118c63}
+.workspace-progress-steps li.is-current{border-color:#a9c7fa;background:#edf4ff;color:#315fb3}
+.workspace-progress-steps li.is-current::before{content:'●';color:#326ee6}
+.workspace-progress-steps li.is-stopped{border-color:#efc1c1;background:#fff4f4;color:#a54646}
+.workspace-progress-steps li.is-stopped::before{content:'!';font-weight:700;color:#bd4141}
+.workspace-progress-note{margin:12px 0 0;color:#667589;overflow-wrap:anywhere}
+  .workspace-progress-dialog{max-height:90vh;overflow-y:auto}
+  .workspace-progress-group{margin:16px 0;padding:14px;border:1px solid var(--line,#dbe1ea);border-radius:10px}
+  .workspace-progress-group summary{display:flex;align-items:center;gap:12px;font-size:15px;font-weight:650;cursor:pointer;list-style:none}
+  .workspace-progress-group summary::before{content:'▸';color:#738398}
+  .workspace-progress-group[open] summary::before{content:'▾'}
+  .workspace-progress-group summary span{font-size:12px;color:var(--muted,#64748b);font-weight:500;margin-left:auto}
+  .workspace-progress-group[data-state=success]{border-color:#b6e3d2}
+  .workspace-progress-group[data-state=failed]{border-color:#efc1c1}
+  .workspace-progress-group[data-state=skipped]{background:#f7f8fa;color:#788393}
+  .workspace-progress-steps li.is-skipped{background:#f3f4f6;color:#87909d;border-style:dashed}
+  .workspace-progress-steps li.is-skipped::before{content:'−'}
+  .history-filters{display:flex;align-items:center;flex-wrap:wrap;gap:10px;margin:12px 0 18px}
+  .history-filters label{display:flex;align-items:center;gap:6px;margin:0;font-size:13px}
+  .history-filters input,.history-filters select,.job-log-toolbar select,.job-log-toolbar input[type=search]{width:auto;max-width:100%;border:1px solid var(--line,#dbe1ea);border-radius:6px;padding:6px 8px;min-height:32px;background:var(--surface,#fff);color:inherit}
+  .job-log-toolbar label{display:inline-flex;align-items:center;gap:4px;width:auto;margin:0}
+.workspace-fields{display:flex;flex-wrap:wrap;gap:8px 18px;padding:12px;background:var(--bg,#f6f8fc);border-radius:8px}
+.workspace-fields label{display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer}
+.workspace-dialog textarea{display:block;width:100%;min-height:140px;box-sizing:border-box;margin:10px 0;padding:10px;border:1px solid var(--line,#dbe1ea);border-radius:6px;color:inherit;background:var(--surface,#fff)}
+.workspace-dialog input[type=file]{max-width:100%;display:block;margin:10px 0}
+.workspace-dialog [role=status]{display:block;margin:12px 0;font-size:13px;white-space:pre-wrap}
+.workspace-history,.workspace-placeholder,.workspace-registration{padding:18px;background:var(--surface,#fff);border:1px solid var(--line,#e5e7eb);border-radius:10px;margin-bottom:16px;min-width:0;max-width:100%;box-sizing:border-box}
+.workspace-history header{display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:14px}.workspace-history h1{font-size:21px;margin:0}
+.workspace-history .table-wrap{overflow-x:auto;min-width:0;max-width:100%}.workspace-history table{width:100%;min-width:900px;table-layout:fixed;border-collapse:collapse}
+.workspace-history th,.workspace-history td{padding:12px 10px;text-align:left;border-bottom:1px solid var(--line,#e5e7eb);font-size:13px;overflow-wrap:anywhere}
+.workspace-history th{position:relative}
+.workspace-history{background:linear-gradient(135deg,#f8fbff 0%,#fff 26%);box-shadow:0 8px 28px #1c3e7410}
+.workspace-history header h1{color:#244a93}
+.workspace-history tbody tr:nth-child(even){background:#f7f9fd}
+.workspace-history tbody tr:hover{background:#edf4ff}
+.workspace-history tr[data-state=success]{background:#f0fbf6}
+.workspace-history tr[data-state=running]{background:#edf5ff}
+.workspace-history tr[data-state=failed],.workspace-history tr[data-state=blocked]{background:#fff4f3}
+.workspace-history tr[data-state=pending]{background:#fff9ee}
+.workspace-history .history-state{display:inline-flex;align-items:center;border-radius:999px;padding:5px 10px;font-weight:650;background:#eef1f6;color:#53647a}
+.workspace-history tr[data-state=success] .history-state{background:#d6f4e5;color:#13764f}
+.workspace-history tr[data-state=running] .history-state{background:#dceafe;color:#245cb2}
+.workspace-history tr[data-state=failed] .history-state,.workspace-history tr[data-state=blocked] .history-state{background:#fde1dd;color:#aa3e3e}
+.workspace-history tr[data-state=pending] .history-state{background:#ffefcc;color:#915e1b}
+.workspace-history .history-email{font-weight:550;color:#31496b}
+.workspace-history [data-history-log]{border-color:#bbd2ff;color:#315fae;background:#f0f5ff}
+.workspace-history .history-pager{display:flex;justify-content:flex-end;align-items:center;gap:12px;margin-top:14px}
+.workspace-placeholder h1{font-size:22px}.workspace-placeholder p{color:var(--muted,#64748b);margin-top:10px}
+.workspace-registration>summary{cursor:pointer;font-weight:600;padding:4px 0 12px}
+.workspace-registration .register-title{font-size:20px;margin-bottom:12px}
+.workspace-registration .stats{margin:0 0 16px}
+.workspace-registration .jobs-toolbar-v2{padding:10px 0}.workspace-registration .jobs-panel-v2{border:0}
+.workspace-registration .queue-concurrency-hint{display:none!important}
+.workspace-toolbar{border:1px solid #e1e9f5;border-radius:12px;box-shadow:0 7px 24px #2d4a8011;background:linear-gradient(125deg,#fbfdff,#fff 32%)}
+.workspace-row{padding:13px 1px;gap:12px 20px}
+.workspace-row+.workspace-row{border-top:1px dashed #dce5f2}
+.workspace-group{gap:7px;padding:3px 0}
+.workspace-group>strong{border-radius:6px;padding:5px 8px;background:#eaf1ff;color:#315ca4;letter-spacing:.02em}
+.workspace-row:first-child .workspace-group:nth-child(2)>strong{background:#f1eaff;color:#7850a3}
+.workspace-row:first-child .workspace-group:nth-child(3)>strong{background:#e8f7f5;color:#227d77}
+.workspace-group:focus-within{outline:1px solid #b7cdf7;border-radius:6px}
+.workspace-toolbar .jobs-tb-btn:not(:disabled):active{transform:translateY(1px)}
+.workspace-toolbar #workspaceArchiveToggle{background:#eef3ff;border-color:#cbd9f7;color:#315aab}
+.workspace-toolbar #openAccountImport{background:#eaf8f1;border-color:#b8dfcb;color:#177049}
+.workspace-toolbar #workspaceCodexSms{background:#f4edff;border-color:#dbc7f5;color:#7548a2}
+.accounts-table-v2 col:nth-child(2),.accounts-table-v2 col:nth-child(3),.accounts-table-v2 th:nth-child(2),.accounts-table-v2 th:nth-child(3),.accounts-table-v2 td:nth-child(2),.accounts-table-v2 td:nth-child(3),
+.accounts-table col:nth-child(2),.accounts-table col:nth-child(3),.accounts-table th:nth-child(2),.accounts-table th:nth-child(3),.accounts-table td:nth-child(2),.accounts-table td:nth-child(3){display:none}
+.workspace-legacy-log{position:fixed;inset:7vh 5vw;z-index:6000;padding:20px;background:var(--surface,#fff);border:1px solid var(--line);box-shadow:0 0 0 100vmax #0005;border-radius:12px;overflow:auto}
+.workspace-legacy-log .log{max-height:65vh;overflow:auto}
+body.workspace-legacy nav{position:fixed;left:0;top:0;bottom:0;width:155px;z-index:100;background:var(--surface,#fff);border-right:1px solid var(--line);padding:0}
+body.workspace-legacy nav .nav-inner{display:flex;flex-direction:column;gap:8px;padding:24px 12px;width:100%;box-sizing:border-box}
+body.workspace-legacy nav button{text-align:left;width:100%;border-radius:7px;padding:12px 10px;white-space:nowrap;border:0;background:transparent;color:#475569;font-size:14px;line-height:1.4}
+body.workspace-legacy nav button.active{background:#edf2ff;color:#315ae9}
+body.workspace-legacy>header,body.workspace-legacy>main{margin-left:155px}
+body.workspace-legacy>main{width:calc(100% - 179px);margin-left:167px;margin-right:12px;max-width:none}
+@media(max-width:760px){.workspace-row{gap:12px}.workspace-group{gap:6px}.workspace-toolbar{padding:10px}.workspace-toolbar .queue-concurrency-hint{display:none}body.workspace-legacy nav{width:110px}body.workspace-legacy>header{margin-left:110px}body.workspace-legacy>main{width:calc(100% - 134px);margin-left:122px}}
+</style>

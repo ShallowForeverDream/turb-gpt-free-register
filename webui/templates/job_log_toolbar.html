@@ -1,6 +1,11 @@
 <div class="job-log-toolbar" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px;">
   <button type="button" class="btn" id="btnCopyJobLog" disabled>复制日志</button>
   <button type="button" class="btn" id="btnDownloadJobLog" disabled>下载日志</button>
+  <button type="button" class="btn" id="btnJobLogVisual">返回可视化日志</button>
+  <label>级别 <select id="jobLogLevel"><option value="">全部</option><option>INFO</option><option>WARNING</option><option>ERROR</option><option>DEBUG</option></select></label>
+  <label>流程 <select id="jobLogPhase"><option value="">全部</option><option value="registration">注册</option><option value="twofa">2FA</option><option value="password">GPT 密码</option><option value="codex">Codex 授权 / 接码</option></select></label>
+  <input id="jobLogQuery" type="search" placeholder="筛选日志关键词" aria-label="筛选日志关键词" style="width:180px;">
+  <span id="jobLogMatchCount" class="muted"></span>
   <label style="display:flex;align-items:center;gap:6px;width:auto;margin:0;white-space:nowrap;"><input type="checkbox" id="jobLogFollow" style="width:16px;height:16px;min-height:0;margin:0;padding:0;flex:none;" checked>跟随最新日志</label>
   <span id="jobLogStatus" role="status" style="font-size:12px;">加载中…</span>
 </div>

@@ -84,7 +84,9 @@ class OpenAIRegistrationFlowTests(unittest.TestCase):
                 return _Response(url=url)
 
         session = Session()
-        openai_auth.network_preflight(session)
+        # Exercise this fixture's budget, not the developer machine's .env.
+        with patch.object(openai_auth._protocol_cfg, "OPENAI_PREFLIGHT_TIMEOUT", 12.0):
+            openai_auth.network_preflight(session)
 
         self.assertEqual(session.header_args, [("", {})])
         self.assertEqual(session.requests[0][0], "https://chatgpt.com/auth/login")
@@ -151,7 +153,8 @@ class OpenAIRegistrationFlowTests(unittest.TestCase):
     def test_bundled_sentinel_sdk_matches_captured_20260810913b_source(self):
         sdk_path = Path(__file__).resolve().parents[1] / "sentinel" / "sdk.js"
         self.assertEqual(
-            hashlib.sha256(sdk_path.read_bytes()).hexdigest(),
+            # Git can check out the same captured source with CRLF on Windows.
+            hashlib.sha256(sdk_path.read_bytes().replace(b"\r\n", b"\n")).hexdigest(),
             "49d0284bf3eea8a59ebcad0e6b5dd8a53edd4c72606f15bbf51ebe5610a88efd",
         )
 

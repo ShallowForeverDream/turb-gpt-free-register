@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import unittest
+from types import SimpleNamespace
 from unittest.mock import Mock, call, patch
 
 import core.account_export as account_export
@@ -18,6 +19,39 @@ class _CircuitSession:
 
 
 class AccountExportTwofaTests(unittest.TestCase):
+    def test_activation_refresh_replaces_pre_enrollment_session(self):
+        session = SimpleNamespace(_twofa_session_info={"accessToken": "before"})
+        latest = {"accessToken": "after", "user": {"mfa": True}}
+        with patch.object(account_export, "fetch_session", return_value=latest):
+            account_export._refresh_activated_session(session)
+        self.assertIs(session._twofa_session_info, latest)
+        self.assertTrue(session._twofa_session_refresh_ok)
+
+    def test_activated_secret_is_not_lost_when_session_refresh_fails(self):
+        session = SimpleNamespace(_twofa_session_info={"accessToken": "reauth"})
+        with patch.object(account_export, "_trigger_reauth_with_retry", return_value="https://example.test/auth"), \
+             patch.object(account_export, "_follow_reauth_with_retry", return_value="https://auth.openai.com/email-verification"), \
+             patch("core.openai_auth.send_email_otp"), \
+             patch.object(account_export, "human_delay"), \
+             patch.object(account_export, "_validate_reauth_otp_with_retry", return_value="https://example.test/callback"), \
+             patch.object(account_export, "_exchange_new_token", return_value="reauth"), \
+             patch.object(account_export, "_enroll_totp", return_value=("JBSWY3DPEHPK3PXP", "fixture")), \
+             patch.object(account_export, "_activate_totp") as activate, \
+             patch.object(account_export, "fetch_session", side_effect=RuntimeError("fixture network error")):
+            secret = account_export.setup_2fa(session, "fixture@example.test", otp_code="123456")
+        activate.assert_called_once()
+        self.assertEqual(secret, "JBSWY3DPEHPK3PXP")
+        self.assertEqual(session._twofa_session_info["accessToken"], "reauth")
+        self.assertFalse(session._twofa_session_refresh_ok)
+
+    def test_token_logging_does_not_emit_bearer(self):
+        token = "fixture-sensitive-token"
+        with patch.object(account_export.logger, "info") as logged:
+            account_export.log_token_state(token, "fixture")
+        text = repr(logged.call_args)
+        self.assertNotIn(token, text)
+        self.assertIn("hash=", text)
+
     def test_reauth_tls_reset_reopens_transport_before_retry(self):
         session = _CircuitSession()
         session.reopen_transport = Mock()

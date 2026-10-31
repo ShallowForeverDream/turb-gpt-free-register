@@ -21,6 +21,9 @@ import json
 import logging
 import threading
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar
+from decimal import Decimal, InvalidOperation
 from urllib.parse import urljoin
 
 from curl_cffi.requests import Session as CurlSession
@@ -39,6 +42,8 @@ _MIN_CANCEL_DELAY = 125
 # 记录每个 activation_id 的取号时间，供 cancel() 判断是否要等。
 # 用模块级 dict 而不是改 acquire_number 返回值，保持向后兼容。
 _ACQUIRED_AT: dict[str, float] = {}
+SMSBOWER_SELECTION_POLICY = "single_request_no_filter_relaxation"
+_PURCHASE_BUDGET = ContextVar("sms_purchase_budget", default=None)
 
 
 class SmsProviderError(RuntimeError):
@@ -55,6 +60,26 @@ class SmsNoBalanceError(SmsProviderError):
 
 class SmsCodeTimeout(SmsProviderError):
     """单个号等短信超时（OpenAI 没发或没到达）。"""
+
+
+class SmsPurchaseUncertainError(SmsProviderError):
+    """The purchase may have reached the provider; never automatically replay it."""
+
+
+class SmsPurchaseLimitError(SmsProviderError):
+    """A bounded test already used its permitted purchase attempt."""
+
+
+@contextmanager
+def purchase_budget(limit: int = 1):
+    if type(limit) is not int or limit < 1:
+        raise ValueError("购号尝试上限必须为正整数")
+    state = {"limit": limit, "attempts": 0}
+    token = _PURCHASE_BUDGET.set(state)
+    try:
+        yield state
+    finally:
+        _PURCHASE_BUDGET.reset(token)
 
 
 def _http() -> CurlSession:
@@ -108,10 +133,17 @@ def _request_smsbower(http: CurlSession, params: dict) -> str:
     base = str(getattr(_cfg, "SMSBOWER_API_BASE", "") or "").strip()
     if not base:
         raise SmsProviderError("SMSBOWER_API_BASE 不能为空")
-    resp = http.get(base, params={"api_key": api_key, **params})
+    purchasing = params.get("action") in {"getNumber", "getNumberV2"}
+    try:
+        resp = http.get(base, params={"api_key": api_key, **params}, allow_redirects=False)
+    except Exception:
+        if purchasing:
+            raise SmsPurchaseUncertainError("SMSBower 购号请求未确认；可能已下单，请核对供应商订单，不自动重试") from None
+        raise SmsProviderError("SMSBower 请求失败，不记录密钥、地址或响应") from None
     text = (resp.text or "").strip()
     if resp.status_code != 200:
-        raise SmsProviderError(f"SMSBower HTTP {resp.status_code}: {text[:200]}")
+        error = SmsPurchaseUncertainError if purchasing else SmsProviderError
+        raise error(f"SMSBower HTTP {resp.status_code}；已停止，不记录响应正文或重放购号请求")
     if text in ("BAD_KEY", "BAD_ACTION", "BAD_SERVICE", "WRONG_SERVICE", "BAD_STATUS", "NO_ACTIVATION"):
         if text == "BAD_KEY":
             raise SmsProviderError("SMSBower API key 无效（BAD_KEY）")
@@ -125,7 +157,7 @@ def _request_smsbower(http: CurlSession, params: dict) -> str:
             raise SmsNoBalanceError(f"SMSBower 余额不足（{text}），请充值")
         raise SmsNoNumbersError("SMSBower 暂无可用号码（NO_NUMBERS）")
     if text.startswith("The service is prohibited"):
-        raise SmsProviderError(f"SMSBower 该服务被禁售：{text}")
+        raise SmsProviderError("SMSBower 该服务被禁售，已停止")
     return text
 
 
@@ -148,37 +180,28 @@ def _smsbower_number_params(service: str | None, country: str | None) -> dict:
         value = str(value or "").strip()
         if value:
             params[key] = value
+    try:
+        for key in ("minPrice", "maxPrice"):
+            if key in params and (not Decimal(params[key]).is_finite() or Decimal(params[key]) <= 0):
+                raise ValueError("SMSBower 价格必须为正数")
+        if all(key in params for key in ("minPrice", "maxPrice")) and Decimal(params["minPrice"]) > Decimal(params["maxPrice"]):
+            raise ValueError("SMSBower 最低价格不能大于最高价格")
+    except InvalidOperation:
+        raise ValueError("SMSBower 价格格式不合法，未下单") from None
     return params
 
 
 def _request_smsbower_number(http: CurlSession, params: dict) -> tuple[dict, str]:
-    """按兼容性顺序取号，筛选无库存时放宽供应商条件。"""
-    candidates: list[dict] = [dict(params)]
-    if params.get("action") == "getNumberV2":
-        candidates.append({**params, "action": "getNumber"})
-    if params.get("providerIds"):
-        without_provider = {key: value for key, value in params.items() if key != "providerIds"}
-        candidates.append(without_provider)
-        if params.get("action") == "getNumberV2":
-            candidates.append({**without_provider, "action": "getNumber"})
-    unique = []
-    for candidate in candidates:
-        if candidate not in unique:
-            unique.append(candidate)
-    for index, candidate in enumerate(unique):
-        try:
-            return candidate, _request_smsbower(http, candidate)
-        except SmsNoNumbersError:
-            if index + 1 < len(unique):
-                logger.warning("[SMSBower] 取号筛选无库存，放宽条件重试：action=%s providerIds=%s", candidate.get("action"), candidate.get("providerIds", "-"))
-                continue
-            raise
-        except SmsProviderError as exc:
-            if candidate.get("action") == "getNumberV2" and "BAD_ACTION" in str(exc) and index + 1 < len(unique):
-                logger.warning("[SMSBower] getNumberV2 不被当前接口支持，回退兼容接口")
-                continue
-            raise
-    raise SmsProviderError("SMSBower 没有可用的取号请求方案")
+    """One request with the exact selected filters; no stock or API fallbacks."""
+    budget = _PURCHASE_BUDGET.get()
+    if budget is not None:
+        if budget["attempts"] >= budget["limit"]:
+            raise SmsPurchaseLimitError("本次购号尝试额度已用完，已停止；不会再购号")
+        # Consume before I/O: a timeout is not permission to purchase again.
+        budget["attempts"] += 1
+    logger.info("[SMSBower] 严格取号：service=%s country=%s providerIds=%s maxPrice=%s；仅请求一次，无库存不放宽",
+                params.get("service"), params.get("country"), params.get("providerIds", "未指定"), params.get("maxPrice", "未指定"))
+    return params, _request_smsbower(http, params)
 
 
 def _l_url(path: str) -> str:
@@ -417,12 +440,12 @@ def acquire_number(
                     if activation_id and phone:
                         _ACQUIRED_AT[activation_id] = time.time()
                         return activation_id, phone
-                raise SmsProviderError(f"SMSBower getNumberV2 响应格式异常：{text[:200]}")
+                raise SmsPurchaseUncertainError("SMSBower getNumberV2 结果未确认；不自动重购，请核对供应商订单")
             if not text.startswith("ACCESS_NUMBER:"):
-                raise SmsProviderError(f"SMSBower getNumber 非预期响应：{text[:200]}")
+                raise SmsPurchaseUncertainError("SMSBower getNumber 结果未确认；不自动重购，请核对供应商订单")
             parts = text.split(":", 2)
-            if len(parts) < 3:
-                raise SmsProviderError(f"SMSBower getNumber 响应格式异常：{text[:200]}")
+            if len(parts) < 3 or not parts[1].strip() or not parts[2].strip():
+                raise SmsPurchaseUncertainError("SMSBower getNumber 响应缺少激活信息；不自动重购")
             activation_id, phone = parts[1].strip(), parts[2].strip()
             _ACQUIRED_AT[activation_id] = time.time()
             return activation_id, phone
@@ -589,9 +612,16 @@ def wait_for_sms_code(
             if provider == "smsbower":
                 text = _request_smsbower(http, {"action": "getStatus", "id": activation_id})
                 if text.startswith("STATUS_OK:"):
-                    return text.split(":", 1)[1].strip().strip("'")
+                    code = text.split(":", 1)[1].strip().strip("'")
+                    if not code.isascii() or not code.isdigit() or not 4 <= len(code) <= 8:
+                        raise SmsProviderError("SMSBower 返回无效短信验证码，已停止（不记录验证码）")
+                    logger.info("[SMSBower] 已收到短信验证码（不记录内容）")
+                    return code
                 if text == "STATUS_CANCEL":
                     raise SmsProviderError("SMSBower 激活已被取消（STATUS_CANCEL）")
+                if text not in {"STATUS_WAIT_CODE", "STATUS_WAIT_RESEND"} and not text.startswith("STATUS_WAIT_RETRY:"):
+                    raise SmsProviderError("SMSBower 返回非预期短信状态，已停止（不记录响应正文）")
+                logger.info("[SMSBower] 等待短信中，第 %s 轮，剩余约 %ss", round_no, max(0, int(deadline-time.time())))
                 time.sleep(interval)
                 continue
 
@@ -733,12 +763,20 @@ def cancel(activation_id: str, http: CurlSession | None = None, background: bool
             _ACQUIRED_AT.pop(activation_id, None)
         return
     if _provider() == "smsbower":
+        acquired_at = _ACQUIRED_AT.get(activation_id)
+        if acquired_at is not None:
+            wait = max(0, _MIN_CANCEL_DELAY - (time.time() - acquired_at))
+            if wait:
+                logger.info("[SMSBower] 按平台规则等待约 %.0fs 后取消当前激活；不购买新号", wait)
+                time.sleep(wait)
         try:
-            set_status(activation_id, 8, http=http)
-        except Exception as exc:
-            logger.warning(f"[SMSBower] 释放号码失败（不影响主流程）：{exc}")
-        finally:
+            response = set_status(activation_id, 8, http=http)
+            if response not in {"ACCESS_CANCEL", "STATUS_CANCEL"}:
+                raise SmsProviderError("供应商未确认取消")
+            logger.info("[SMSBower] 当前激活已确认取消")
             _ACQUIRED_AT.pop(activation_id, None)
+        except Exception as exc:
+            logger.warning("[SMSBower] 取消未确认（%s），保留激活记录供人工核验，不自动重购", type(exc).__name__)
         return
 
     if not background:

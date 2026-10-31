@@ -105,6 +105,8 @@ def create_account_session(*, proxy=None, protocol_factory=None, **kwargs):
 def unified_workflow(operation):
     """任务开始后固定驱动，配置热更新只影响后续任务。"""
     from functools import wraps
+    from contextlib import nullcontext
+    from core.account_concurrency import registration_scope
     def decorate(fn):
         @wraps(fn)
         def wrapped(*args, **kwargs):
@@ -112,16 +114,17 @@ def unified_workflow(operation):
             token = _ACTIVE.set(driver)
             logger.info("[统一流程] operation=%s driver=%s", operation, driver)
             try:
-                return fn(*args, **kwargs)
+                with registration_scope() if operation == "registration" else nullcontext():
+                    return fn(*args, **kwargs)
             finally:
                 _ACTIVE.reset(token)
         return wrapped
     return decorate
 
 
-def submit_with_driver(executor, fn, *args, **kwargs):
+def submit_with_driver(executor, fn, *args, _driver=None, **kwargs):
     """提交后台任务时锁定当前统一驱动，避免排队期间热更新配置改变行为。"""
-    driver = require_driver_ready()
+    driver = require_driver_ready(_driver)
     token = _ACTIVE.set(driver)
     try:
         context = copy_context()

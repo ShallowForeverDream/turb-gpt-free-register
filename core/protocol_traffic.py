@@ -35,6 +35,29 @@ def _size(value):
     return max(0, int(value)) if isinstance(value, Real) and not isinstance(value, bool) else None
 
 
+def is_proxy_pool_target(proxy):
+    """Classify the logical target, never the local relay address."""
+    from config import proxy as cfg
+    def identity(value):
+        try:
+            p = urlsplit(str(value or ""))
+            return (p.hostname, p.port, unquote(p.username or ""), unquote(p.password or ""))
+        except ValueError:
+            return None
+    target = identity(proxy)
+    if not target or not target[0]:
+        return False
+    meter = current_traffic()
+    if meter is not None:
+        for alias, dynamic_ip in meter.proxy_route_aliases.items():
+            if identity(alias) == target:
+                return dynamic_ip
+    values = getattr(cfg, "PROXY_POOL", []) or []
+    if isinstance(values, str):
+        values = values.splitlines()
+    return any(identity(value) == target for value in values)
+
+
 class ProtocolTraffic:
     def __init__(self, *, low_traffic: bool, budget_bytes: int):
         self.owner_thread = threading.get_ident()
@@ -50,14 +73,33 @@ class ProtocolTraffic:
         self.skipped = {}
         self.proxy_relays = []
         self.unmetered_sessions = 0
+        self.proxy_roles = {}
+        self.proxy_route_aliases = {}
+        self.direct_upload = self.direct_download = 0
+        self.mail_upload = self.mail_download = self.mail_requests = 0
+        self.mail_estimated = False
 
-    def attach_proxy(self, relay):
+    def attach_proxy(self, relay, *, dynamic_ip=None):
         if relay is None:
             self.unmetered_sessions += 1
         elif relay not in self.proxy_relays:
             self.proxy_relays.append(relay)
+        if relay is not None:
+            self.proxy_roles[id(relay)] = dynamic_ip
 
-    def record(self, url, response=None, *, failed=False):
+    def record_mail_bytes(self, upload=0, download=0, *, request=False, estimated=True):
+        if self.closed:
+            return
+        self.mail_upload += _size(upload) or 0
+        self.mail_download += _size(download) or 0
+        self.mail_requests += int(request)
+        self.mail_estimated = self.mail_estimated or estimated
+
+    def register_proxy_route(self, transport, *, dynamic_ip):
+        if transport:
+            self.proxy_route_aliases[str(transport)] = bool(dynamic_ip)
+
+    def record(self, url, response=None, *, failed=False, tunneled=None):
         upload = download = decoded = 0
         self.requests += 1
         self.failed += int(failed)
@@ -79,6 +121,11 @@ class ProtocolTraffic:
         self.upload += upload
         self.download += download
         self.decoded_download += decoded
+        if tunneled is None:
+            tunneled = bool(self.proxy_relays)
+        if not tunneled:
+            self.direct_upload += upload
+            self.direct_download += download
         key = endpoint_key(url)
         if key not in self.by_path and len(self.by_path) >= 80:
             key = "other"
@@ -97,14 +144,28 @@ class ProtocolTraffic:
         note = "libcurl HTTP 传输估算（压缩响应体及可见头）；不含 TLS/IP/代理开销、邮箱客户端和后台任务。自动重定向及异常可能漏计，以代理商双向账单为准。"
         if self.proxy_relays:
             tunnels = [relay.traffic_snapshot() for relay in self.proxy_relays]
-            upload = sum(item["upload_bytes"] for item in tunnels)
-            download = sum(item["download_bytes"] for item in tunnels)
+            upload = sum(item["upload_bytes"] for item in tunnels) + self.direct_upload
+            download = sum(item["download_bytes"] for item in tunnels) + self.direct_download
             method = "proxy_tunnel"
             complete = self.unmetered_sessions == 0
             note = "本次流程的本地代理隧道字节（包含 TLS 握手和重试）；不含 TCP/IP、代理认证握手和其他客户端。最终计费以代理商双向统计为准。"
         if self.share_with_workers:
             note += " 包含等待完成的套餐资格查询和 2FA；邮箱直连 Microsoft 的流量不走该计费代理，不在代理流量内。"
+        upload += self.mail_upload
+        download += self.mail_download
         total = upload + download
+        roles_known = all(self.proxy_roles.get(id(relay)) is not None for relay in self.proxy_relays)
+        dynamic_ip_bytes = sum(
+            snap["upload_bytes"] + snap["download_bytes"]
+            for relay in self.proxy_relays if self.proxy_roles.get(id(relay)) is True
+            for snap in [relay.traffic_snapshot()]
+        ) if roles_known else None
+        proxy_transfer_bytes = sum(
+            snap["upload_bytes"] + snap["download_bytes"]
+            for relay in self.proxy_relays for snap in [relay.traffic_snapshot()]
+        )
+        if self.mail_requests or self.mail_upload or self.mail_download:
+            note += " 总计包含已观测的邮箱 HTTP/IMAP 上传下载；邮件部分为应用层计数，不含其 TLS/TCP/IP 开销。"
         # A missing/partial failed response or an automatically followed redirect
         # can hide transfer bytes. A small subtotal must not certify the budget.
         within = False if total > self.budget_bytes else (True if complete else None)
@@ -118,6 +179,13 @@ class ProtocolTraffic:
             "upload_bytes": upload,
             "download_bytes": download,
             "total_bytes": total,
+            "dynamic_ip_bytes": dynamic_ip_bytes,
+            "proxy_transfer_bytes": proxy_transfer_bytes,
+            "dynamic_ip_measurement_complete": roles_known,
+            "mail_transfer_bytes": self.mail_upload + self.mail_download,
+            "mail_request_count": self.mail_requests,
+            "total_measurement_complete": complete and not self.mail_estimated,
+            "traffic_schema_version": 2,
             "http_estimate_upload_bytes": self.upload,
             "http_estimate_download_bytes": self.download,
             "proxy_tunnel_count": len(self.proxy_relays),

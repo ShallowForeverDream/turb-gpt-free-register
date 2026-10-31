@@ -171,6 +171,7 @@ def run_cloak_registration(
         account_id = save_account_data(
             email=email,
             access_token=access_token,
+            session=driver, session_info=session_info,
             totp_secret=totp_secret,
             email_source=resolve_email_source(email),
             proxy_used=((opened.raw or {}).get("proxy_pool_target") if opened else None) or proxy or None,
@@ -209,7 +210,7 @@ def run_cloak_registration(
         try:
             if email:
                 from core.email_provider import release_email
-                release_email(email, status="failed" if create_acknowledged else "available", note=f"Cloak注册失败: {str(exc)[:180]}")
+                release_email(email, status=("failed_created" if create_acknowledged else "available"), note=f"Cloak注册失败: {str(exc)[:180]}")
         except Exception:
             pass
         return {

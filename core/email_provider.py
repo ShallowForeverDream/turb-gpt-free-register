@@ -12,22 +12,36 @@ EMAIL_SOURCE 支持单个或多个来源：
     "mailnest"
     "cloudmail"
     "remail"
-    "outlook,generic_api,mailnest,cloudmail,remail"   # 按顺序兜底
-    ["outlook", "generic_api", "mailnest", "cloudmail", "remail"]  # 也兼容列表写法
+    "smsbower_mail"
+    "outlook,generic_api,mailnest,cloudmail,remail,smsbower_mail"   # 按顺序兜底
+    ["outlook", "generic_api", "mailnest", "cloudmail", "remail", "smsbower_mail"]  # 也兼容列表写法
 """
 import logging
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Iterable
 
 logger = logging.getLogger(__name__)
 
-_VALID_SOURCES = ("outlook", "generic_api", "imap", "cloudflare_domain", "cloudflare", "gptmail", "mailnest", "cloudmail", "remail")
+_VALID_SOURCES = ("outlook", "generic_api", "imap", "cloudflare_domain", "cloudflare", "gptmail", "mailnest", "cloudmail", "remail", "smsbower_mail")
+_SOURCE_OVERRIDE = ContextVar("registration_email_source", default=None)
+
+
+@contextmanager
+def use_email_sources(value):
+    """Keep a job's source choice local to its thread/context, not global config."""
+    token = _SOURCE_OVERRIDE.set(value)
+    try:
+        yield
+    finally:
+        _SOURCE_OVERRIDE.reset(token)
 
 
 def parse_email_sources(value=None) -> list[str]:
     """把 EMAIL_SOURCE 解析为有序来源列表，去重并过滤空值。"""
     if value is None:
         from config import email as _email_cfg
-        value = _email_cfg.EMAIL_SOURCE
+        value = _SOURCE_OVERRIDE.get() or _email_cfg.EMAIL_SOURCE
     if isinstance(value, str):
         raw = value.replace(";", ",").replace("|", ",").split(",")
     elif isinstance(value, Iterable):
@@ -73,6 +87,9 @@ def _pick_from_source(source: str) -> str:
     if source == "remail":
         from core.remail_client import pick_account
         return pick_account().email
+    if source == "smsbower_mail":
+        from core.smsbower_mail_client import pick_account
+        return pick_account().email
     from core.outlook_client import pick_account
     return pick_account().email
 
@@ -87,6 +104,10 @@ def acquire_email() -> str:
             logger.info(f"[EmailProvider] 使用邮箱来源: {source}, email={email}")
             return email
         except Exception as exc:
+            from core.smsbower_mail_client import SmsBowerMailError, SmsBowerMailNoStock
+            if isinstance(exc, SmsBowerMailError) and not isinstance(exc, SmsBowerMailNoStock):
+                # A paid allocation may be unresolved. Do not buy from a fallback.
+                raise
             last_exc = exc
             logger.warning(f"[EmailProvider] 来源 {source} 领取邮箱失败: {type(exc).__name__}: {exc}")
             continue
@@ -148,6 +169,12 @@ def resolve_email_source(email: str) -> str:
     from core.remail_client import get_account_context as get_remail_context
     if get_remail_context(email):
         return "remail"
+    from core.smsbower_mail_client import get_account_context as get_smsbower_mail_context
+    if get_smsbower_mail_context(email):
+        return "smsbower_mail"
+    from core.mail_activation_store import by_email
+    if by_email(email):
+        return "smsbower_mail"
 
     from core import db
     if db.get_imap_email_by_email(email):
@@ -199,6 +226,18 @@ def _registered_email_source(email: str) -> str | None:
     return _normalize_explicit_email_source((account or {}).get("email_source"))
 
 
+def prepare_otp_mail_baseline(email: str):
+    """Read metadata before sending; never create a baseline from a later poll."""
+    from config import email as cfg
+    if not getattr(cfg, "USE_EMAIL_SERVICE", True):
+        return None
+    source = _registered_email_source(email) or resolve_email_source(email)
+    if source != "generic_api":
+        return None
+    from core.generic_api_mail_client import capture_mail_baseline
+    return capture_mail_baseline(email)
+
+
 def wait_for_otp(
     email: str,
     after_ts: float,
@@ -207,6 +246,11 @@ def wait_for_otp(
     settle_seconds: int | None = None,
     email_source: str | None = None,
     force_service: bool = False,
+    exclude_codes: set[str] | None = None,
+    mail_baseline=None,
+    first_read_delay_seconds: int = 0,
+    first_read_anchor_ts: float | None = None,
+    signature_poll_state=None,
 ) -> str:
     """等待并返回该邮箱最新的 ChatGPT OTP（6 位数字字符串）。
 
@@ -257,9 +301,21 @@ def wait_for_otp(
         return fetch_latest_otp(email, after_ts=after_ts, **extra_kwargs)
     if source == "generic_api":
         from core.generic_api_mail_client import fetch_latest_otp
+        if signature_poll_state is not None:
+            extra_kwargs["signature_poll_state"] = signature_poll_state
+        if mail_baseline is not None:
+            extra_kwargs["mail_baseline"] = mail_baseline
+        if exclude_codes:
+            extra_kwargs["exclude_codes"] = exclude_codes
+        if first_read_delay_seconds:
+            extra_kwargs["first_read_delay_seconds"] = first_read_delay_seconds
+        if first_read_anchor_ts is not None:
+            extra_kwargs["first_read_anchor_ts"] = first_read_anchor_ts
         return fetch_latest_otp(email, after_ts=after_ts, **extra_kwargs)
     if source == "imap":
         from core.imap_mail_client import fetch_latest_otp
+        if exclude_codes:
+            extra_kwargs["exclude_codes"] = exclude_codes
         return fetch_latest_otp(email, after_ts=after_ts, **extra_kwargs)
     if source == "mailnest":
         from core.mailnest_client import fetch_latest_otp
@@ -269,6 +325,11 @@ def wait_for_otp(
         return fetch_latest_otp(email, after_ts=after_ts, **extra_kwargs)
     if source == "remail":
         from core.remail_client import fetch_latest_otp
+        return fetch_latest_otp(email, after_ts=after_ts, **extra_kwargs)
+    if source == "smsbower_mail":
+        from core.smsbower_mail_client import fetch_latest_otp
+        if exclude_codes:
+            extra_kwargs["exclude_codes"] = exclude_codes
         return fetch_latest_otp(email, after_ts=after_ts, **extra_kwargs)
     from core.outlook_client import fetch_latest_otp
     return fetch_latest_otp(email, after_ts=after_ts, **extra_kwargs)
@@ -293,6 +354,10 @@ def email_material_line(email: str, source: str | None = None) -> str:
 def release_email(email: str, status: str = "available", note: str | None = None) -> str:
     """按邮箱实际来源回收状态，返回来源名。"""
     source = resolve_email_source(email)
+    # Only the activation-backed provider needs the extra creation phase. Other
+    # pools retain their existing failed terminal state.
+    if status == "failed_created" and source != "smsbower_mail":
+        status = "failed"
     if source == "gptmail":
         from core.gptmail_client import release_account
         release_account(email, status=status, note=note)
@@ -317,6 +382,9 @@ def release_email(email: str, status: str = "available", note: str | None = None
     elif source == "remail":
         from core.remail_client import release_account
         release_account(email, status=status, note=note)
+    elif source == "smsbower_mail":
+        from core.smsbower_mail_client import release_account
+        release_account(email, status=status, note=note)
     else:
         from core.outlook_client import release_account
         release_account(email, status=status, note=note)
@@ -339,6 +407,11 @@ def release_email_if_unconsumed(email: str, note: str | None = None) -> bool:
         changed = db.release_unconsumed_imap_email(email, note=note)
     elif source == "cloudflare_domain":
         changed = db.release_unconsumed_domain_email(email, note=note)
+    elif source == "smsbower_mail":
+        if db.get_account_by_email(email) is not None:
+            return False
+        from core.smsbower_mail_client import release_account
+        changed = release_account(email, status="available", note=note) == "closed"
     else:
         # 临时邮箱不重新进入本地池，只清理进程上下文；已有本地账号时保留上下文。
         if db.get_account_by_email(email) is not None:

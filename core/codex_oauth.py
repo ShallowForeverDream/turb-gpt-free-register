@@ -48,6 +48,8 @@ from core.openai_auth import (
 )
 from core import db
 from core import sms_provider
+from core.auth_diagnostics import auth_error_diagnostic, PhoneVerificationFailure
+from core.phone_verification_channels import read_phone_channel_policy, phone_country, sms_choice, SmsChannelUnavailableError
 from curl_cffi import requests as curl_requests
 
 logger = logging.getLogger(__name__)
@@ -832,6 +834,20 @@ def _cache_auth_session_metadata(session: BrowserSession, resp) -> None:
         cached = _decode_auth_session_metadata(value)
         if cached:
             session._codex_auth_session_payload = cached
+        state = dict(getattr(session, "_codex_phone_page_state", None) or {})
+        for source in (cached, payload):
+            if not isinstance(source, dict):
+                continue
+            for key in ("phone_verification_channel", "set_phone_verification_channel"):
+                channel = source.get(key)
+                if channel in ("sms", "whatsapp"):
+                    state[key] = channel
+                elif key in source and channel is None:
+                    state.pop(key, None)
+            if type(source.get("multi_channel_allowed")) is bool:
+                state["multi_channel_allowed"] = source["multi_channel_allowed"]
+        if state:
+            session._codex_phone_page_state = state
     except Exception:
         logger.debug("[Codex] 缓存 Auth session 元数据失败", exc_info=True)
 
@@ -1110,6 +1126,16 @@ def _follow_login_continue(session: BrowserSession, continue_url: str, state: st
             return url
         headers = session.get_auth_navigate_headers(referer="https://auth.openai.com/", user_initiated=True)
         resp = session.get(url, headers=headers, allow_redirects=False)
+        if getattr(resp, "status_code", 0) >= 400:
+            raise _phone_failure(resp, "auth-continue")
+        target = urlparse(url)
+        if (target.scheme == "https" and target.hostname == "auth.openai.com"
+                and target.path.rstrip("/") == "/add-phone" and resp.status_code == 200):
+            from core.auth_page_state import read_auth_page_session
+            page_state = read_auth_page_session(getattr(resp, "text", "")) or {}
+            session._codex_phone_page_state = {k: page_state[k] for k in (
+                "phone_verification_channel", "set_phone_verification_channel", "multi_channel_allowed") if k in page_state}
+            session._codex_phone_channel_policy = read_phone_channel_policy(getattr(resp, "text", ""))
         loc = resp.headers.get("location") or resp.headers.get("Location")
         logger.debug(
             "[Codex] 登录 continue 跟随 hop %s: status=%s, location=%s",
@@ -1217,6 +1243,40 @@ def _sms_provider_name() -> str:
     return str(getattr(_cfg, "SMS_PROVIDER", "grizzly") or "grizzly").strip().lower()
 
 
+def _phone_send_payload(phone: str, session) -> dict:
+    """Match the add-phone form: channel is optional, not an unconditional override."""
+    import re
+    value = str(phone or "").strip()
+    value = value[1:] if value.startswith("+") else value
+    if not re.fullmatch(r"[1-9][0-9]{7,14}", value):
+        raise ValueError("供应商返回的号码不符合国际手机号格式，不发码")
+    payload = {"phone_number": "+" + value}
+    state = getattr(session, "_codex_phone_page_state", None)
+    policy = getattr(session, "_codex_phone_channel_policy", None)
+    if isinstance(policy, dict):
+        country = phone_country(value)
+        expected_country = getattr(session, "_codex_phone_country_iso", None)
+        if expected_country and country != expected_country:
+            raise SmsChannelUnavailableError("供应商号码国家与预选国家不一致，不发码")
+        channel = sms_choice(policy, country, (state or {}).get("multi_channel_allowed"))
+        if channel:
+            payload["channel"] = channel
+        return payload
+    if isinstance(state, dict):
+        effective_channel = state.get("set_phone_verification_channel") or state.get("phone_verification_channel")
+        if effective_channel == "whatsapp":
+            raise RuntimeError("当前页面要求 WhatsApp；本流程只支持短信，不改通道、不购号")
+        if state.get("multi_channel_allowed") is True and effective_channel == "sms":
+            payload["channel"] = "sms"
+    return payload
+
+
+def _phone_failure(response, stage: str, *secrets) -> PhoneVerificationFailure:
+    diagnostic = auth_error_diagnostic(response, stage=stage, sensitive_values=secrets)
+    logger.warning("[Codex][手机验证诊断] %s", json.dumps(diagnostic, ensure_ascii=False))
+    return PhoneVerificationFailure(diagnostic)
+
+
 def _sleep_before_phone_retry(attempt: int, max_retries: int, *, prefix: str = "[Codex]") -> None:
     """换号前随机等待，至少 3 秒，避免连续提交号码过快。"""
     if attempt >= max_retries:
@@ -1239,6 +1299,14 @@ def _do_phone_verification(session: BrowserSession) -> dict:
     max_retries = _cfg.SMS_MAX_RETRIES
     provider = _sms_provider_name()
     try:
+        state = getattr(session, "_codex_phone_page_state", None)
+        policy = getattr(session, "_codex_phone_channel_policy", None)
+        country = getattr(session, "_codex_phone_country_iso", None)
+        if not isinstance(policy, dict):
+            raise SmsChannelUnavailableError("未取得当前 Auth 页面的短信通道配置，已停止且未购号；不走 WhatsApp")
+        if isinstance(policy, dict) and country:
+            selected = sms_choice(policy, country, (state or {}).get("multi_channel_allowed"))
+            logger.info("[Codex] 已核对当前页面的短信选项：country=%s channel=%s，不走 WhatsApp", country, selected or "sms(default)")
         last_err = None
         for attempt in range(1, max_retries + 1):
             activation_id = None
@@ -1246,27 +1314,32 @@ def _do_phone_verification(session: BrowserSession) -> dict:
                 activation_id, phone = sms_provider.acquire_number(http)
                 logger.info(
                     f"[Codex] 手机验证尝试 {attempt}/{max_retries}，"
-                    f"provider={provider}, activation_id={activation_id}, 号码=+{phone}"
+                    f"provider={provider}, activation_id={activation_id}, 号码已获取（不记录完整号码）"
                 )
 
                 # 发短信
                 send_resp = _post_json(
                     session,
                     "https://auth.openai.com/api/accounts/add-phone/send",
-                    {"phone_number": f"+{phone}", "channel": "sms"},
+                    _phone_send_payload(phone, session),
                     referer="https://auth.openai.com/add-phone",
                 )
-                send_text = _response_text(send_resp)
-                send_reason = _phone_failure_reason(send_text, send_resp.status_code)
-                if send_resp.status_code not in (200, 204) or send_reason:
-                    # 号码无效 / 无法发送 / WhatsApp 通道 / 限流等 → 释放当前号并换号。
-                    logger.warning(
-                        f"[Codex] add-phone/send 未成功 reason={send_reason or 'unknown'}, "
-                        f"status={send_resp.status_code}: {send_text[:240]}，换号重试"
-                    )
-                    sms_provider.cancel(activation_id, http)
-                    _sleep_before_phone_retry(attempt, max_retries)
-                    continue
+                send_data = _resp_json(send_resp)
+                if (send_resp.status_code not in (200, 204)
+                        or not isinstance(send_data, dict) and send_resp.status_code != 204
+                        or isinstance(send_data, dict) and send_data.get("error")):
+                    raise _phone_failure(send_resp, "add-phone/send", phone, "+" + phone)
+                # A pending add-phone channel overrides the existing account's login channel.
+                # Inspect this response, not a stale value cached before the request.
+                returned = _decode_auth_session_metadata(
+                    send_data.get("oai-client-auth-session") or send_data.get("auth_session") or send_data.get("authSession")
+                ) if isinstance(send_data, dict) else {}
+                if isinstance(send_data, dict):
+                    returned = {**returned, **{k: v for k, v in send_data.items() if k in (
+                        "set_phone_verification_channel", "phone_verification_channel")}}
+                actual_channel = returned.get("set_phone_verification_channel") or returned.get("phone_verification_channel")
+                if actual_channel == "whatsapp":
+                    raise RuntimeError("服务端返回 WhatsApp 通道，已停止；不进入短信轮询，不自动切换通道")
 
                 # 通知平台短信已发出（status=1）
                 sms_provider.set_status(activation_id, 1, http=http)
@@ -1275,12 +1348,12 @@ def _do_phone_verification(session: BrowserSession) -> dict:
                 # 最长等待 SMS_CODE_WAIT；超时立即取消当前号并换号。
                 try:
                     logger.info(
-                        f"[Codex] 短信已发送，开始轮询验证码 activation_id={activation_id}, "
+                        f"[Codex] 短信请求已接受，开始轮询验证码 activation_id={activation_id}, "
                         f"wait={_cfg.SMS_CODE_WAIT}s, interval={_cfg.SMS_POLL_INTERVAL}s"
                     )
                     sms_code = sms_provider.wait_for_sms_code(activation_id, http)
                 except sms_provider.SmsCodeTimeout:
-                    logger.warning(f"[Codex] 号码 +{phone} 在 {_cfg.SMS_CODE_WAIT}s 内未收到短信，取消换号")
+                    logger.warning(f"[Codex] 当前号码在 {_cfg.SMS_CODE_WAIT}s 内未收到短信，取消当前号")
                     sms_provider.cancel(activation_id, http)
                     _sleep_before_phone_retry(attempt, max_retries)
                     continue
@@ -1293,15 +1366,7 @@ def _do_phone_verification(session: BrowserSession) -> dict:
                     referer="https://auth.openai.com/phone-verification",
                 )
                 if val_resp.status_code != 200:
-                    val_text = _response_text(val_resp)
-                    val_reason = _phone_failure_reason(val_text, val_resp.status_code) or 'code_rejected'
-                    logger.warning(
-                        f"[Codex] phone-otp/validate 失败 reason={val_reason}, status={val_resp.status_code}: "
-                        f"{val_text[:240]}，换号重试"
-                    )
-                    sms_provider.cancel(activation_id, http)
-                    _sleep_before_phone_retry(attempt, max_retries)
-                    continue
+                    raise _phone_failure(val_resp, "phone-otp/validate", phone, "+" + phone, sms_code)
 
                 # 成功
                 sms_provider.complete(activation_id, http)
@@ -1311,13 +1376,30 @@ def _do_phone_verification(session: BrowserSession) -> dict:
             except sms_provider.SmsNoBalanceError:
                 # 余额不足，重试无意义，直接抛
                 raise
+            except (sms_provider.SmsPurchaseUncertainError, sms_provider.SmsPurchaseLimitError):
+                if activation_id:
+                    sms_provider.cancel(activation_id, http)
+                raise
+            except sms_provider.SmsNoNumbersError as exc:
+                if provider == "smsbower":
+                    logger.warning("[Codex] SMSBower 所选条件无库存，立即停止，不放宽或重复取号")
+                    raise
+                last_err = exc
+                _sleep_before_phone_retry(attempt, max_retries)
+                continue
             except sms_provider.SmsProviderError as exc:
                 last_err = exc
                 logger.warning(f"[Codex] 接码尝试 {attempt} 失败：{exc}")
                 if activation_id:
                     sms_provider.cancel(activation_id, http)
+                if provider == "smsbower":
+                    raise
                 _sleep_before_phone_retry(attempt, max_retries)
                 continue
+            except Exception:
+                if activation_id:
+                    sms_provider.cancel(activation_id, http)
+                raise
 
         raise RuntimeError(
             f"[Codex] 手机号验证重试 {max_retries} 次仍失败（provider={provider}）"
@@ -1941,6 +2023,11 @@ def run_codex_oauth(
             callback_url=callback_url,
             message=f"plan={id_claims.get('plan_type') or 'unknown'}",
         )
+    except PhoneVerificationFailure as exc:
+        logger.warning("[Codex] 手机验证已停止：%s", exc)
+        result = _codex_result(status="failed", email=email, message=str(exc))
+        result["phone_error"] = dict(exc.diagnostic)
+        return result
     except AccountUnusableError as exc:
         logger.warning(f"[Codex] 账号已废（{exc.error_code}）：{email}")
         return _codex_result(

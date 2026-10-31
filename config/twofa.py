@@ -27,7 +27,7 @@ TWOFA_REAUTH_RETRY_DELAY = 3.0
 TWOFA_OTP_SUBMIT_MAX_ATTEMPTS = 3
 TWOFA_OTP_SUBMIT_RETRY_DELAY = 5.0
 
-# 2FA 后台队列。workers 是实际同时执行的账号数，修改后需重启进程以重建线程池。
+# 2FA 后台队列。workers 是实际同时执行的账号数，可在 WebUI 注册页保存并实时调整。
 TWOFA_WORKERS = 1
 TWOFA_QUEUE_LIMIT = 200
 

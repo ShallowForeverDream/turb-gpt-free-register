@@ -1,0 +1,6 @@
+function accountSessionCopyControls(row, buttonClass) {
+  const id=esc(row.id),buttons=[],style='max-width:100%;padding:2px 5px;white-space:normal;overflow-wrap:anywhere';
+  if(row.has_session_token)buttons.push(`<button type="button" class="${buttonClass}" style="${style}" data-account-copy-secret="session_token" data-account-id="${id}" title="按需读取并复制 ChatGPT Session Cookie Token">复制SESSION</button>`);
+  if(row.has_session_json)buttons.push(`<button type="button" class="${buttonClass}" style="${style}" data-account-copy-secret="session_json" data-account-id="${id}" title="复制实际保存的 Session JSON（/api/auth/session 完整响应）">复制JSON</button>`);
+  return buttons.length?`<div class="account-session-actions" style="display:flex;flex-direction:column;align-items:flex-start;gap:3px;margin-top:3px;white-space:normal">${buttons.join(' ')}</div>`:'<div class="muted" style="white-space:normal;font-size:12px" title="旧账号未留存 SESSION；下次正常登录或查活取得后自动保存">SESSION未留存</div>';
+}

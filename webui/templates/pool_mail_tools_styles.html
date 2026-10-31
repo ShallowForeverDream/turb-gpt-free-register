@@ -1,0 +1,29 @@
+table .pool-email-address, table .pool-email-address:hover {
+  display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; text-align: left; font: inherit; font-weight: 650;
+  color: #303744; background: transparent !important; border: 0 !important;
+  box-shadow: none !important; padding: 0; border-radius: 0; cursor: pointer;
+}
+table .pool-email-address:hover { color: #4b70ec; }
+.pool-email-otp-actions { display: inline-flex; gap: 10px; align-items: center; min-height: 30px; }
+table .pool-otp-button, table .pool-otp-button:hover {
+  display: inline-flex; align-items: center; justify-content: center; flex: 0 0 30px;
+  width: 30px; height: 30px; min-height: 0; margin: 0; padding: 0;
+  border: 1px solid transparent; border-radius: 8px; box-shadow: none;
+  background: #f0f4ff; color: #5675e8; cursor: pointer;
+  transition: background .15s, border-color .15s;
+}
+table .pool-otp-button:hover:not(:disabled) { background: #e5edff; border-color: #c9d7fd; }
+table .pool-otp-button:disabled { opacity: .65; cursor: wait; }
+.pool-otp-button svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.pool-otp-button.is-loading svg { animation: pool-otp-spin .9s linear infinite; }
+table .pool-otp-code, table .pool-otp-code:hover {
+  padding: 0; border: 0 !important; background: transparent !important; box-shadow: none !important;
+  color: #334155; font-family: ui-monospace, Consolas, monospace;
+  font-size: 14px; font-weight: 650; letter-spacing: 2px; cursor: pointer;
+}
+table .pool-otp-code:hover { color: #4b70ec; }
+.pool-otp-placeholder { color: #bdc6d4; }
+.pool-email-address:focus-visible, .pool-otp-code:focus-visible, .pool-otp-button:focus-visible { outline: 2px solid #99afff; outline-offset: 3px; }
+@keyframes pool-otp-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .pool-otp-button.is-loading svg { animation: none; } }

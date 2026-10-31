@@ -66,6 +66,44 @@ class AccountLivenessTests(unittest.TestCase):
     def setUp(self):
         _DummyBrowserSession.created = []
 
+    def test_reauth_sends_otp_before_polling_verification_page(self):
+        session = _DummyBrowserSession(proxy="")
+        events = []
+        with patch.object(liveness, "_trigger_reauth_with_retry", return_value="auth"), \
+             patch.object(liveness, "_follow_reauth_with_retry", return_value="https://auth.openai.com/email-verification"), \
+             patch.object(liveness, "human_delay"), \
+             patch.object(liveness, "send_email_otp", side_effect=lambda *_: events.append("send")), \
+             patch.object(liveness, "_validate_reauth_with_retry", side_effect=lambda *a, **kw: events.append("wait") or "continue") as validate, \
+             patch.object(liveness, "_follow_continue_and_fetch", return_value={"accessToken": "fixture"}):
+            result = liveness._login_via_reauth(session, "fixture@example.test", 1.0, email_source="outlook")
+        self.assertEqual(events, ["send", "wait"])
+        self.assertGreater(validate.call_args.args[2], 1.0)
+        self.assertEqual(result["accessToken"], "fixture")
+
+    def test_refused_reauth_otp_send_does_not_start_mail_polling(self):
+        with patch.object(liveness, "_trigger_reauth_with_retry", return_value="auth"), \
+             patch.object(liveness, "_follow_reauth_with_retry", return_value="https://auth.openai.com/email-verification"), \
+             patch.object(liveness, "human_delay"), \
+             patch.object(liveness, "send_email_otp", side_effect=RuntimeError("HTTP 403")) as send, \
+             patch.object(liveness, "_validate_reauth_with_retry") as validate:
+            with self.assertRaisesRegex(RuntimeError, "HTTP 403"):
+                liveness._login_via_reauth(_DummyBrowserSession(), "fixture@example.test", 1.0)
+        send.assert_called_once()
+        validate.assert_not_called()
+
+    def test_normal_login_preserves_explicit_deactivation_error_code(self):
+        with tempfile.TemporaryDirectory() as tmp, \
+             patch.object(liveness, "_LOG_DIR", Path(tmp)), \
+             patch("core.workflow_driver.resolve_driver", return_value="protocol"), \
+             patch.object(liveness, "_stored_access_token", return_value=""), \
+             patch.object(liveness, "_account_totp_secret", return_value=""), \
+             patch.object(liveness, "_login_via_full_web_flow", side_effect=liveness.AccountUnusableError(
+                 "account_deactivated", error_code="account_deactivated")):
+            result = liveness.check_account_liveness("fixture@example.test", proxy="")
+        self.assertEqual(result["status"], "deactivated")
+        self.assertEqual(result["error_code"], "account_deactivated")
+        self.assertEqual(result["stage"], "authentication")
+
     def test_passwordless_login_sends_email_otp_before_waiting(self):
         session = _DummyBrowserSession(proxy="")
         with patch.object(liveness, "_network_preflight_with_retry", return_value=(session, "authorize")), \

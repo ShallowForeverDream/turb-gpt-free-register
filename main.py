@@ -21,7 +21,7 @@ from config import openai_protocol as _protocol_cfg
 from core.session import BrowserSession, close_browser_session
 from core.chatgpt_auth import get_providers, get_csrf_token, signin_openai
 from core.protocol_traffic import capture_protocol_registration
-from core.registration_completion import complete_registration_flow, completion_managed
+from core.registration_completion import complete_registration_flow, complete_registration_result, completion_managed
 from core.openai_auth import (
     follow_authorize,
     request_sentinel_token,
@@ -36,11 +36,14 @@ from core.openai_auth import (
 from core.account_export import (
     follow_oauth_callback,
     fetch_session,
+    log_token_state,
     setup_2fa,
     save_account_data,
     create_batch_archive_dir,
 )
-from core.email_provider import acquire_email, wait_for_otp
+from core.email_provider import acquire_email, wait_for_otp, prepare_otp_mail_baseline
+from core.otp_freshness import OtpFreshnessError
+from core.imap_mail_client import ImapOtpTimeout
 from core.humanize import delay as human_delay
 from core.name_samples import random_display_name
 from core.profile_utils import generate_random_birthday
@@ -52,6 +55,7 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 logger = logging.getLogger(__name__)
+REGISTRATION_OTP_DELIVERY_MODE = "page_state_initial_delivery_no_resend"
 
 _FINALIZE_SESSION_MAX_ATTEMPTS = 5
 _FINALIZE_SESSION_BACKOFF_BASE = 2.0
@@ -173,30 +177,47 @@ def generate_display_name() -> str:
     return random_display_name()
 
 
-def _prepare_registration_otp(session, email: str, final_url: str, otp_code=None):
-    """Honor the actual auth page before waiting for mail; never skip password creation."""
+def _follow_registration_authorize(session, authorize_url, before_delivery=None):
+    """Capture the mail baseline before navigation can automatically send OTP."""
+    if before_delivery is not None:
+        before_delivery()
+    issued_after = time.time()
+    return follow_authorize(session, authorize_url), issued_after
+
+
+def _prepare_registration_otp(session, email: str, final_url: str, otp_code=None, before_send=None, issued_after=None):
+    """Direct verification waits for automatic delivery; password signup follows its new send state."""
     from core.openai_auth import (
         generate_registration_password, request_password_sentinel_bundle,
         register_user, navigate_email_otp_send,
+        initialize_passwordless_email_otp,
     )
-    path = urlsplit(str(final_url or "")).path.rstrip("/")
-    sent_at = time.time()
+    destination = urlsplit(str(final_url or ""))
+    path = destination.path.rstrip("/")
+    sent_at = time.time() if issued_after is None else issued_after
     if path == "/create-account/password":
         logger.info("[注册] 服务端要求创建 GPT 密码，先提交密码，再发送邮箱验证码")
         password = generate_registration_password()
         bundle = request_password_sentinel_bundle(session)
         header, so_header = build_sentinel_header(session, bundle, "username_password_create")
         human_delay("form")
+        if before_send is not None:
+            before_send()
         sent_at = time.time()
         result = register_user(session, email, password, header, so_header)
         navigate_email_otp_send(session, result.get("continue_url"))
         logger.info("[OTP] 密码已提交，已导航到邮箱验证页并触发发送")
         return password, sent_at
     if path != "/email-verification":
+        if destination.hostname == "accounts.google.com" and path.endswith("/signin/identifier"):
+            raise RuntimeError("需 Gmail 登录：当前转到 Google 登录页，尚未发送邮箱验证码；请人工确认登录方式")
         raise RuntimeError(f"注册尚未到达邮箱验证页（当前路径 {path or '/'}），已停止，未盲等验证码")
-    if otp_code is None:
-        send_email_otp(session)
-        logger.info("[OTP] 已显式触发首次邮箱验证码发送")
+    # The page's client loader can still have a pending initial delivery after
+    # this HTTP navigation. Do not confuse that with a user-requested resend.
+    if initialize_passwordless_email_otp(session, email, final_url):
+        sent_at = session._registration_otp_ready_at
+    else:
+        logger.info("[OTP] 已进入邮箱验证页，无待首次发送标志；不额外发码，等待收码")
     return None, sent_at
 
 
@@ -245,7 +266,7 @@ def run_registration(
     执行 ChatGPT 注册流程，按实际页面选择邮箱 OTP 或密码创建 + OTP。
 
     OpenAI 当前默认流程：signin 时携带 login_hint+screen_hint=login_or_signup
-    → follow_authorize 落到 /email-verification 后显式触发 OTP 发送
+    → follow_authorize 落到 /email-verification 后等待页面自动发送的 OTP
     → 用户输入验证码 → validate_email_otp → about-you 提交昵称生日 → 完成。
 
     Args:
@@ -313,17 +334,6 @@ def run_registration(
             f"不支持的 REGISTRATION_DRIVER={driver_mode!r}，可选 protocol / roxy / cloak / browser_use / skyvern"
         )
 
-    # 纯协议驱动没有“邮箱输入框”可等待，因此在创建 BrowserSession 前领取。
-    if not str(email or "").strip():
-        if not _email_cfg.USE_EMAIL_SERVICE:
-            raise RuntimeError(
-                "手动模式未配置邮箱。请在 WebUI 配置页设置 REGISTER_EMAIL，"
-                "或开启 USE_EMAIL_SERVICE 并从邮箱池领取。"
-            )
-        email = acquire_email()
-        if on_email_acquired:
-            on_email_acquired(email)
-
     # 创建浏览器会话（proxy=None 时自动从 config.PROXY_POOL 随机抽一个）
     session = BrowserSession(proxy=proxy)
 
@@ -352,17 +362,7 @@ def run_registration(
     registration_password = None
     try:
         # 网络预检必须在 signin/follow_authorize 之前完成；预检不带邮箱，不会触发 OTP。
-        try:
-            network_preflight(session)
-        except Exception as preflight_exc:
-            # 同一会话重试不会改变代理出口；403/429 时安全重建一次会话，
-            # 让本地代理池有机会分配新上游。此时尚未发送邮箱验证码。
-            if not _is_preflight_access_refusal(preflight_exc):
-                raise
-            logger.warning("[预检] 登录入口拒绝访问，关闭当前会话并复用代理建立新会话重试一次")
-            close_browser_session(session)
-            session = BrowserSession(proxy=proxy)
-            network_preflight(session)
+        network_preflight(session)
         human_delay("navigate")
 
         # 根据 2026-07-19 HAR 补齐匿名态 ChatGPT 首屏/模型预热链路。
@@ -383,34 +383,99 @@ def run_registration(
         csrf_token = get_csrf_token(session)
         human_delay("api")
 
+        # 已完成不依赖邮箱的网络预检/CSRF，再领取付费邮箱。
+        if not str(email or "").strip():
+            if not _email_cfg.USE_EMAIL_SERVICE:
+                raise RuntimeError(
+                    "手动模式未配置邮箱。请在 WebUI 配置页设置 REGISTER_EMAIL，"
+                    "或开启 USE_EMAIL_SERVICE 并从邮箱池领取。"
+                )
+            email = acquire_email()
+            if on_email_acquired:
+                on_email_acquired(email)
+
         # 步骤3: 发起 OAuth signin
         authorize_url = signin_openai(session, csrf_token, email)
         human_delay("api")
 
-        # 记录"OTP 触发"前的时间戳，自动取信箱时只看此后的邮件，
-        # 避免取到上次注册留下的旧 OTP。
-        otp_after_ts = time.time()
+        from core.email_provider import resolve_email_source
+        from core.generic_api_mail_client import (uses_direct_icapi_polling,
+            uses_smsbower_signature_polling, create_signature_poll_state)
+        direct_icapi_mail = (_email_cfg.USE_EMAIL_SERVICE and resolve_email_source(email) == "generic_api"
+                             and uses_direct_icapi_polling(email))
+        signature_api_mail = (_email_cfg.USE_EMAIL_SERVICE and resolve_email_source(email) == "generic_api"
+                              and uses_smsbower_signature_polling(email))
+        mail_baseline = None
+        def _before_otp_send():
+            nonlocal mail_baseline
+            if _email_cfg.USE_EMAIL_SERVICE and otp_code is None and not (direct_icapi_mail or signature_api_mail):
+                mail_baseline = prepare_otp_mail_baseline(email)
 
+        # The authorize navigation can send mail before it finishes loading.
+        # Capture metadata and the time bound first, never on the arrived page.
         # ==================== 阶段2: OpenAI Auth ====================
-        # 步骤4: 跟随 authorize URL（建立 auth.openai.com 的 cookies）
-        final_auth_url = follow_authorize(session, authorize_url)
+        # 步骤4: 跟随 authorize URL，页面加载完成后直接等待自动发送的邮件。
+        final_auth_url, otp_after_ts = _follow_registration_authorize(
+            session, authorize_url, before_delivery=_before_otp_send,
+        )
+        authorize_completed_at = time.time()
         human_delay("navigate")
-        registration_password, otp_after_ts = _prepare_registration_otp(session, email, final_auth_url, otp_code)
+        registration_password, otp_after_ts = _prepare_registration_otp(
+            session, email, final_auth_url, otp_code, before_send=_before_otp_send,
+            issued_after=otp_after_ts,
+        )
+        otp_send_completed_at = authorize_completed_at if registration_password is None else time.time()
+        initial_delivery_ready_at = getattr(session, "_registration_otp_ready_at", None)
+        if isinstance(initial_delivery_ready_at, (int, float)):
+            otp_send_completed_at = initial_delivery_ready_at
+        signature_poll_state = (create_signature_poll_state(email, ready_at=otp_send_completed_at)
+                                if signature_api_mail else None)
 
         # ==================== 阶段3: 验证码验证 ====================
         # Sentinel Token 不提前生成；等 OTP 到手后紧贴 validate 请求生成，
         # 避免等待邮箱期间 challenge 过期或与重新发送后的状态不一致。
 
         # 等待验证码：USE_EMAIL_SERVICE=True 时自动从 Outlook 取件，否则人工输入。
-        # 如果验证码错误/过期，自动重新发送并重新取最新验证码。
+        # 数值快照来源被服务端拒绝时只继续等待不同候选，不重新发码；
+        # 其他来源保持原有停机语义。
         validate_result = None
-        max_otp_attempts = 3
+        # ICAPI owns its three reads. Never multiply them through this outer loop.
+        max_otp_attempts = 1 if direct_icapi_mail else 3
         current_otp = otp_code
+        rejected_codes: set[str] = set()
         for otp_attempt in range(1, max_otp_attempts + 1):
             if current_otp is None:
                 if _email_cfg.USE_EMAIL_SERVICE:
-                    logger.info(f"[OTP] 等待验证码：{email}（第 {otp_attempt}/{max_otp_attempts} 次）")
-                    current_otp = wait_for_otp(email, after_ts=otp_after_ts)
+                    if signature_poll_state is not None:
+                        logger.info("[OTP] SMSBower签名API：30秒直接取码；读取和验证码判错共用3轮上限，不设基线、不重发")
+                    elif direct_icapi_mail:
+                        logger.info("[OTP] ICAPI 直接收码：页面就绪后等待30秒，最多读取3次；不设基线、不重发")
+                    else:
+                        logger.info(f"[OTP] 等待验证码：{email}（第 {otp_attempt}/{max_otp_attempts} 次）")
+                    try:
+                        mail_options = {"first_read_anchor_ts": otp_send_completed_at}
+                        if signature_poll_state is not None:
+                            mail_options["signature_poll_state"] = signature_poll_state
+                        if mail_baseline is not None:
+                            mail_options["mail_baseline"] = mail_baseline
+                            if (mail_baseline.mail_ids is None
+                                    and mail_baseline.code_fingerprints is not None):
+                                mail_options["first_read_delay_seconds"] = 60
+                                mail_options["first_read_anchor_ts"] = otp_send_completed_at
+                        if rejected_codes:
+                            mail_options["exclude_codes"] = set(rejected_codes)
+                        current_otp = wait_for_otp(email, after_ts=otp_after_ts,
+                                                   **mail_options)
+                    except ImapOtpTimeout:
+                        if otp_attempt >= max_otp_attempts:
+                            logger.warning("[OTP] 连续三轮等待超时，结束当前邮箱任务，不标记邮箱停用")
+                            raise
+                        _before_otp_send()
+                        otp_after_ts = time.time()
+                        send_email_otp(session)
+                        otp_send_completed_at = time.time()
+                        logger.info("[OTP] 本轮等待超时，已请求重新发送，下一轮最多等待 180s")
+                        continue
                 else:
                     logger.info("")
                     logger.info(f"[OTP] 请检查邮箱，输入收到的 6 位验证码（第 {otp_attempt}/{max_otp_attempts} 次）:")
@@ -430,14 +495,25 @@ def run_registration(
                 # 步骤10: 提交验证码
                 validate_result = validate_email_otp(session, current_otp, sentinel_header_9, so_header_9)
                 break
-            except EmailOtpInvalidError as exc:
-                if otp_attempt >= max_otp_attempts:
-                    raise
-                logger.warning(f"[OTP] 验证码错误/过期：{str(exc)[:180]}，准备重新发送并重新获取验证码")
-                otp_after_ts = time.time()
-                send_email_otp(session)
-                human_delay("api")
-                current_otp = None
+            except EmailOtpInvalidError:
+                if signature_poll_state is not None:
+                    if not signature_poll_state.can_retry:
+                        raise EmailOtpInvalidError("邮箱验证码验证失败（API读取已达3轮上限），已停止") from None
+                    signature_poll_state.defer_after_rejection()
+                    current_otp = None
+                    logger.warning("[OTP] 签名API验证码被判错；再等待30秒读取，不重发（已读取 %s/3 轮）",
+                                   signature_poll_state.attempts)
+                    continue
+                if (_email_cfg.USE_EMAIL_SERVICE and mail_baseline is not None
+                        and mail_baseline.code_fingerprints is not None
+                        and otp_attempt < max_otp_attempts):
+                    rejected_codes.add(str(current_otp))
+                    current_otp = None
+                    logger.warning("[OTP] 候选被服务端拒绝；不重发、不重复提交，继续等待不同候选（%s/%s）",
+                                   otp_attempt + 1, max_otp_attempts)
+                    continue
+                logger.warning("[OTP] 服务端已拒绝验证码，停止当前任务，需人工核验；不再自动重发或重复提交")
+                raise
 
         if validate_result is None:
             raise RuntimeError("OTP 验证未完成")
@@ -493,9 +569,11 @@ def run_registration(
                 proxy_used=session.proxy or None,
                 batch_dir=batch_dir,
                 extra={"user": session_info.get("user"), "account": session_info.get("account"), "expires": session_info.get("expires"), "existing_account_detected": True},
+                session=session, session_info=session_info,
             )
             logger.info("[完成] 已注册账号已登记：%s，账号ID=%s", email, account_id)
-            return {"success": True, "status": "already_registered", "existing_account": True, "email": email, "account_id": account_id, "access_token": access_token}
+            result = {"success": True, "status": "already_registered", "existing_account": True, "email": email, "account_id": account_id, "access_token": access_token}
+            return complete_registration_result(result, session=session) if completion_managed() else result
         elif page_type == "external_url" or direct_oauth_after_otp:
             if not otp_continue_url:
                 raise RuntimeError(f"OTP external_url 响应缺少可跟随 URL，无法继续: {validate_result}")
@@ -620,6 +698,7 @@ def run_registration(
             )
 
         # ==================== 阶段8: 持久化账号 ====================
+        log_token_state(access_token, "registration")
         from core.email_provider import resolve_email_source
         account_id = save_account_data(
             email=email,
@@ -638,6 +717,7 @@ def run_registration(
                 "codex": codex_result,
                 **({"registration_password": registration_password} if registration_password else {}),
             },
+            session=session, session_info=session_info,
         )
 
         logger.info(f"[完成] {email}，账号ID={account_id}，accessToken 已保存")
@@ -677,10 +757,14 @@ def run_registration(
             task_error = f"Codex 未完成: {codex_result.get('message', '未知')}"
             logger.warning(f"[任务结果] {email} 账号已保存但任务标失败，原因: {task_error}")
 
-        return {"success": task_success, "email": email, "account_id": account_id,
+        result = {"success": task_success, "email": email, "account_id": account_id,
                 "access_token": access_token, "totp_secret": totp_secret,
                 "flow": flow_result, "codex": codex_result,
                 "error": task_error}
+        if completion_managed():
+            live_session = None if getattr(session, "_registration_recovered", False) else session
+            return complete_registration_result(result, session=live_session)
+        return result
 
     except Exception as e:
         logger.error(f"[失败] {email}: {type(e).__name__}: {e}")
@@ -718,6 +802,12 @@ def run_registration(
                         note=f"账号已废弃，邮箱不可用: {str(e)[:180]}",
                     )
                     logger.warning(f"[邮箱:{src}] {email} 账号已废弃，标记为 failed，不再重新注册")
+                elif isinstance(e, (EmailOtpInvalidError, OtpFreshnessError)) and not (create_acknowledged or existing_account_detected):
+                    src = release_email(
+                        email, status="failed",
+                        note="验证码被拒绝或无法确认本次新邮件，待人工核验；未判定账号停用，不自动回到可领取队列",
+                    )
+                    logger.warning("[邮箱:%s] 验证码待人工核验，暂停自动领取该素材", src)
                 elif create_acknowledged or existing_account_detected:
                     src = release_email(
                         email, status="failed",
@@ -737,7 +827,7 @@ def run_registration(
             ))
         )
         if preflight_blocked:
-            message = "ChatGPT 登录页拒绝了当前自动化协议指纹（curl_cffi，HTTP 403/429）；代理端口可达且尚未发送邮箱验证码。浏览器可访问不代表 protocol 驱动可访问，请改用浏览器驱动后重试。"
+            message = "认证请求被拒绝（HTTP 403/429），已停止后续请求。不能据此判断代理不可用或账号停用，请通过正常网页登录人工确认。"
             logger.warning("[注册] %s", message)
             return {
                 "success": False, "status": "blocked", "error_code": "login_preflight_blocked",

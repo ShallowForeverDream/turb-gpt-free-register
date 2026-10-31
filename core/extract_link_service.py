@@ -18,7 +18,7 @@ except Exception:  # WebUI 环境未装 curl_cffi 时使用标准库兜底
     curl_requests = None
 
 from config import extract_link as cfg
-from core import db
+from core import db, account_concurrency
 
 logger = logging.getLogger(__name__)
 
@@ -73,12 +73,12 @@ def _cdk(value: str | None = None) -> str:
 
 _WORKERS = _int_setting("EXTRACT_LINK_WORKERS", 3, 1, 16)
 _QUEUE_LIMIT = _int_setting("EXTRACT_LINK_QUEUE_LIMIT", 500, _WORKERS, 5000)
-_EXECUTOR = ThreadPoolExecutor(max_workers=_WORKERS, thread_name_prefix="extract-link")
+_EXECUTOR = ThreadPoolExecutor(max_workers=16, thread_name_prefix="extract-link")
 _QUEUE_SLOTS = threading.BoundedSemaphore(_QUEUE_LIMIT)
 
 
 def queue_settings() -> dict:
-    return {"workers": _WORKERS, "queue_limit": _QUEUE_LIMIT}
+    return {"workers": account_concurrency.queue_settings()["workers"], "queue_limit": _QUEUE_LIMIT}
 
 
 def _session():
@@ -266,6 +266,7 @@ def _format_failure_reason(exc: Exception, logs: list[str] | None = None, last_e
     return reason[:500]
 
 
+@account_concurrency.limited
 def _run_extract(*, account_id: int, email: str, access_token: str, link_type: str, cdk: str, trigger: str) -> dict:
     logs: list[str] = []
     last_event = None

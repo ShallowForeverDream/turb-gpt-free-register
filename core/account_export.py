@@ -8,6 +8,8 @@
 整体复用注册阶段的 BrowserSession（同一 cookie jar / 同一 IP / 同一 UA），
 避免再起新会话被风控关联或缺失登录态。
 """
+import base64
+import hashlib
 import json
 import logging
 import random
@@ -22,6 +24,22 @@ from core.session import BrowserSession
 from core.humanize import delay as human_delay
 
 logger = logging.getLogger(__name__)
+TWOFA_OTP_DELIVERY_MODE = "page_state_initial_delivery_no_resend"
+
+
+def log_token_state(token: str, stage: str) -> None:
+    """Correlate lifecycle events without logging bearer credentials."""
+    claims = {}
+    try:
+        claims = json.loads(base64.urlsafe_b64decode(str(token).split(".")[1] + "==="))
+    except (ValueError, IndexError, TypeError, UnicodeError):
+        pass
+    if not isinstance(claims, dict):
+        claims = {}
+    times = {key: value if type(value) is int else None for key, value in
+             ((key, claims.get(key)) for key in ("iat", "exp"))}
+    logger.info("[Token] stage=%s hash=%s iat=%s exp=%s", stage,
+                hashlib.sha256(str(token).encode()).hexdigest()[:12], times["iat"], times["exp"])
 
 
 class TwofaOtpBlockedError(RuntimeError):
@@ -437,6 +455,9 @@ def fetch_session(session: BrowserSession) -> dict:
         logger.error("[Session] 响应中没有 accessToken: keys=%s", sorted(data)[:20])
         raise RuntimeError("未拿到 accessToken，登录态可能未建立")
 
+    from core.account_session import remember_session
+    remember_session(session, data)
+
     user = data.get("user") or {}
     account = data.get("account") or {}
     logger.info(
@@ -456,7 +477,7 @@ def _trigger_reauth(session: BrowserSession, email: str) -> str:
     csrf_resp = session.get(csrf_url, headers=session.get_nextauth_headers(referer="https://chatgpt.com/"))
     csrf_resp.raise_for_status()
     csrf_token = csrf_resp.json()["csrfToken"]
-    logger.info(f"[2FA] 重认证 CSRF: {csrf_token[:20]}...")
+    logger.info("[2FA] 重认证 CSRF 已获取")
 
     # POST /api/auth/signin/openai 带 reauth 参数
     query = {
@@ -493,11 +514,33 @@ def _follow_reauth(session: BrowserSession, auth_url: str) -> str:
     auth.openai.com 会重定向到 /email-verification 页面，期间发送 OTP 邮件。
     """
     headers = session.get_auth_navigate_headers(referer="https://chatgpt.com/")
-    logger.info("[2FA] 跟随 authorize URL，触发 OTP 发送...")
+    logger.info("[2FA] 跟随 authorize URL，加载邮箱验证页...")
     resp = session.get(auth_url, headers=headers, allow_redirects=True)
     resp.raise_for_status()
-    logger.info(f"[2FA] 落点 URL: {resp.url}")
-    return str(getattr(resp, "url", "") or "")
+    from core.auth_page_state import read_auth_page_session
+    final_url = str(getattr(resp, "url", "") or "")
+    session._registration_auth_page_state = read_auth_page_session(getattr(resp, "text", ""))
+    session._registration_auth_page_url = final_url
+    session._registration_initial_otp_attempted = False
+    session._registration_otp_ready_at = None
+    logger.info("[2FA] 落点路径: %s", urlsplit(final_url).path)
+    return final_url
+
+
+def _prepare_reauth_otp(session, email: str, final_url: str, issued_after: float) -> tuple[float, float]:
+    """Use the same page initialization as registration, never an initial resend."""
+    from core.openai_auth import initialize_passwordless_email_otp
+    destination = urlsplit(str(final_url or ""))
+    if (destination.scheme != "https" or destination.hostname != "auth.openai.com"
+            or destination.path.rstrip("/") != "/email-verification"):
+        raise RuntimeError("2FA 重认证未进入邮箱验证页，已停止，未盲等或重发验证码")
+    page_ready_at = time.time()
+    if initialize_passwordless_email_otp(session, email, final_url):
+        page_ready_at = session._registration_otp_ready_at
+        issued_after = page_ready_at
+    else:
+        logger.info("[2FA] 验证页无待首次发送标志；等待页面已发送的验证码，不重发")
+    return issued_after, page_ready_at
 
 
 def _validate_reauth_otp(session: BrowserSession, code: str) -> str:
@@ -560,6 +603,7 @@ def _validate_reauth_otp_with_retry(
     email: str,
     otp_code: str,
     otp_after_ts: float,
+    *, signature_poll_state=None,
 ) -> str:
     """提交邮箱 OTP，传输失败时等待后重试，最多消耗三次提交机会。
 
@@ -573,6 +617,8 @@ def _validate_reauth_otp_with_retry(
     max_attempts = max(1, min(3, int(
         getattr(_twofa_cfg, "TWOFA_OTP_SUBMIT_MAX_ATTEMPTS", 3) or 3
     )))
+    if signature_poll_state is not None:
+        max_attempts = 3
     base_delay = max(0.0, min(120.0, float(
         getattr(_twofa_cfg, "TWOFA_OTP_SUBMIT_RETRY_DELAY", 5.0) or 0.0
     )))
@@ -592,7 +638,21 @@ def _validate_reauth_otp_with_retry(
                 status = int(getattr(response, "status_code", 0) or 0)
             except (TypeError, ValueError):
                 status = 0
-            is_old_otp = status == 401 and bool(getattr(_email_cfg, "USE_EMAIL_SERVICE", False)) and not refreshed
+            if signature_poll_state is not None:
+                from core.openai_auth import is_email_otp_rejection
+                rejected = is_email_otp_rejection(response)
+                if not rejected or not signature_poll_state.can_retry or attempt >= max_attempts:
+                    raise
+                from core.email_provider import wait_for_otp
+                signature_poll_state.defer_after_rejection()
+                logger.warning("[2FA] 签名API验证码被判错；再等30秒读取，不重发（已读取 %s/3 轮）",
+                               signature_poll_state.attempts)
+                current_code = wait_for_otp(email, after_ts=otp_after_ts,
+                                            signature_poll_state=signature_poll_state)
+                continue
+            from core.generic_api_mail_client import uses_direct_icapi_polling
+            is_old_otp = (status == 401 and bool(getattr(_email_cfg, "USE_EMAIL_SERVICE", False))
+                          and not refreshed and not uses_direct_icapi_polling(email))
             retryable = is_old_otp or _is_retryable_otp_submit_error(exc)
             if attempt >= max_attempts or not retryable:
                 logger.warning(
@@ -621,6 +681,7 @@ def _validate_reauth_otp_with_retry(
                     email,
                     after_ts=broad_after_ts,
                     settle_seconds=retry_settle,
+                    exclude_codes={current_code},
                 )
                 if fresh_otp == current_code:
                     logger.warning("[2FA] 重试仍获取到相同 OTP，继续提交")
@@ -662,8 +723,22 @@ def _exchange_new_token(session: BrowserSession, continue_url: str, *, email: st
             new_session = fetch_session(session)
     new_token = new_session["accessToken"]
     session._twofa_session_info = new_session
+    log_token_state(new_token, "twofa_reauthenticated")
     logger.info("[2FA] 已取得重认证后的新 accessToken")
     return new_token
+
+
+def _refresh_activated_session(session: BrowserSession) -> None:
+    # Activation is already acknowledged. Never discard the activated secret
+    # merely because this single session refresh fails.
+    try:
+        latest = fetch_session(session)
+        session._twofa_session_info = latest
+        session._twofa_session_refresh_ok = True
+        log_token_state(latest["accessToken"], "twofa_activated")
+    except Exception as exc:
+        session._twofa_session_refresh_ok = False
+        logger.warning("[2FA] 已激活；激活后 Session 刷新未完成（%s），保留密钥并交给最终 AT 复核", type(exc).__name__)
 
 
 def _enroll_totp(session: BrowserSession, access_token: str) -> tuple[str, str]:
@@ -772,43 +847,22 @@ def setup_2fa(
     auth_url = _trigger_reauth_with_retry(session, email)
     logger.info("[2FA] 重认证 authorize URL 已获取")
     human_delay("api")
-    _follow_reauth_with_retry(session, auth_url)
+    final_auth_url = _follow_reauth_with_retry(session, auth_url)
     logger.info("[2FA] 已跟随重认证 authorize URL")
-    # 浏览器登录页在落到 email-verification 后还会显式 GET
-    # /api/accounts/email-otp/send；仅跟随 authorize URL 有时只打开页面而不真正
-    # 投递邮件，尤其是复用 accessToken 的 reauth 场景。与查活/网页登录保持一致，
-    # 显式触发一次发送。
-    from core.openai_auth import send_email_otp
-    send_email_otp(session)
-    logger.info("[2FA] 已显式触发邮箱重认证 OTP 发送")
+    reauth_otp_after_ts, reauth_page_ready_at = _prepare_reauth_otp(
+        session, email, final_auth_url, reauth_otp_after_ts)
     human_delay("navigate")
 
+    signature_poll_state = None
     if otp_code is None:
         if _email_cfg.USE_EMAIL_SERVICE:
             from core.email_provider import wait_for_otp
+            from core.generic_api_mail_client import create_signature_poll_state
+            signature_poll_state = create_signature_poll_state(email, ready_at=reauth_page_ready_at)
             logger.info("[2FA] 自动等待邮箱重认证 OTP...")
-            try:
-                otp_code = wait_for_otp(email, after_ts=reauth_otp_after_ts)
-            except Exception as first_wait_exc:
-                # 重认证页本身没有可靠的 resend API；重新发起一次 authorize
-                # 流程会让 auth.openai.com 再发送一封新的 OTP。只自动重发一次，
-                # 避免邮箱服务异常时无限重复触发验证码。
-                logger.warning(
-                    "[2FA] 首次等待重认证 OTP 超时，尝试重新发送验证码：%s: %s",
-                    type(first_wait_exc).__name__, str(first_wait_exc)[:180],
-                )
-                reauth_otp_after_ts = time.time()
-                resend_auth_url = _trigger_reauth_with_retry(session, email)
-                human_delay("api")
-                _follow_reauth_with_retry(session, resend_auth_url)
-                send_email_otp(session)
-                logger.info("[2FA] 已重新触发重认证 OTP，开始第二轮等待")
-                # Remail 的 receivedAt 可能比本地发送时间早几十秒（网关缓存/时钟
-                # 偏差），重发后的第二轮放宽时间下界，避免已到邮箱却被 after_ts
-                # 过滤掉；若拿到旧码，后面的 401 重试逻辑仍会校验。
-                broad_after_ts = max(0.0, reauth_otp_after_ts - 120.0)
-                logger.info("[2FA] 第二轮取码启用时间偏差容错：after_ts=%.0f", broad_after_ts)
-                otp_code = wait_for_otp(email, after_ts=broad_after_ts)
+            otp_code = wait_for_otp(email, after_ts=reauth_otp_after_ts,
+                                    first_read_anchor_ts=reauth_page_ready_at,
+                                    **({"signature_poll_state": signature_poll_state} if signature_poll_state is not None else {}))
             logger.info("[2FA] 已收到邮箱重认证 OTP")
         else:
             logger.info("")
@@ -827,6 +881,7 @@ def setup_2fa(
         email,
         otp_code,
         reauth_otp_after_ts,
+        **({"signature_poll_state": signature_poll_state} if signature_poll_state is not None else {}),
     )
     logger.info("[2FA] 邮箱重认证 OTP 验证通过，下一步=%s", urlsplit(continue_url).path)
     human_delay("api")
@@ -838,11 +893,12 @@ def setup_2fa(
     # 阶段二：enroll + activate
     logger.info("[2FA] 阶段2：开始 enroll TOTP")
     secret, session_id = _enroll_totp(session, new_token)
-    logger.info("[2FA] enroll 成功，session_id=%s", session_id)
+    logger.info("[2FA] enroll 成功，已获取激活上下文（不记录会话值）")
     human_delay("form")
     logger.info("[2FA] 正在激活 TOTP enrollment")
     _activate_totp(session, new_token, secret, session_id)
     logger.info("[2FA] TOTP 激活完成")
+    _refresh_activated_session(session)
 
     logger.info("=" * 60)
     logger.info("✅ 2FA 设置完成")
@@ -860,6 +916,8 @@ def save_account_data(
     proxy_used: str | None = None,
     batch_dir: Path | None = None,
     auto_plan_check: bool | None = None,
+    session=None,
+    session_info: dict | None = None,
 ) -> int:
     """
     将账号信息保存到 SQLite；output_path 仅为兼容旧调用方保留。
@@ -870,21 +928,25 @@ def save_account_data(
     # Remail 的 service token 只存在进程内上下文中。注册成功后把订单上下文
     # 一并保存到账号 extra_json，服务重启时查活即可恢复，不再依赖“同一进程
     # 中先领取邮箱”。普通账号列表不会返回 extra_json。
-    if str(email_source or "").strip().lower() == "remail":
+    source_name = str(email_source or "").strip().lower()
+    if source_name in {"remail", "smsbower_mail"}:
         try:
-            from core.remail_client import get_account_context_metadata
-
-            remail_metadata = get_account_context_metadata(email)
-            if remail_metadata:
+            if source_name == "remail":
+                from core.remail_client import get_account_context_metadata
+            else:
+                from core.smsbower_mail_client import get_account_context_metadata, mark_account_created
+                mark_account_created(email)
+            service_metadata = get_account_context_metadata(email)
+            if service_metadata:
                 existing_service = extra.get("email_service")
                 merged_service = dict(existing_service) if isinstance(existing_service, dict) else {}
-                merged_service.update(remail_metadata)
+                merged_service.update(service_metadata)
                 extra["email_service"] = merged_service
         except Exception as exc:
-            # 订单上下文保存失败不应让已经完成的注册失败；后续查活仍会
-            # 尝试用 API Key 按邮箱搜索 Remail 订单恢复凭证。
+            # 上下文保存失败不应让已经完成的注册失败；后续仍可按账号记录恢复。
             logger.warning(
-                "[Save] 保存 Remail 订单上下文失败，后续将尝试按邮箱恢复：%s: %s",
+                "[Save] 保存 %s 邮箱上下文失败：%s: %s",
+                source_name,
                 type(exc).__name__,
                 str(exc)[:180],
             )
@@ -911,6 +973,9 @@ def save_account_data(
         codex_status=codex_status,
         codex_error=codex_error,
     )
+    if session_info is not None:
+        from core.account_session import save_account_session
+        save_account_session(row_id, session, session_info)
     batch_folder = _append_batch_archive(
         row_id=row_id,
         email=email,

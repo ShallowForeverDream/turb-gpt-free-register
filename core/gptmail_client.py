@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 import requests
+from core.mail_traffic import record_mail_http
 
 from config import email as _email_cfg
 from core.otp_utils import extract_otp, looks_like_openai_email
@@ -51,7 +52,9 @@ def _get(path: str, params: dict | None = None) -> dict:
             headers=_headers(),
             params=params,
             timeout=REQUEST_TIMEOUT,
+            proxies={"http": "", "https": "", "all": ""},
         )
+        record_mail_http(response)
     except requests.RequestException as exc:
         raise GPTMailError(f"GPTMail 请求失败 ({path}): {type(exc).__name__}: {exc}") from exc
 

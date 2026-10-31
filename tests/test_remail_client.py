@@ -161,6 +161,7 @@ class RemailClientTests(unittest.TestCase):
 
     @patch("core.remail_client._saved_context_metadata", return_value={})
     @patch("core.remail_client.requests.request")
+    @patch.object(email_config, "REMAIL_API_KEY", "fixture-api-key")
     def test_restore_context_requires_exact_email_match(self, request, saved):
         response = Mock(status_code=200)
         response.json.return_value = {

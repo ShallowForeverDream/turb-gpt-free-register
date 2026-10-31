@@ -23,6 +23,7 @@ from datetime import datetime, timezone
 from urllib.parse import quote, urlsplit, urlunsplit
 
 import requests
+from core.mail_traffic import record_mail_http
 
 from config import email as _email_cfg
 from core.otp_utils import extract_otp
@@ -140,7 +141,9 @@ def _request(
             json=json_body,
             headers=request_headers,
             timeout=_request_timeout(),
+            proxies={"http": "", "https": "", "all": ""},
         )
+        record_mail_http(response)
     except requests.RequestException as exc:
         raise RemailError(f"Remail 请求失败 ({method.upper()} {path}): {type(exc).__name__}: {exc}") from exc
 

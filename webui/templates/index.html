@@ -1439,6 +1439,9 @@
       text-align: left; vertical-align: middle;
     }
     .outlook-table-v2 .col-email { width: 280px; white-space: normal; overflow: visible; }
+    .outlook-table-v2 .col-password { width: 160px; }
+    .outlook-table-v2 .col-email-otp { width: 220px; }
+    {% include 'pool_mail_tools_styles.html' %}
     .outlook-table-v2 .col-source { width: 100px; }
     .outlook-table-v2 .col-status { width: 100px; }
     .outlook-table-v2 .col-token { width: 100px; }
@@ -2035,6 +2038,8 @@
     }
 
   </style>
+{% include 'account_header_filter_styles.html' %}
+{% include 'workspace_styles.html' %}
 </head>
 <body>
 <aside class="app-sidebar" aria-label="主导航">
@@ -2056,19 +2061,19 @@
       <svg class="sidebar-item-icon" viewBox="0 0 24 24" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <path d="M12 5v14M5 12h14"/>
       </svg>
-      <span class="sidebar-item-label">注册</span>
+      <span class="sidebar-item-label">日志</span>
     </button>
     <button type="button" data-tab="accounts" class="sidebar-item">
       <svg class="sidebar-item-icon" viewBox="0 0 24 24" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>
       </svg>
-      <span class="sidebar-item-label">账号</span>
+      <span class="sidebar-item-label">GPT账号</span>
     </button>
-    <button type="button" data-tab="codex" class="sidebar-item">
+    <button type="button" data-tab="github" class="sidebar-item">
       <svg class="sidebar-item-icon" viewBox="0 0 24 24" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>
       </svg>
-      <span class="sidebar-item-label">Codex 授权</span>
+      <span class="sidebar-item-label">github账号</span>
     </button>
     <button type="button" data-tab="outlook" class="sidebar-item">
       <svg class="sidebar-item-icon" viewBox="0 0 24 24" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -2171,25 +2176,14 @@
       <div class="jobs-toolbar-v2" id="jobsToolbarV2">
         <button type="button" class="jobs-tb-btn jobs-tb-btn--retry" id="btnRetrySelectedJobsV2" disabled title="重试选中的失败、已停止或已取消任务">重试选中</button>
         <button type="button" class="jobs-tb-btn jobs-tb-btn--danger" id="btnDeleteSelectedJobsV2" disabled title="删除选中的非运行中任务，并同时删除对应日志">删除选中</button>
-        <button type="button" class="jobs-tb-btn" id="btnCancelPendingV2" title="把所有排队任务标记为已取消">取消全部排队</button>
-        <button type="button" class="jobs-tb-btn" id="btnPauseRegistrationV2" title="暂停注册任务；当前网络请求返回后在检查点暂停">暂停注册</button>
+        <button type="button" class="jobs-tb-btn" id="btnCancelPendingV2" title="结束本批尚未开始的任务；已开始的注册及2FA继续完成">停止注册</button>
+        <button type="button" class="jobs-tb-btn" id="btnPauseRegistrationV2" title="只暂停补充邮箱；已开始的注册及2FA继续完成">暂停注册</button>
         <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnResumeRegistrationV2" title="继续已暂停的注册任务">继续注册</button>
         <span class="acc-v2-selected" id="registrationPauseStatusV2">注册运行中</span>
         <button type="button" class="jobs-tb-btn" id="btnRefreshJobsV2" title="手动刷新任务列表">刷新</button>
-        <label class="jobs-tb-field">注册数量
+        <label class="jobs-tb-field queue-setting-field">并发
           <span class="el-input-number">
-            <input id="regCountV2" type="number" min="1" max="200" value="1" inputmode="numeric">
-            <button type="button" class="el-input-number__increase" data-step-for="regCountV2" data-step="1" aria-label="增加">
-              <svg viewBox="0 0 24 24"><polyline points="6 14 12 8 18 14"/></svg>
-            </button>
-            <button type="button" class="el-input-number__decrease" data-step-for="regCountV2" data-step="-1" aria-label="减少">
-              <svg viewBox="0 0 24 24"><polyline points="6 10 12 16 18 10"/></svg>
-            </button>
-          </span>
-        </label>
-        <label class="jobs-tb-field">并发线程数
-          <span class="el-input-number">
-            <input id="regWorkersV2" type="number" min="1" max="16" value="3" inputmode="numeric">
+            <input id="regWorkersV2" type="number" min="1" max="16" value="3" inputmode="numeric" aria-label="注册并发线程数">
             <button type="button" class="el-input-number__increase" data-step-for="regWorkersV2" data-step="1" aria-label="增加">
               <svg viewBox="0 0 24 24"><polyline points="6 14 12 8 18 14"/></svg>
             </button>
@@ -2197,8 +2191,20 @@
               <svg viewBox="0 0 24 24"><polyline points="6 10 12 16 18 10"/></svg>
             </button>
           </span>
+          <button type="button" class="jobs-tb-btn" id="saveRegistrationConcurrencyV2" aria-label="保存注册并发">保存</button>
         </label>
-        <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnStartV2">开始注册</button>
+        <span class="queue-concurrency-hint" id="concurrencyHintV2"></span>
+        <label class="jobs-tb-field">邮箱类型
+          <select id="regEmailSourceV2" title="仅控制本次开始注册使用的邮箱来源，不修改全局配置">
+            {% include 'registration_email_source_options.html' %}
+          </select>
+        </label>
+        <span class="registration-start-controls">
+          <label class="jobs-tb-field">本次数量
+            <input id="regCountV2" type="number" min="1" max="200" value="" placeholder="-" inputmode="numeric" aria-label="本次追加注册数量">
+          </label>
+          <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnStartV2">开始注册</button>
+        </span>
         <button type="button" class="jobs-tb-btn" id="btnStartSelectedPoolV2" title="使用邮箱池页当前选中的邮箱注册">使用选中邮箱注册</button>
       </div>
       <div id="regWarnV2"></div>
@@ -2216,8 +2222,8 @@
               <th class="col-email">邮箱</th>
               <th class="col-time">开始</th>
               <th class="col-time">完成</th>
-              <th class="col-traffic">流量</th>
-              <th class="col-error">错误</th>
+              <th class="col-traffic" title="已统计总流量 / 动态 IP 隧道流量">总 / 动态IP</th>
+              <th class="col-error">状态说明</th>
               <th class="col-actions">操作</th>
             </tr>
           </thead>
@@ -2230,24 +2236,19 @@
 
   <!-- ============ 账号 ============ -->
   <div id="tab-accounts" class="hidden">
-    <h1 class="register-title">账号</h1>
+    <h1 class="register-title">GPT账号</h1>
     <section class="accounts-panel-v2" id="accountsPanelV2" aria-label="账号列表">
+      {% include 'account_workspace_layout.html' %}
       <div class="accounts-filter-v2" id="accountsFilterV2">
         <div class="acc-v2-btn-group acc-v2-search-wrap">
           <input id="qAccountsV2" type="search" placeholder="搜索邮箱、token、来源…" autocomplete="off">
         </div>
-        <label class="acc-v2-inline" title="按邮箱后缀筛选，例如 icloud.com 或 @gmail.com">
-          <input id="emailSuffixAccountsV2" type="search" placeholder="邮箱后缀" autocomplete="off" style="width:130px;">
-        </label>
-        <label class="acc-v2-inline" title="按账号分组筛选">
-          <select id="accountGroupFilterV2"><option value="">全部分组</option><option value="__ungrouped__">未分组</option></select>
-        </label>
 
         <div class="acc-v2-btn-group">
           <span class="acc-v2-selected" id="accountsSelectedHintV2">已选 0</span>
-          <label class="acc-v2-inline" title="批量补跑 Codex 的并发线程数">线程
+          <label class="acc-v2-inline" title="本页后台任务共用并发上限：查活、套餐、2FA、Codex、提链、换绑；点击保存实时生效">并发
             <span class="el-input-number">
-              <input id="codexBulkWorkersV2" type="number" min="1" max="16" value="3" inputmode="numeric">
+              <input id="codexBulkWorkersV2" type="number" min="1" max="16" value="3" inputmode="numeric" aria-label="账号页并发线程数">
               <button type="button" class="el-input-number__increase" data-step-for="codexBulkWorkersV2" data-step="1" aria-label="增加">
                 <svg viewBox="0 0 24 24"><polyline points="6 14 12 8 18 14"/></svg>
               </button>
@@ -2256,34 +2257,8 @@
               </button>
             </span>
           </label>
-          <button type="button" class="acc-v2-toggle" id="showArchivedAccountsV2" aria-pressed="false" title="默认只显示未归档账号；开启后单独查看归档账号">查看归档</button>
-          <button type="button" class="acc-v2-toggle" id="showPlusAccountsOnlyV2" aria-pressed="false" title="只查询/显示已开通 Plus 的账号">已开通Plus</button>
-          <button type="button" class="acc-v2-toggle" id="showPlusTrialAccountsOnlyV2" aria-pressed="false" title="只查询/显示当前为 free 且可试用 Plus 的账号">可试用Plus</button>
-          <button type="button" class="acc-v2-toggle" id="showFreeAccountsOnlyV2" aria-pressed="false" title="只查询/显示已明确不能试用 Plus 的 free 账号；资格未知的账号不包含">free不可试用Plus</button>
-          <label class="acc-v2-inline" title="按账号状态筛选账号">
-            <select id="codexStatusFilterV2">
-              <option value="">全部状态</option>
-              <option value="success">成功</option>
-              <option value="failed">失败</option>
-              <option value="retrying">补跑中</option>
-              <option value="stopped">已停止</option>
-              <option value="skipped">已跳过</option>
-              <option value="deactivated">账号废号</option>
-            </select>
-          </label>
-          <label class="acc-v2-inline" title="按账号 2FA/TOTP 状态筛选账号">
-            <select id="totpStatusFilterV2">
-              <option value="">2FA：全部</option>
-              <option value="enabled">2FA：已开启</option>
-              <option value="disabled">2FA：未开启</option>
-              <option value="pending">2FA：设置中</option>
-              <option value="failed">2FA：设置失败</option>
-            </select>
-          </label>
-          <div class="acc-v2-date-select" id="dateSelectAccountsV2">
-            <button type="button" class="acc-v2-date-select-btn" id="btnDateFilterAccountsV2" title="按注册时间筛选日期范围">📅 日期筛选</button>
-            <div class="acc-v2-date-select-menu" id="dateFilterPanelAccountsV2"></div>
-          </div>
+          <button type="button" class="jobs-tb-btn" id="saveAccountConcurrencyV2" aria-label="保存账号页并发">保存</button>
+          <span class="queue-concurrency-hint" id="accountConcurrencyHintV2"></span>
           <div class="hidden">
             <input type="date" id="dateFromAccountsV2">
             <input type="date" id="dateToAccountsV2">
@@ -2329,31 +2304,17 @@
         </div>
       </div>
       {% include 'registered_import_panel.html' %}
-      {% include 'live_check_guidance.html' %}
       <div class="accounts-table-v2-wrap">
         <table class="accounts-table-v2">
           <colgroup>
-            <col class="col-check"><col class="col-id"><col class="col-email"><col class="col-source"><col class="col-small">
+            <col class="col-check"><col class="col-id"><col class="col-archive"><col class="col-email"><col class="col-group"><col class="col-source"><col class="col-small">
             <col class="col-token"><col class="col-password"><col class="col-password"><col class="col-plan"><col class="col-note"><col class="col-small">
             <col class="col-status"><col class="col-time"><col class="col-traffic"><col class="col-actions">
           </colgroup>
           <thead>
             <tr>
               <th class="col-check"><input type="checkbox" id="accountsSelectAllV2" title="全选/取消全选当前页账号" disabled></th>
-              <th class="col-id">ID</th>
-              <th class="col-email">邮箱</th>
-              <th class="col-source">来源</th>
-              <th class="col-small">邮箱验证码</th>
-              <th class="col-token">Token</th>
-              <th class="col-password">GPT 密码</th>
-              <th class="col-password">邮箱密码</th>
-              <th class="col-plan">套餐</th>
-              <th class="col-note">备注</th>
-              <th class="col-small">2FA</th>
-              <th class="col-status">Codex</th>
-              <th class="col-time">注册时间</th>
-              <th class="col-traffic">流量花费</th>
-              <th class="col-actions">操作</th>
+              {% include 'account_table_header.html' %}
             </tr>
           </thead>
           <tbody id="accountsBodyV2"></tbody>
@@ -2476,6 +2437,7 @@
           <div class="outlook-v2-select-menu" role="listbox">
             <button type="button" class="outlook-v2-select-item is-active" data-value="all" role="option">全部邮箱池</button>
             <button type="button" class="outlook-v2-select-item" data-value="outlook" role="option">Outlook 邮箱池</button>
+            <button type="button" class="outlook-v2-select-item" data-value="icloud" role="option">iCloud 邮箱池</button>
             <button type="button" class="outlook-v2-select-item" data-value="generic_api" role="option">通用 API 邮箱池</button>
             <button type="button" class="outlook-v2-select-item" data-value="imap" role="option">通用 IMAP 邮箱池</button>
             <button type="button" class="outlook-v2-select-item" data-value="cloudflare_domain" role="option">域名邮箱池</button>
@@ -2503,15 +2465,17 @@
       <div class="outlook-table-v2-wrap">
         <table class="outlook-table-v2">
           <colgroup>
-            <col class="col-check"><col class="col-email"><col class="col-source"><col class="col-status">
-            <col class="col-token"><col class="col-time"><col class="col-time"><col class="col-actions">
+            <col class="col-check"><col class="col-email"><col class="col-password"><col class="col-source"><col class="col-status">
+            <col class="col-email-otp"><col class="col-token"><col class="col-time"><col class="col-time"><col class="col-actions">
           </colgroup>
           <thead>
             <tr>
               <th class="col-check"><input type="checkbox" id="outlookSelectAllV2" title="全选/取消全选当前页邮箱" disabled></th>
               <th class="col-email">邮箱</th>
+              <th class="col-password">邮箱密码</th>
               <th class="col-source">类型</th>
               <th class="col-status">状态</th>
+              <th class="col-email-otp">邮箱验证码</th>
               <th class="col-token">Token</th>
               <th class="col-time">导入时间</th>
               <th class="col-time">已用时间</th>
@@ -2570,6 +2534,7 @@
       </div>
     </div>
   </div>
+{% include 'workspace_pages.html' %}
 </main>
 
 <div id="toast"></div>
@@ -2640,7 +2605,7 @@
       <label class="outlook-import-field"><span>新邮箱来源</span><select id="emailChangeSourceV2">
         <option value="outlook">Outlook 邮箱池</option><option value="generic_api">通用 API</option><option value="imap">通用 IMAP</option>
         <option value="cloudflare_domain">Cloudflare 域名邮箱</option><option value="cloudflare">Cloudflare 临时邮箱</option>
-        <option value="gptmail">GPTMail</option><option value="mailnest">MailNest</option><option value="cloudmail">CloudMail</option><option value="remail">Remail</option>
+        <option value="gptmail">GPTMail</option><option value="mailnest">MailNest</option><option value="cloudmail">CloudMail</option><option value="remail">Remail</option><option value="smsbower_mail">SMSBower Gmail</option>
       </select></label>
       <div class="banner warn">换绑成功后当前 access_token 会失效并被清空，系统会立即使用新邮箱自动查活并刷新 AT。原邮箱会保留在账号记录中。</div>
     </div>
@@ -2674,6 +2639,7 @@ const $ = (s) => document.querySelector(s);
 const $$ = (s) => Array.from(document.querySelectorAll(s));
 let copySeq = 0;
 const copyStore = new Map();
+{% include 'ui_performance.html' %}
 let ACCOUNTS = [], OUTLOOK = [], CONFIG = [];
 let ACCOUNTS_TOTAL = 0;
 const TOTP_CODE_CACHE = new Map();
@@ -2825,19 +2791,20 @@ function isPlaceholderEmpty(v) {
   return !s || ['-', '—', '无', '空', 'none', 'null', 'n/a', 'na'].includes(s.toLowerCase());
 }
 function short(v, n=40) { const s = v || ''; return s.length > n ? s.slice(0,n)+'…' : s; }
-function copyId(v) { if (!v) return ''; const id = 'c'+(++copySeq); copyStore.set(id, v); return id; }
+function copyId(v) { if (!v) return ''; const id = 'c'+(++copySeq); copyStore.set(id, v); rememberCopyId(id); return id; }
 function cbtn(label, value, cls='') { const id = copyId(value); return `<button class="${cls}" data-copy-id="${id}" ${id?'':'disabled'}>${label}</button>`; }
 function pill(status) {
-  const map = { available:'可用', used:'已用', failed:'失败', registered:'已注册', unregistered:'未注册', blocked:'入口受阻', already_registered:'已注册账号', partial_success:'部分成功', disabled:'停用', pending:'排队', running:'运行中', stopping:'停止中', stopped:'已停止', success:'成功', cancelled:'已取消' };
+  const map = { available:'可用', used:'已用', failed:'失败', registered:'已注册', unregistered:'未注册', blocked:'入口受阻', already_registered:'已注册账号', partial_success:'部分成功', disabled:'停用', pending:'排队', paused:'已暂停', pausing:'暂停中', paused_queue:'暂停排队', interrupted:'执行已中断', attention_required:'待人工核验', network_error:'网络异常', mail_timeout:'收码超时', configuration_error:'配置错误', running:'运行中', stopping:'停止中', stopped:'已停止', success:'成功', cancelled:'已取消' };
   return `<span class="pill status-${esc(status)}">${esc(map[status]||status||'-')}</span>`;
 }
 function pillV2(status) {
   const s = String(status || '');
-  const map = { available:'可用', used:'已用', failed:'失败', blocked:'入口受阻', already_registered:'已注册账号', partial_success:'部分成功', disabled:'已停用', pending:'排队', running:'运行中', stopping:'停止中', stopped:'已停止', success:'成功', cancelled:'已取消' };
+  const map = { available:'可用', used:'已用', failed:'失败', blocked:'入口受阻', already_registered:'已注册账号', partial_success:'部分成功', disabled:'已停用', pending:'排队', paused:'已暂停', pausing:'暂停中', paused_queue:'暂停排队', interrupted:'执行已中断', attention_required:'待人工核验', network_error:'网络异常', mail_timeout:'收码超时', configuration_error:'配置错误', running:'运行中', stopping:'停止中', stopped:'已停止', success:'成功', cancelled:'已取消' };
   let cls = 'jobs-v2-pill--muted';
   if (s === 'success') cls = 'jobs-v2-pill--success';
   else if (s === 'failed') cls = 'jobs-v2-pill--failed';
-  else if (s === 'blocked') cls = 'jobs-v2-pill--blocked';
+  else if (['blocked','attention_required','configuration_error'].includes(s)) cls = 'jobs-v2-pill--blocked';
+  else if (['network_error','mail_timeout','interrupted'].includes(s)) cls = 'jobs-v2-pill--failed';
   else if (s === 'running' || s === 'stopping') cls = 'jobs-v2-pill--running';
   else if (s === 'pending' || s === 'cancelled' || s === 'stopped') cls = 'jobs-v2-pill--muted';
   return `<span class="jobs-v2-pill ${cls}">${esc(map[s]||s||'-')}</span>`;
@@ -2852,24 +2819,7 @@ function formatDateTime(v) {
   const p = (n) => String(n).padStart(2, '0');
   return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
 }
-function formatTraffic(t) {
-  if (!t || !t.available) return '<span title="该任务未采集流量；历史流量无法补算">未记录</span>';
-  const n = (v) => Number.isFinite(Number(v)) ? Math.max(0, Number(v)) : 0;
-  const fmt = (v) => {
-    v = n(v);
-    if (v < 1024) return `${Math.round(v)} B`;
-    if (v < 1024 * 1024) return `${(v / 1024).toFixed(1)} KiB`;
-    return `${(v / 1024 / 1024).toFixed(2)} MiB`;
-  };
-  const j = t.js_coverage;
-  const jsHint = j && j.enabled ? `，JS脚本 ${n(j.script_count)}（执行 ${n(j.executed_script_count)}，候选 ${n(j.candidate_script_count)}）` : '';
-  const protocol = t.method === 'curl_cffi.transfer_sizes';
-  const tunnel = t.method === 'proxy_tunnel';
-  const note = `；${t.note || ''}${t.measurement_complete === false ? '；部分请求未完整计量' : ''}`;
-  const budget = t.within_budget === false ? ' · 超预算' : '';
-  const title = `上传 ${n(t.upload_bytes)} 字节，下载 ${n(t.download_bytes)} 字节，${n(t.request_count)} 个请求${jsHint}${note}`;
-  return `<div title="${esc(title)}"><strong>${t.measurement_complete === false ? '小计 ' : protocol ? '≈' : ''}${fmt(t.total_bytes)}${budget}</strong><div style="font-size:11px;color:#606266;">↑ ${fmt(t.upload_bytes)} · ↓ ${fmt(t.download_bytes)}</div><div style="font-size:11px;color:#909399;">${n(t.total_bytes).toLocaleString()} 字节 · ${tunnel ? '代理隧道' : protocol ? 'HTTP估算' : '浏览器统计'}</div></div>`;
-}
+{% include 'traffic_display.html' %}
 function jobsV2OpIcons() {
   return {
     view: `<svg viewBox="0 0 24 24"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`,
@@ -2901,25 +2851,39 @@ function debounce(fn, wait=250) {
 
 // ---------- Tab 切换 ----------
 function activateTab(tab, persist=true) {
-  const allowed = ['register','accounts','codex','outlook','config'];
-  if (!allowed.includes(tab)) tab = 'register';
-  $$('nav button').forEach(x => x.classList.toggle('active', x.dataset.tab === tab));
-  allowed.forEach(t => $('#tab-'+t).classList.toggle('hidden', t !== tab));
-  if (['register','accounts','codex','outlook'].includes(tab)) {
-    const key = tab === 'register' ? 'jobs' : tab;
-    enableResizableTableHeaders(`.${key}-table-v2`, key);
+  if (tab === 'icloud') {
+    setPoolSourceV2('icloud');
+    PAGERS.outlook.page = 1;
+    tab = 'outlook';
   }
-  if (persist) localStorage.setItem('gpt_console_active_tab', tab);
+  if (tab === 'codex') tab = 'accounts';
+  const allowed = ['register','accounts','github','outlook','config'];
+  if (!allowed.includes(tab)) tab = 'register';
+  const activeNav = tab;
+  $$('nav button').forEach(x => x.classList.toggle('active', x.dataset.tab === activeNav));
+  allowed.forEach(t => $('#tab-'+t).classList.toggle('hidden', t !== tab));
+  $('#tab-codex').classList.add('hidden');
+  if (['register','accounts','codex','outlook'].includes(tab)) {
+    const key = tab === 'register' ? 'history' : tab;
+    enableResizableTableHeaders(key === 'history' ? '.history-table' : `.${key}-table-v2`, key === 'outlook' ? 'outlook-mail-tools-v1' : key);
+  }
+  if (persist) localStorage.setItem('gpt_console_active_tab', activeNav);
   if (tab === 'accounts') loadAccounts();
-  if (tab === 'codex') loadCodex();
-  if (tab === 'outlook') loadOutlook();
+
+  if (tab === 'outlook') { loadOutlook(); refreshJobs(); }
   if (tab === 'config') loadConfig();
-  if (tab === 'register') refreshJobs();
+  if (tab === 'register') refreshLogHistory();
 }
-$$('nav button').forEach(b => b.addEventListener('click', () => activateTab(b.dataset.tab)));
+$$('nav button').forEach(b => b.addEventListener('click', () => {
+  if (b.dataset.tab === 'outlook') setPoolSourceV2('all');
+  activateTab(b.dataset.tab);
+}));
 
 // ---------- 概览 ----------
+let summaryFlight = null;
 async function loadSummary() {
+  if (summaryFlight) return summaryFlight;
+  summaryFlight = (async () => {
   try {
     const s = await api('/api/summary');
     $('#statAccounts').textContent = s.accounts;
@@ -2928,12 +2892,18 @@ async function loadSummary() {
     $('#statUsed').textContent = s.outlook_used;
     $('#statFailed').textContent = s.outlook_failed;
   } catch(e) {}
+  })();
+  try { await summaryFlight; } finally { summaryFlight = null; }
 }
 
 // ---------- 注册 / 任务 ----------
 async function startRegistrationFromInputs(countEl, workersEl, startBtn) {
-  const count = parseInt((countEl?.value || '1'), 10);
-  const workers = parseInt((workersEl?.value || '3'), 10);
+  const count = Number(countEl?.value);
+  const workers = typeof getSavedRegistrationWorkers === 'function' ? getSavedRegistrationWorkers() : Number(workersEl?.value);
+  if (!Number.isInteger(count) || count < 1 || count > 200) { showToast('请输入本次追加数量（1-200）'); return; }
+  if (!Number.isInteger(workers) || workers < 1 || workers > 16) { showToast('注册并发请输入 1-16 的整数'); return; }
+  if (Number(workersEl?.value) !== workers) { showToast('请先点击注册并发旁的保存'); return; }
+  const emailSource = $('#regEmailSourceV2')?.value || '';
   const activeCount = Number(JOB_STATUS_COUNTS.active || 0);
   if (activeCount > 0) {
     const ok = confirm(
@@ -2950,10 +2920,11 @@ async function startRegistrationFromInputs(countEl, workersEl, startBtn) {
   };
   const b2 = $('#btnStartV2'); if (b2) b2.disabled = true;
   try {
-    const r = await api('/api/jobs', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({count, workers}) });
+    const r = await api('/api/jobs', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({count, workers, email_source:emailSource}) });
     const warnHtml = r.warning ? `<div class="banner warn">${esc(r.warning)}（本次并发 ${r.workers || workers}）</div>` : `<div class="banner info">已提交 ${r.submitted} 个任务，本次并发 ${r.workers || workers}</div>`;
     const warnEl = $('#regWarnV2'); if (warnEl) warnEl.innerHTML = warnHtml;
-    const c2 = $('#regCountV2'); if (c2) c2.value = count;
+    if (countEl) countEl.value = '';
+    const c2 = $('#regCountV2'); if (c2) c2.value = '';
     const w2 = $('#regWorkersV2'); if (w2) w2.value = workers;
     refreshJobs();
   } catch(e) {
@@ -2973,7 +2944,7 @@ async function startRegistrationFromSelectedPool(btn) {
   if (!confirm(`确定使用选中的 ${items.length} 个邮箱注册吗？\n\n这些邮箱会按选择顺序入队。`)) return;
   if (btn) btn.disabled = true;
   try {
-    const workers = Math.max(1, Math.min(16, Number($('#regWorkersV2')?.value || 3)));
+    const workers = typeof getSavedRegistrationWorkers === 'function' ? getSavedRegistrationWorkers() : Math.max(1, Math.min(16, Number($('#regWorkersV2')?.value || 3)));
     const r = await api('/api/jobs', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({count:items.length, workers, selected_emails:items})});
     showToast(`已提交 ${r.submitted || 0} 个指定邮箱注册任务`); refreshJobs();
   } catch (e) { showToast(`指定邮箱注册失败：${e.message}`); }
@@ -2996,8 +2967,8 @@ async function cancelAllPendingJobs(btn) {
   if (!confirm(msg)) return;
   if (btn) btn.disabled = true;
   try {
-    const r = await api('/api/jobs/cancel-pending', { method:'POST', headers:{'Content-Type':'application/json'}, body: '{}' });
-    showToast(`已取消 ${r.cancelled} 个排队任务`);
+    const r = await api('/api/jobs/stop', { method:'POST', headers:{'Content-Type':'application/json'}, body: '{}' });
+    showToast(`已停止本批剩余 ${r.cancelled} 项；已开始的邮箱继续注册和2FA`);
     refreshJobs();
   } catch(e) { showToast('取消失败: ' + e.message); }
   finally {
@@ -3105,13 +3076,13 @@ function renderJobs() {
       const stoppable = ['pending','running','stopping'].includes(j.status);
       const started = formatDateTime(j.started_at);
       const completed = formatDateTime(j.completed_at);
-      const err = j.error_message || '';
+      const err = j.status_message || j.error_message || '';
       const manualOtp = j.status === 'running' && j.email && j.manual_otp_required;
       return `
       <tr>
         <td class="col-check"><input type="checkbox" class="job-row-check" data-job-id="${esc(j.id)}" ${JOB_SELECTED.has(Number(j.id)) ? 'checked' : ''} ${running ? 'disabled title="运行中的任务不能选择"' : ''}></td>
         <td class="col-id">#${esc(j.id)}${j.parent_job_id ? `<div class="sub-cell" title="重试自任务 #${esc(j.parent_job_id)}">↳ #${esc(j.parent_job_id)} · ${esc(j.retry_attempt || 1)}</div>` : ''}</td>
-        <td class="col-status">${pillV2(j.display_status || j.status)}</td>
+        <td class="col-status" title="${esc(j.status_message || '')}">${pillV2(j.display_status || j.status)}</td>
         <td class="col-email" title="${esc(j.email || '-')}">${esc(j.email || '-')}</td>
         <td class="col-time" title="${esc(started)}">${esc(started)}</td>
         <td class="col-time" title="${esc(completed)}">${esc(completed)}</td>
@@ -3152,24 +3123,30 @@ function updateJobsSelectionUi(pageRows = null) {
   }
 }
 
+let jobsRequestVersion = 0, jobsRequestController = null;
 async function refreshJobs() {
+  const version = ++jobsRequestVersion;
+  jobsRequestController?.abort();
+  const controller = new AbortController();
+  jobsRequestController = controller;
   try {
     refreshRegistrationPauseStatus();
-    const p = PAGERS.jobs;
-    const res = await api(`/api/jobs?paged=1&page=${encodeURIComponent(p.page)}&page_size=${encodeURIComponent(p.size)}`);
+    const p = {...PAGERS.jobs};
+    const res = await api(`/api/jobs?paged=1&page=${encodeURIComponent(p.page)}&page_size=${encodeURIComponent(p.size)}`, {signal: controller.signal});
+    if (version !== jobsRequestVersion || controller.signal.aborted) return;
     const nextJobs = res.items || [];
     JOBS_TOTAL = Number(res.total || nextJobs.length || 0);
     JOB_STATUS_COUNTS = res.status_counts || {};
     const totalPages = Math.max(1, Math.ceil(JOBS_TOTAL / p.size));
-    if (p.page > totalPages) { p.page = totalPages; return refreshJobs(); }
+    if (p.page > totalPages) { PAGERS.jobs.page = totalPages; return refreshJobs(); }
     const nextSignature = JSON.stringify({items: nextJobs, total: JOBS_TOTAL, status_counts: JOB_STATUS_COUNTS, page: p.page, size: p.size});
     JOBS = nextJobs;
     if (nextSignature !== jobsRenderSignature) {
       jobsRenderSignature = nextSignature;
       renderJobs();
     }
-    loadSummary();
   } catch(e) {}
+  finally { if (version === jobsRequestVersion) jobsRequestController = null; }
 }
 
 async function refreshRegistrationPauseStatus() {
@@ -3179,7 +3156,7 @@ async function refreshRegistrationPauseStatus() {
     const label = $('#registrationPauseStatusV2');
     const pause = $('#btnPauseRegistrationV2');
     const resume = $('#btnResumeRegistrationV2');
-    if (label) label.textContent = paused ? `注册已暂停（${r.active_jobs || 0} 个任务）` : '注册运行中';
+    if (label) label.textContent = `${paused ? '已暂停补充' : '自动补充中'} · 待启动 ${r.waiting_jobs || 0} · 已准入 ${r.admitted_jobs || 0}（含2FA）`;
     if (pause) pause.disabled = paused;
     if (resume) resume.disabled = !paused;
   } catch(e) {}
@@ -3386,6 +3363,8 @@ async function retrySelectedJobs() {
 {% include 'job_log_script.html' %}
 {% include 'registered_import_script.html' %}
 
+{% include 'account_column_filters.html' %}
+{% include 'account_session_controls.html' %}
 // ---------- 账号 ----------
 let accountsLoading = false;
 let planStatusLoading = false;
@@ -3398,23 +3377,9 @@ function getAccountsEmailSuffix() {
   const el = document.getElementById('emailSuffixAccountsV2');
   return (el ? el.value : '').trim();
 }
-function getAccountsGroup() {
-  const el = document.getElementById('accountGroupFilterV2');
-  return (el ? el.value : '').trim();
-}
-let accountGroupsLoaded = false;
-async function loadAccountGroups() {
-  try {
-    const data = await api('/api/accounts/groups');
-    const select = $('#accountGroupFilterV2');
-    if (!select) return;
-    const current = select.value;
-    select.innerHTML = '<option value="">全部分组</option><option value="__ungrouped__">未分组</option>' +
-      (data.groups || []).map(g => `<option value="${attrEsc(g)}">${esc(g)}</option>`).join('');
-    if ([...select.options].some(o => o.value === current)) select.value = current;
-    accountGroupsLoaded = true;
-  } catch(e) {}
-}
+{% include 'account_group_filter.html' %}
+let accountsLoadGeneration = 0;
+let accountsLoadController = null;
 function getAccountsCodexFilter() {
   const el = document.getElementById('codexStatusFilterV2');
   return (el ? el.value : '').trim();
@@ -3424,17 +3389,23 @@ function getAccountsTotpFilter() {
   return (el ? el.value : '').trim();
 }
 function getCodexBulkWorkers() {
+  if (typeof getSavedAccountWorkers === 'function') return getSavedAccountWorkers();
   const el = document.getElementById('codexBulkWorkersV2');
   return Math.max(1, Math.min(16, Number((el && el.value) || 3)));
 }
 function getAccountsPlanFilter() {
+  const select = document.getElementById('accountPlanFilterV2');
+  if (select) return select.value;
   if (SHOW_PLUS_ACCOUNTS_ONLY) return 'plus';
   if (SHOW_PLUS_TRIAL_ACCOUNTS_ONLY) return 'plus_trial';
   if (SHOW_FREE_ACCOUNTS_ONLY) return 'free_no_trial';
   return '';
 }
 async function loadAccounts() {
-  if (accountsLoading) return;
+  const generation = ++accountsLoadGeneration;
+  if (accountsLoadController) accountsLoadController.abort();
+  const controller = new AbortController();
+  accountsLoadController = controller;
   accountsLoading = true;
   try {
     const archived = SHOW_ARCHIVED_ACCOUNTS ? 'only' : '0';
@@ -3446,18 +3417,20 @@ async function loadAccounts() {
     const group = getAccountsGroup();
     const dateFrom = document.getElementById('dateFromAccountsV2')?.value || '';
     const dateTo = document.getElementById('dateToAccountsV2')?.value || '';
-    const p = PAGERS.accounts;
-    const res = await api(`/api/accounts?paged=1&page=${encodeURIComponent(p.page)}&page_size=${encodeURIComponent(p.size)}&archived=${encodeURIComponent(archived)}&plan=${encodeURIComponent(plan)}&codex_status=${encodeURIComponent(codex)}&totp_status=${encodeURIComponent(totp)}&q=${encodeURIComponent(q)}&email_suffix=${encodeURIComponent(suffix)}&group=${encodeURIComponent(group)}&date_from=${encodeURIComponent(dateFrom)}&date_to=${encodeURIComponent(dateTo)}`);
+    const p = {...PAGERS.accounts};
+    const res = await api(`/api/accounts?paged=1&page=${encodeURIComponent(p.page)}&page_size=${encodeURIComponent(p.size)}&archived=${encodeURIComponent(archived)}&plan=${encodeURIComponent(plan)}&codex_status=${encodeURIComponent(codex)}&totp_status=${encodeURIComponent(totp)}&q=${encodeURIComponent(q)}&email_suffix=${encodeURIComponent(suffix)}&group=${encodeURIComponent(group)}&date_from=${encodeURIComponent(dateFrom)}&date_to=${encodeURIComponent(dateTo)}&filters=${encodeURIComponent(typeof getAccountColumnFiltersQuery === 'function' ? getAccountColumnFiltersQuery() : '')}`, {signal: controller.signal});
+    if (generation !== accountsLoadGeneration || controller.signal.aborted) return;
     ACCOUNTS = res.items || [];
     ACCOUNTS_TOTAL = Number(res.total || ACCOUNTS.length || 0);
     const totalPages = Math.max(1, Math.ceil(ACCOUNTS_TOTAL / p.size));
-    if (p.page > totalPages) { p.page = totalPages; accountsLoading = false; return loadAccounts(); }
+    if (p.page > totalPages) { PAGERS.accounts.page = totalPages; return loadAccounts(); }
     renderAccounts();
-  } catch(e) { showToast('加载账号失败: ' + e.message); }
-  finally { accountsLoading = false; }
+  } catch(e) { if (generation === accountsLoadGeneration && e.name !== 'AbortError') showToast('加载账号失败: ' + e.message); }
+  finally { if (generation === accountsLoadGeneration) { accountsLoading = false; accountsLoadController = null; } }
 }
 async function pollAccountPlanStatuses() {
   if (planStatusLoading || accountsLoading) return;
+  const generation = accountsLoadGeneration;
   planStatusLoading = true;
   try {
     const archived = SHOW_ARCHIVED_ACCOUNTS ? 'only' : '0';
@@ -3470,7 +3443,9 @@ async function pollAccountPlanStatuses() {
     const dateFrom = document.getElementById('dateFromAccountsV2')?.value || '';
     const dateTo = document.getElementById('dateToAccountsV2')?.value || '';
     const p = PAGERS.accounts;
-    const snapshot = await api(`/api/accounts/plan-check-status?page=${encodeURIComponent(p.page)}&page_size=${encodeURIComponent(p.size)}&archived=${encodeURIComponent(archived)}&plan=${encodeURIComponent(plan)}&codex_status=${encodeURIComponent(codex)}&totp_status=${encodeURIComponent(totp)}&q=${encodeURIComponent(q)}&email_suffix=${encodeURIComponent(suffix)}&group=${encodeURIComponent(group)}&date_from=${encodeURIComponent(dateFrom)}&date_to=${encodeURIComponent(dateTo)}`);
+    const snapshot = await api(`/api/accounts/plan-check-status?page=${encodeURIComponent(p.page)}&page_size=${encodeURIComponent(p.size)}&archived=${encodeURIComponent(archived)}&plan=${encodeURIComponent(plan)}&codex_status=${encodeURIComponent(codex)}&totp_status=${encodeURIComponent(totp)}&q=${encodeURIComponent(q)}&email_suffix=${encodeURIComponent(suffix)}&group=${encodeURIComponent(group)}&date_from=${encodeURIComponent(dateFrom)}&date_to=${encodeURIComponent(dateTo)}&filters=${encodeURIComponent(typeof getAccountColumnFiltersQuery === 'function' ? getAccountColumnFiltersQuery() : '')}&revision=${encodeURIComponent(planStatusRevision)}`);
+    if (generation !== accountsLoadGeneration || accountsLoading) return;
+    if (snapshot.unchanged) return;
     const items = snapshot.items || [];
     const accountById = new Map(ACCOUNTS.map(r => [Number(r.id), r]));
     const hasUnknown = items.some(item => !accountById.has(Number(item.id)));
@@ -3492,6 +3467,10 @@ async function pollAccountPlanStatuses() {
         if (wasChecking && !isChecking) needsFullReload = true;
         if (wasExtracting && !isExtracting) needsFullReload = true;
         if (wasAgenting && !isAgenting) needsFullReload = true;
+        for (const field of ['live_check_status','totp_setup_status','email_change_status','codex_status']) {
+          const pending = value => ['queued','running','retrying'].includes(value);
+          if (pending(account?.[field]) && !pending(item[field])) needsFullReload = true;
+        }
         Object.assign(account, item);
       });
       planStatusRevision = snapshot.revision || '';
@@ -3553,10 +3532,10 @@ function _totpCellV2(r) {
   return `<div class="agent-token-cell">${btn}</div>`;
 }
 function _emailOtpCellV2(r) {
-  if (!['imap', 'outlook'].includes(String(r.email_source || '').toLowerCase())) return `<span class="acc-v2-muted">-</span>`;
+  if (!['imap', 'outlook', 'generic_api'].includes(String(r.email_source || '').toLowerCase())) return `<span class="acc-v2-muted">-</span>`;
   const cached = EMAIL_OTP_CACHE.get(Number(r.id));
   const code = cached?.code;
-  return `<div class="acc-v2-twofa-actions">${code ? `<span class="acc-v2-twofa-code" title="${esc(cached.at || '')}">${esc(code)}</span>` : ''}<button type="button" class="acc-v2-twofa-btn" data-account-email-otp="${esc(r.id)}" title="查询 IMAP / Outlook 最近 15 分钟收到的验证码（不发送新验证码）">${code ? '刷新' : '查验证码'}</button>${code ? `<button type="button" class="acc-v2-twofa-btn" data-account-copy-email-otp="${esc(r.id)}">复制</button>` : ''}</div>`;
+  return `<div class="acc-v2-twofa-actions">${code ? `<span class="acc-v2-twofa-code" title="${esc(cached.at || '')}">${esc(code)}</span>` : ''}<button type="button" class="acc-v2-twofa-btn" data-account-email-otp="${esc(r.id)}" title="查询已关联的 IMAP / Outlook / API 现有验证码，不发送新验证码；API 返回值不保证仍有效">${code ? '刷新' : '查验证码'}</button>${code ? `<button type="button" class="acc-v2-twofa-btn" data-account-copy-email-otp="${esc(r.id)}">复制</button>` : ''}</div>`;
 }
 function _codexAgentCell(r) {
   const s = r.codex_agent_status || '';
@@ -3731,6 +3710,7 @@ function _codexAction(r) {
 }
 {% include 'live_check_status.html' %}
 function _tokenCellV2(r) {
+  const sessionHtml=accountSessionCopyControls(r,'acc-v2-twofa-btn');
   const live = r.live_check_status || '';
   const liveErr = r.live_check_error || '';
   const liveAt = r.live_checked_at || '';
@@ -3743,9 +3723,9 @@ function _tokenCellV2(r) {
   else if (liveCheckNeedsManualLogin(r)) liveHtml = `<div class="acc-v2-sub" title="${esc(liveErr || liveAt)}" style="color:#b45309;white-space:normal;">${esc(liveCheckBlockedText(r))}</div>`;
   else if (live === 'failed') liveHtml = `<div class="acc-v2-sub" title="${esc(liveErr || liveAt)}" style="color:#e6a23c">查活: 失败</div>`;
   if (r.has_access_token) {
-    return `<button type="button" class="acc-v2-token-copy" data-account-copy-secret="access_token" data-account-id="${esc(r.id)}" title="复制完整 Token">复制</button>${liveHtml}`;
+    return `<button type="button" class="acc-v2-token-copy" data-account-copy-secret="access_token" data-account-id="${esc(r.id)}" title="复制完整 Access Token">复制AT</button>${sessionHtml}${liveHtml}`;
   }
-  return `<span class="pill status-failed">无Token</span>${liveHtml}`;
+  return `<span class="pill status-failed">无Token</span>${sessionHtml}${liveHtml}`;
 }
 function _accountsV2MoreMenu(r) {
   const parts = [
@@ -3790,20 +3770,22 @@ function positionAccountsV2MoreMenu(wrap) {
   menu.style.left = `${left}px`;
   menu.style.top = `${top}px`;
 }
-function renderAccounts() {
+function renderAccounts() { return withCopyScope("accounts", renderAccountsRows); }
+function renderAccountsRows() {
   const total = ACCOUNTS_TOTAL;
   const rows = ACCOUNTS;
   const rowHtmlV2 = (r) => `
     <tr>
       <td class="col-check"><input type="checkbox" class="account-row-check" data-account-id="${esc(r.id)}" ${ACCOUNT_SELECTED.has(Number(r.id)) ? 'checked' : ''}></td>
       <td class="col-id">#${esc(r.id)}</td>
+      <td class="col-archive"><span class="pill ${r.archived ? 'status-used' : 'status-success'}">${r.archived ? '归档' : '未归档'}</span></td>
       <td class="col-email" title="${esc(r.email || '-')}${r.original_email ? `\n原邮箱: ${esc(r.original_email)}` : ''}\n${esc(r.user_name || '-')}">
-        <div class="acc-v2-email" data-account-copy-email="${esc(r.id)}" title="点击复制邮箱">${esc(r.email)}${r.archived ? ' <span class="pill status-used" title="该账号已归档">归档</span>' : ''}</div>
-        ${r.account_group ? `<div class="acc-v2-email-status" title="账号分组">分组：${esc(r.account_group)}</div>` : ''}
+        <div class="acc-v2-email" data-account-copy-email="${esc(r.id)}" title="点击复制邮箱">${esc(r.email)}</div>
         ${r.original_email ? `<div class="acc-v2-email-history">原邮箱: ${esc(r.original_email)}</div>` : ''}
         <div class="acc-v2-email-user">${esc(r.user_name || '-')}</div>
         ${r.email_change_status === 'queued' ? `<div class="acc-v2-email-status">换绑排队 <button class="acc-v2-twofa-btn" data-account-cancel-queued="email_change" data-account-id="${esc(r.id)}">取消</button></div>` : (r.email_change_status === 'running' ? '<div class="acc-v2-email-status">换绑中</div>' : (r.email_change_status === 'failed' ? `<div class="acc-v2-email-status" title="${esc(r.email_change_error || '')}">换绑失败: ${esc(r.email_change_error || '-')}</div>` : ''))}
       </td>
+      <td class="col-group">${esc(r.account_group || '未分组')}</td>
       <td class="col-source">${esc(r.email_source || '-')}</td>
       <td class="col-small">${_emailOtpCellV2(r)}</td>
       <td class="col-token">${_tokenCellV2(r)}</td>
@@ -3828,13 +3810,14 @@ function renderAccounts() {
 
   const bodyV2 = $('#accountsBodyV2');
   if (bodyV2) {
-    bodyV2.innerHTML = rows.map(rowHtmlV2).join('') || '<tr><td colspan="15" style="text-align:center;color:#909399;padding:28px;">暂无账号</td></tr>';
+    bodyV2.innerHTML = rows.map(rowHtmlV2).join('') || '<tr><td colspan="17" style="text-align:center;color:#909399;padding:28px;">暂无账号</td></tr>';
   }
   updateAccountSelectionUi(rows);
   _renderPager('accounts', total);
 }
 
 function updateAccountSelectionUi(pageRows = null) {
+  syncWorkspaceAccountControls();
   const none = ACCOUNT_SELECTED.size === 0;
   const hintV2 = $('#accountsSelectedHintV2');
   if (hintV2) hintV2.textContent = `已选 ${ACCOUNT_SELECTED.size}`;
@@ -4094,6 +4077,8 @@ async function onAccountsBodyClick(e) {
       copyText(value);
       showToast(
         field === 'access_token' ? 'Token 已复制' :
+        field === 'session_token' ? 'SESSION 已复制' :
+        field === 'session_json' ? 'Session JSON 已复制' :
         field === 'password' ? 'GPT 密码已复制' :
         field === 'mail_password' ? '邮箱密码已复制' :
         field === 'codex_agent_token' ? 'Agent Token 已复制' :
@@ -4309,11 +4294,7 @@ async function onAccountsBodyClick(e) {
     showToast(r.message || '已开始补跑');
     loadAccounts();
     openRetryLog(email);
-    const poll = setInterval(async () => {
-      const acc = ACCOUNTS.find(a => a.email === email);
-      if (!acc || acc.codex_status !== 'retrying') clearInterval(poll);
-    }, 15000);
-    setTimeout(() => clearInterval(poll), 5 * 60 * 1000);
+    planStatusRevision = '';
   } catch(err) {
     showToast('触发补跑失败: ' + err.message);
     btn.disabled = false;
@@ -4422,6 +4403,13 @@ async function refreshAccountsList(btn) {
   }
 }
 (function bindAccountsFilterV2() {
+  const planFilter = $('#accountPlanFilterV2');
+  if (planFilter) planFilter.addEventListener('change', () => {
+    SHOW_PLUS_ACCOUNTS_ONLY = SHOW_PLUS_TRIAL_ACCOUNTS_ONLY = SHOW_FREE_ACCOUNTS_ONLY = false;
+    ACCOUNT_SELECTED.clear(); PAGERS.accounts.page = 1; loadAccounts();
+  });
+  const archiveFilter = $('#accountArchiveFilterV2');
+  if (archiveFilter) archiveFilter.addEventListener('change', () => applyAccountsArchivedFilter(archiveFilter.value === 'only'));
   const qV2 = $('#qAccountsV2');
   if (qV2) qV2.addEventListener('input', debounce(() => {
     ACCOUNT_SELECTED.clear();
@@ -4558,7 +4546,7 @@ async function setupAccountTotp(id, btn) {
 async function setupSelectedTotp() {
   const ids = Array.from(ACCOUNT_SELECTED).map(Number);
   if (!ids.length) { showToast('请先选择账号'); return; }
-  if (!confirm(`确定为选中的 ${ids.length} 个账号批量开启 2FA？\n\n任务会在后台排队执行，完成后自动把 TOTP 密钥写回账号信息。\n已经开启、没有 Token 或正在设置中的账号会自动跳过。`)) return;
+  if (!confirm(`确定为选中的 ${ids.length} 个账号批量开启 2FA？\n\n本页并发上限：${getCodexBulkWorkers()}。任务会在后台排队执行，完成后自动把 TOTP 密钥写回账号信息。\n已经开启、没有 Token 或正在设置中的账号会自动跳过。`)) return;
 
   const btn = document.getElementById('btnSetupSelectedTotpV2');
   if (!btn) return;
@@ -4572,7 +4560,7 @@ async function setupSelectedTotp() {
       body: JSON.stringify({account_ids: ids}),
     });
     (r.started || []).forEach(item => ACCOUNT_SELECTED.delete(Number(item.id)));
-    showToast(describeTotpBulkResult(r), (r.skipped || []).length ? 7000 : 1400);
+    showToast(describeTotpBulkResult(r) + `；本页并发 ${r.queue?.workers || getCodexBulkWorkers()}`, (r.skipped || []).length ? 7000 : 1400);
     planStatusRevision = '';
     await loadAccounts();
     await pollAccountPlanStatuses();
@@ -4755,25 +4743,7 @@ function copySelectedAccountEmails() {
 }
 
 async function downloadSelectedAccountTxt() {
-  const ids = Array.from(ACCOUNT_SELECTED).map(Number);
-  if (!ids.length) { showToast('请先选择账号'); return; }
-  let lines = [];
-  try {
-    lines = await fetchAccountSecrets(ids, 'copy_line');
-  } catch(err) { showToast('生成 TXT 失败: ' + err.message); return; }
-  if (!lines.length) { showToast('选中账号没有可下载整行'); return; }
-  const now = new Date();
-  const pad = n => String(n).padStart(2, '0');
-  const filename = `accounts-selected-${now.getFullYear()}${pad(now.getMonth()+1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}.txt`;
-  const blob = new Blob(['\ufeff' + lines.join('\n') + '\n'], {type: 'text/plain;charset=utf-8'});
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 800);
-  showToast(`已下载 ${lines.length} 个账号 TXT`);
+  return openAccountExportDialog();
 }
 
 async function downloadSelectedAccountFullExport() {
@@ -5129,11 +5099,12 @@ async function checkSelectedPlans() {
 async function checkSelectedLive(idsArg = null, btnArg = null) {
   const ids = idsArg || Array.from(ACCOUNT_SELECTED);
   if (ids.length === 0) { showToast('请先选择账号'); return; }
+  const workers = getCodexBulkWorkers();
   const msg = idsArg ? `确定查活这个账号并刷新最新 AT/accessToken 吗？` : `确定查活选中的 ${ids.length} 个账号吗？
 
 会重新登录邮箱 OTP；登录成功且未封号则标记正常，并刷新最新 AT/accessToken。
 
-按队列逐个执行；遇到 403/429 会停止该账号的查活。`;
+并发线程数：${workers}；最多同时执行 ${Math.min(workers, ids.length)} 个，其余排队。遇到 403/429 会停止该账号的查活。`;
   if (!confirm(msg)) return;
   const firstAcc = ACCOUNTS.find(a => Number(a.id) === Number(ids[0]));
   const btn = btnArg || $('#btnCheckSelectedLiveV2');
@@ -5146,10 +5117,10 @@ async function checkSelectedLive(idsArg = null, btnArg = null) {
     const r = await api('/api/accounts/check-live-bulk', {
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({account_ids: ids}),
+      body: JSON.stringify({account_ids: ids, workers}),
     });
     const skipped = (r.skipped || []).length;
-    showToast(`查活已入队 ${r.started_count || 0} 个，忙碌 ${r.busy_count || 0} 个，失败 ${r.failed_count || 0}${skipped ? `，跳过 ${skipped}` : ''}`);
+    showToast(`查活已入队 ${r.started_count || 0} 个，并发 ${r.workers || workers}，忙碌 ${r.busy_count || 0} 个，失败 ${r.failed_count || 0}${skipped ? `，跳过 ${skipped}` : ''}`);
     const firstStarted = (r.started || [])[0];
     if (firstStarted?.email) openLiveLog(firstStarted.email);
     else if (firstAcc && firstAcc.email) openLiveLog(firstAcc.email);
@@ -5357,8 +5328,7 @@ async function retrySelectedCodex() {
     loadAccounts();
     const first = (r.started || [])[0];
     if (first && first.email) openRetryLog(first.email);
-    const poll = setInterval(loadAccounts, 15000);
-    setTimeout(() => clearInterval(poll), 10 * 60 * 1000);
+    planStatusRevision = '';
   } catch(err) {
     showToast('批量补跑失败: ' + err.message);
     updateAccountSelectionUi();
@@ -5405,8 +5375,7 @@ async function submitEmailChange() {
     showToast(ids.length === 1 ? '邮箱换绑任务已开始' : `已开始 ${r.started_count || 0} 个换绑任务，跳过 ${(r.skipped || []).length} 个`);
     planStatusRevision = '';
     loadAccounts();
-    const poll = setInterval(loadAccounts, 5000);
-    setTimeout(() => clearInterval(poll), 10 * 60 * 1000);
+    planStatusRevision = '';
   } catch (e) { showToast('邮箱换绑失败: ' + e.message); }
   finally { btn.disabled = false; }
 }
@@ -5442,6 +5411,7 @@ $('#emailChangeModalV2').addEventListener('click', e => { if (e.target.id === 'e
 })();
 
 // ---------- 邮箱池 ----------
+{% include 'pool_mail_tools.html' %}
 function getPoolSource() {
   const v2 = document.getElementById('poolSourceV2');
   return (v2 && v2.value) || 'all';
@@ -5449,6 +5419,7 @@ function getPoolSource() {
 const POOL_SOURCE_LABELS = {
   all: '全部邮箱池',
   outlook: 'Outlook 邮箱池',
+  icloud: 'iCloud 邮箱池',
   generic_api: '通用 API 邮箱池',
   imap: '通用 IMAP 邮箱池',
   cloudflare_domain: '域名邮箱池',
@@ -5461,6 +5432,11 @@ function setPoolSourceV2(val) {
   const next = POOL_SOURCE_LABELS[val] ? val : 'all';
   hidden.value = next;
   if (btn) btn.textContent = POOL_SOURCE_LABELS[next] || next;
+  if (!document.getElementById('tab-outlook')?.classList.contains('hidden')) {
+    document.querySelectorAll('nav button[data-tab="outlook"], nav button[data-tab="icloud"]').forEach(item => {
+      item.classList.toggle('active', item.dataset.tab === (next === 'icloud' ? 'icloud' : 'outlook'));
+    });
+  }
   if (wrap) {
     wrap.querySelectorAll('.outlook-v2-select-item').forEach(item => {
       item.classList.toggle('is-active', item.dataset.value === next);
@@ -5512,19 +5488,30 @@ function poolKey(r) { return `${r.source || getPoolSource() || 'all'}|${r.email 
 function poolLabel(src) {
   return ({outlook:'Outlook', generic_api:'通用API', imap:'通用IMAP', cloudflare_domain:'域名邮箱'})[src] || src || '-';
 }
+let poolLoadGeneration = 0;
+let poolLoadController = null;
 async function loadOutlook() {
+  const generation = ++poolLoadGeneration;
+  if (poolLoadController) poolLoadController.abort();
+  const controller = new AbortController();
+  poolLoadController = controller;
   try {
     const source = getPoolSource();
     const q = getOutlookQuery();
     const status = getPoolStatus();
-    const p = PAGERS.outlook;
-    const res = await api(`/api/outlook?paged=1&page=${encodeURIComponent(p.page)}&page_size=${encodeURIComponent(p.size)}&source=${encodeURIComponent(source)}&status=${encodeURIComponent(status)}&q=${encodeURIComponent(q)}`);
+    const p = {...PAGERS.outlook};
+    const res = await api(`/api/outlook?paged=1&page=${encodeURIComponent(p.page)}&page_size=${encodeURIComponent(p.size)}&source=${encodeURIComponent(source)}&status=${encodeURIComponent(status)}&q=${encodeURIComponent(q)}`, {signal: controller.signal});
+    if (generation !== poolLoadGeneration || controller.signal.aborted) return;
     OUTLOOK = res.items || [];
-    OUTLOOK_TOTAL = Number(res.total || OUTLOOK.length || 0);
+    OUTLOOK_TOTAL = Number(res.total ?? OUTLOOK.length);
     const totalPages = Math.max(1, Math.ceil(OUTLOOK_TOTAL / p.size));
-    if (p.page > totalPages) { p.page = totalPages; return loadOutlook(); }
+    if (p.page > totalPages) { PAGERS.outlook.page = totalPages; return loadOutlook(); }
     renderOutlook();
-  } catch(e) {}
+  } catch(e) {
+    if (generation === poolLoadGeneration && e.name !== 'AbortError') showToast('加载邮箱池失败：' + e.message);
+  } finally {
+    if (generation === poolLoadGeneration) poolLoadController = null;
+  }
 }
 function closeOutlookV2MoreMenus() {
   document.querySelectorAll('.outlook-table-v2 .acc-v2-more.open').forEach(el => el.classList.remove('open'));
@@ -5564,7 +5551,8 @@ function _outlookMoreMenu(r) {
   ].filter(Boolean).join('');
   return items;
 }
-function renderOutlook() {
+function renderOutlook() { return withCopyScope("outlook", renderOutlookRows); }
+function renderOutlookRows() {
   const total = OUTLOOK_TOTAL;
   const rows = OUTLOOK;
   const bodyV2 = $('#outlookBodyV2');
@@ -5576,17 +5564,18 @@ function renderOutlook() {
     <tr>
       <td class="col-check"><input type="checkbox" class="outlook-row-check" data-email="${email}" data-source="${src}" ${OUTLOOK_SELECTED.has(poolKey(r)) ? 'checked' : ''}></td>
       <td class="col-email" title="${email}">
-        <div class="acc-v2-email">${email || '-'}</div>
-        <div class="acc-v2-sub" title="${esc(r.copy_line || '')}">${esc(short(r.copy_line, 70))}</div>
+        <div class="acc-v2-email">${poolEmailAddressCell(r)}</div>
       </td>
+      <td class="col-password">${poolEmailPasswordCell(r)}</td>
       <td class="col-source">${r.imap_forwarded ? '转发 IMAP' : esc(poolLabel(r.source))}</td>
       <td class="col-status">${pill(r.registration_status)}</td>
+      <td class="col-email-otp">${poolEmailOtpCell(r)}</td>
       <td class="col-token">${_outlookTokenCell(r)}</td>
       <td class="col-time" title="${esc(r.imported_at || r.created_at || '-')}">${esc(r.imported_at || r.created_at || '-')}</td>
       <td class="col-time" title="${esc(r.used_at || '-')}">${esc(r.used_at || '-')}</td>
       <td class="col-actions">
         <div class="acc-v2-actions">
-          ${cbtn('复制邮箱', r.copy_line, 'primary')}
+          ${cbtn('复制邮箱', r.email, 'primary')}
           <button type="button" class="danger" data-pool-act="delete" data-email="${email}" data-source="${src}" title="删除邮箱素材">删除</button>
           <div class="acc-v2-more">
             <button type="button" class="acc-v2-more-btn" data-outlook-more-toggle aria-haspopup="true">更多</button>
@@ -5595,7 +5584,7 @@ function renderOutlook() {
         </div>
       </td>
     </tr>`;
-    }).join('') || '<tr><td colspan="8" style="text-align:center;color:#909399;padding:28px;">邮箱池为空</td></tr>';
+    }).join('') || '<tr><td colspan="10" style="text-align:center;color:#909399;padding:28px;">邮箱池为空</td></tr>';
   updateOutlookSelectionUi(rows);
   _renderPager('outlook', total);
 }
@@ -5647,6 +5636,11 @@ function onOutlookBodyChange(e) {
   updateOutlookSelectionUi();
 }
 async function onOutlookBodyClick(e) {
+  const otpButton = e.target.closest('[data-pool-email-otp]');
+  if (otpButton) {
+    await queryPoolEmailOtp(otpButton.dataset.email, otpButton.dataset.source);
+    return;
+  }
   const moreToggle = e.target.closest('[data-outlook-more-toggle]');
   if (moreToggle) {
     e.preventDefault();
@@ -5873,14 +5867,15 @@ async function doImportOutlook() {
     }
     const r = await api('/api/outlook/import', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
     const mode = r.as_registered ? '已注册账号' : '邮箱池素材';
-    const msg = `按 ${mode} 导入：解析 ${r.parsed} 行，新增 ${r.inserted}，更新收件配置 ${r.updated || 0}，跳过 ${r.skipped}，格式错误 ${r.invalid || 0}${r.as_registered ? '；可到“账号”页查看' : ''}`;
+    const msg = `按 ${mode} 导入：解析 ${r.parsed} 行，新增 ${r.inserted}，更新收件配置 ${r.updated || 0}，跳过 ${r.skipped}，格式错误 ${r.invalid || 0}${r.as_registered ? '；可到“账号”页查看' : ''}`+
+      (r.receiver ? `；本次接码收件箱：${r.receiver.inbox}（${r.receiver.server}）${r.receiver.auth_configured ? '，独立授权码已配置' : '；请到“配置 → 邮箱 / OTP → 转发 IMAP”填写这个收件箱的独立授权码'}` : '');
     if (resultEl) resultEl.innerHTML = `<div class="banner info">${esc(msg)}</div>`;
     if (textEl) textEl.value = '';
     setPoolSourceV2(source === 'forwarded_imap' ? 'imap' : source);
     setImportSourceV2(source);
     loadOutlook(); loadAccounts(); loadSummary();
-    showToast(`导入完成：新增 ${r.inserted}，跳过 ${r.skipped}`);
-    setTimeout(closeOutlookImportModal, 600);
+    showToast(r.receiver && !r.receiver.auth_configured ? '导入已保存；这个收件箱的独立授权码尚未配置' : `导入完成：新增 ${r.inserted}，跳过 ${r.skipped}`);
+    if (!r.receiver || r.receiver.auth_configured) setTimeout(closeOutlookImportModal, 600);
   } catch(e) {
     if (resultEl) resultEl.innerHTML = `<div class="banner warn">${esc(e.message)}</div>`;
     else showToast('导入失败: ' + e.message);
@@ -5947,24 +5942,31 @@ function getCodexQuery() {
   return (el ? el.value : '').trim();
 }
 let CODEX_SHOW_ARCHIVED = false;
+let codexRequestVersion = 0, codexRequestController = null;
 async function loadCodex() {
+  const version = ++codexRequestVersion;
+  codexRequestController?.abort();
+  const controller = new AbortController();
+  codexRequestController = controller;
   try {
-    const p = PAGERS.codex;
+    const p = {...PAGERS.codex};
     const q = getCodexQuery();
     const archived = CODEX_SHOW_ARCHIVED ? 'only' : '0';
     const dateFrom = document.getElementById('dateFromCodexV2')?.value || '';
     const dateTo = document.getElementById('dateToCodexV2')?.value || '';
-    const r = await api(`/api/codex?paged=1&page=${encodeURIComponent(p.page)}&page_size=${encodeURIComponent(p.size)}&q=${encodeURIComponent(q)}&archived=${encodeURIComponent(archived)}&date_from=${encodeURIComponent(dateFrom)}&date_to=${encodeURIComponent(dateTo)}`);
+    const r = await api(`/api/codex?paged=1&page=${encodeURIComponent(p.page)}&page_size=${encodeURIComponent(p.size)}&q=${encodeURIComponent(q)}&archived=${encodeURIComponent(archived)}&date_from=${encodeURIComponent(dateFrom)}&date_to=${encodeURIComponent(dateTo)}`, {signal: controller.signal});
+    if (version !== codexRequestVersion || controller.signal.aborted) return;
     CODEX = r.accounts || [];
     CODEX_TOTAL = Number(r.total || CODEX.length || 0);
     const totalPages = Math.max(1, Math.ceil(CODEX_TOTAL / p.size));
-    if (p.page > totalPages) { p.page = totalPages; return loadCodex(); }
+    if (p.page > totalPages) { PAGERS.codex.page = totalPages; return loadCodex(); }
     const st = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
     st('codexStatTotalV2', r.summary?.total ?? 0);
     st('codexStatExportedV2', r.summary?.exported ?? 0);
     st('codexStatPendingV2', r.summary?.pending ?? 0);
     renderCodex();
-  } catch(e) { showToast('加载 Codex 列表失败: ' + e.message); }
+  } catch(e) { if (e.name !== 'AbortError' && version === codexRequestVersion) showToast('加载 Codex 列表失败: ' + e.message); }
+  finally { if (version === codexRequestVersion) codexRequestController = null; }
 }
 const CODEX_SELECTED = new Set();
 function _codexUpdateSelectedHint() {
@@ -6016,7 +6018,8 @@ function syncCodexSelectAllUi(pageRows = null) {
   cb.indeterminate = !allChecked && someChecked;
   cb.disabled = pageFilenames.length === 0;
 }
-function renderCodex() {
+function renderCodex() { return withCopyScope("codex", renderCodexRows); }
+function renderCodexRows() {
   const total = CODEX_TOTAL;
   const rows = CODEX;
   const body = $('#codexBodyV2');
@@ -6342,9 +6345,10 @@ function emailConfigSectionForKey(key) {
   if (key.startsWith('MAIL_NEST_')) return ['MailNest', 'MailNest / 迈巢临时邮箱 API 配置'];
   if (key.startsWith('CLOUDMAIL_')) return ['CloudMail', 'CloudMail 域名随机邮箱、Token 和收信 API 配置'];
   if (key.startsWith('REMAIL_')) return ['Remail', 'Remail 开放 API、项目下单和取件配置'];
+  if (key.startsWith('SMSBOWER_MAIL_')) return ['SMSBower Gmail', 'SMSBower 临时 Gmail 邮箱接口配置；API Key 复用接码平台 SMSBower'];
   if (key.startsWith('OUTLOOK_')) return ['Outlook 邮箱池', 'Outlook 邮箱池和取件模式配置'];
   if (key.startsWith('IMAP_')) return ['通用 IMAP', '通用 IMAP 邮箱池的收件目录配置'];
-  if (key === 'FORWARDED_IMAP_PASSWORD') return ['转发 IMAP', '统一收件箱的 IMAP 客户端授权码'];
+  if (key.startsWith('FORWARDED_IMAP_')) return ['转发 IMAP', '每条邮箱按导入的收件箱读取；授权码按具体收件箱独立保存'];
   if (key.startsWith('CLOUDFLARE_')) return ['Cloudflare 临时邮箱', 'Cloudflare Worker 临时邮箱 API、鉴权与路径配置'];
   if (['EMAIL_DOMAIN','QQ_EMAIL','QQ_IMAP_PASSWORD'].includes(key)) return ['Cloudflare 域名邮箱', 'Cloudflare 转发到 QQ 邮箱后的 IMAP 收信配置'];
   return ['其他邮箱配置', ''];
@@ -6554,6 +6558,7 @@ function setRegistrationDriverValue(value) {
   if (sectionMount) renderRegistrationEpSelect(sectionMount, 'configRegistrationSelectV2');
   bindRoxyWorkspaceToolsV2();
   bindCloudMailToolsV2();
+  bindSmsBowerMailToolsV2();
 }
 function renderRegistrationEpSelect(mount, wrapId) {
   if (!mount) return;
@@ -6771,6 +6776,9 @@ function renderSectionedConfigSectionV2(name, fields, sectionForKey, preferred, 
   if (name === '邮箱 / OTP' && active === 'CloudMail') {
     extra = renderCloudMailTokenToolsV2();
   }
+  if (name === '邮箱 / OTP' && active === 'SMSBower Gmail') {
+    extra = renderSmsBowerMailToolsV2();
+  }
   return `
     <section class="config-section-v2" id="${esc(slug)}" data-config-section="${esc(name)}">
       ${renderConfigSectionHead(name, '')}
@@ -6790,6 +6798,51 @@ function renderSectionedConfigSectionV2(name, fields, sectionForKey, preferred, 
       </div>
     </section>
   `;
+}
+function renderSmsBowerMailToolsV2() {
+  const hasMail = CONFIG.some(f => String(f.key || '').startsWith('SMSBOWER_MAIL_'));
+  if (!hasMail) return '';
+  return `
+    <div class="roxy-workspace-box" style="margin-top:18px;">
+      <div>
+        <b>SMSBower Gmail 检查</b>
+        <div class="hint">先保存配置，再使用已保存的 API Key、服务和域名查询目录/库存；查询不领取邮箱。</div>
+      </div>
+      <div class="action-cell">
+        <button class="btn" type="button" id="btnSmsBowerMailServicesV2">查询服务目录</button>
+        <button class="btn primary" type="button" id="btnSmsBowerMailPricesV2">查询 Gmail 库存</button>
+      </div>
+      <div id="smsBowerMailStatusV2" class="muted" style="font-size:12px;">未查询</div>
+    </div>
+  `;
+}
+function bindSmsBowerMailToolsV2() {
+  const servicesBtn = $('#btnSmsBowerMailServicesV2');
+  const pricesBtn = $('#btnSmsBowerMailPricesV2');
+  const status = $('#smsBowerMailStatusV2');
+  if (!servicesBtn || !pricesBtn || !status) return;
+  if (servicesBtn.dataset.bound) return;
+  servicesBtn.dataset.bound = '1';
+  servicesBtn.addEventListener('click', async () => {
+    servicesBtn.disabled = true;
+    status.textContent = '正在查询 SMSBower 邮箱服务目录...';
+    try {
+      const r = await api('/api/smsbower-mail/services');
+      const rows = Array.isArray(r.services) ? r.services : [];
+      const hit = rows.filter(x => String(x.code || '') === 'dr');
+      status.innerHTML = `共 ${rows.length} 个服务；OpenAI 项：<span class="mono">${esc(hit.length ? JSON.stringify(hit[0]) : '未找到 dr')}</span>`;
+    } catch(e) { status.innerHTML = `<span style="color:var(--red);">查询失败：${esc(e.message)}</span>`; }
+    finally { servicesBtn.disabled = false; }
+  });
+  pricesBtn.addEventListener('click', async () => {
+    pricesBtn.disabled = true;
+    status.textContent = '正在查询已保存服务/域名的价格与库存...';
+    try {
+      const r = await api('/api/smsbower-mail/prices');
+      status.innerHTML = `价格/库存：<span class="mono">${esc(JSON.stringify(r.data || {}))}</span>`;
+    } catch(e) { status.innerHTML = `<span style="color:var(--red);">查询失败：${esc(e.message)}</span>`; }
+    finally { pricesBtn.disabled = false; }
+  });
 }
 function renderCloudMailTokenToolsV2() {
   const hasCloudMail = CONFIG.some(f => String(f.key || '').startsWith('CLOUDMAIL_'));
@@ -6981,7 +7034,7 @@ function renderConfigSectionV2(name, fields) {
       name,
       fields,
       emailConfigSectionForKey,
-      ['通用邮箱 / OTP', 'GPTMail', 'MailNest', 'CloudMail', 'Remail', 'Outlook 邮箱池', 'Cloudflare 临时邮箱', 'Cloudflare 域名邮箱', '其他邮箱配置'],
+      ['通用邮箱 / OTP', 'GPTMail', 'MailNest', 'CloudMail', 'Remail', 'SMSBower Gmail', 'Outlook 邮箱池', 'Cloudflare 临时邮箱', 'Cloudflare 域名邮箱', '其他邮箱配置'],
       { get: () => CONFIG_EMAIL_ACTIVE_SECTION_V2, set: v => { CONFIG_EMAIL_ACTIVE_SECTION_V2 = v; } },
       'email-section-v2'
     );
@@ -7021,6 +7074,7 @@ function renderConfigLayoutV2() {
   if (sectionMount) renderRegistrationEpSelect(sectionMount, 'configRegistrationSelectV2');
   bindRoxyWorkspaceToolsV2();
   bindCloudMailToolsV2();
+  bindSmsBowerMailToolsV2();
 }
 function scrollToConfigSection(slug) {
   const el = document.getElementById(slug);
@@ -7111,14 +7165,25 @@ function bindConfigLayoutV2() {
   }
 }
 
+let configFlight = null, configSignature = '';
 async function loadConfig() {
+  if (Object.keys(CONFIG_PENDING_UPDATES).length) return;
+  if (configFlight) return configFlight;
+  configFlight = (async () => {
   try {
-    CONFIG = await api('/api/config');
+    const next = await api('/api/config');
+    if (Object.keys(CONFIG_PENDING_UPDATES).length) return;
+    const signature = JSON.stringify(next);
+    if (signature === configSignature) return;
+    CONFIG = next;
+    configSignature = signature;
     renderConfigLayoutV2();
     bindConfigLayoutV2();
   } catch(e) {
     showToast('加载配置失败: ' + e.message);
   }
+  })();
+  try { await configFlight; } finally { configFlight = null; }
 }
 
 async function loadRoxyWorkspaces() {
@@ -7242,6 +7307,7 @@ document.addEventListener('click', (e) => {
 });
 
 // ---------- 初始化 ----------
+{% include 'account_column_widths.html' %}
 function enableResizableTableHeaders(selector, storageKey) {
   const table = document.querySelector(selector);
   if (!table || table.dataset.resizeReady) return;
@@ -7249,16 +7315,18 @@ function enableResizableTableHeaders(selector, storageKey) {
   const headers = Array.from(table.querySelectorAll('thead th'));
   const columns = Array.from(table.querySelectorAll('colgroup col'));
   if (columns.length !== headers.length) return;
+  const widthsKey = tableColumnWidthStorageKey('table-widths', storageKey);
+  const minimums = headers.map(th => th.querySelector('[data-account-filter]') ? 82 : 48);
   let saved = {};
-  try { saved = JSON.parse(localStorage.getItem(`table-widths:${storageKey}`) || '{}'); } catch(e) {}
+  try { saved = JSON.parse(localStorage.getItem(widthsKey) || '{}'); } catch(e) {}
   const widths = columns.map((col, index) => {
     const cssWidth = parseFloat(getComputedStyle(col).width);
     const measured = col.getBoundingClientRect().width;
-    return Math.max(48, Number(saved[index]) || cssWidth || measured || 100);
+    return Math.max(minimums[index], Number(saved[index]) || cssWidth || measured || 100);
   });
   const applyWidths = () => {
     widths.forEach((width, index) => { columns[index].style.width = `${width}px`; });
-    table.style.width = `${widths.reduce((total, width) => total + width, 0)}px`;
+    table.style.width = `${widths.reduce((total, width, index) => total + (getComputedStyle(headers[index]).display === 'none' ? 0 : width), 0)}px`;
   };
   applyWidths();
   headers.forEach((th, index) => {
@@ -7274,12 +7342,12 @@ function enableResizableTableHeaders(selector, storageKey) {
       resizer.classList.add('is-dragging');
       document.body.classList.add('is-resizing-column');
       const move = (moveEvent) => {
-        widths[index] = Math.max(48, Math.round(startWidth + moveEvent.clientX - startX));
+        widths[index] = Math.max(minimums[index], Math.round(startWidth + moveEvent.clientX - startX));
         applyWidths();
       };
       const up = () => {
         saved[index] = widths[index];
-        localStorage.setItem(`table-widths:${storageKey}`, JSON.stringify(saved));
+        localStorage.setItem(widthsKey, JSON.stringify(saved));
         resizer.classList.remove('is-dragging');
         document.body.classList.remove('is-resizing-column');
         document.removeEventListener('pointermove', move);
@@ -7290,12 +7358,15 @@ function enableResizableTableHeaders(selector, storageKey) {
     });
   });
 }
+{% include 'workspace_layout_script.html' %}
 loadSummary();
 activateTab(localStorage.getItem('gpt_console_active_tab') || 'register', false);
-jobsTimer = setInterval(() => { if (!$('#tab-register').classList.contains('hidden')) refreshJobs(); }, 10000);
-setInterval(loadSummary, 30000);
-setInterval(() => { if (!$('#tab-accounts').classList.contains('hidden')) pollAccountPlanStatuses(); }, 10000);
+jobsTimer = pollVisiblePage('register', refreshLogHistory, 10000);
+pollVisiblePage('outlook', refreshJobs, 10000);
+pollVisiblePage(null, loadSummary, 30000);
+pollVisiblePage('accounts', pollAccountPlanStatuses, 10000);
 {% include 'workflow_driver_status.html' %}
+{% include 'queue_concurrency_controls.html' %}
 </script>
 {% include 'promo_details.html' %}
 {% include 'account_details.html' %}

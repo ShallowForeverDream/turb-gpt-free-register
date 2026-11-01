@@ -22,6 +22,18 @@ def response(data, status=200):
 
 
 class PasswordSetupTests(unittest.TestCase):
+    def test_password_polling_updates_same_second_without_returning_password(self):
+        with patch.object(db,'_now',return_value='2026-10-31T20:00:00'):
+            db.update_account_password_setup(self.aid,'running')
+            before=db.list_account_plan_check_statuses()
+            self.assertFalse(before['items'][0]['has_gpt_password'])
+            db.update_account_password_setup(self.aid,'success',password='Private-password-20!')
+            after=db.list_account_plan_check_statuses()
+        self.assertNotEqual(before['revision'],after['revision'])
+        self.assertTrue(after['items'][0]['has_gpt_password'])
+        self.assertEqual(after['items'][0]['password_setup_status'],'success')
+        self.assertNotIn('Private-password-20!',json.dumps(after))
+
     def setUp(self):
         self.stack=ExitStack();self.addCleanup(self.stack.close)
         root=Path(self.stack.enter_context(tempfile.TemporaryDirectory()))

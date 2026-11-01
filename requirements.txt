@@ -3,6 +3,7 @@ pyotp>=2.9.0
 phonenumberslite>=9.0,<10
 flask>=3.0.0
 requests>=2.31.0
+tzdata>=2024.1
 pycryptodome>=3.23.0
 selenium>=4.20.0
 websocket-client>=1.8.0

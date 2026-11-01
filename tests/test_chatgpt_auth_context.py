@@ -9,6 +9,9 @@ class _Session:
     device_id = "did-123"
     auth_session_logging_id = "log-456"
 
+    def navigator_language(self):
+        return "vi-VN"
+
 
 class ChatgptAuthContextTests(unittest.TestCase):
     def test_ensure_authorize_context_matches_20260914_capture_shape(self):
@@ -20,6 +23,7 @@ class ChatgptAuthContextTests(unittest.TestCase):
         self.assertNotIn("ext-passkey-client-capabilities", qs)
         self.assertEqual(qs["screen_hint"], ["login_or_signup"])
         self.assertEqual(qs["login_hint"], ["user@example.com"])
+        self.assertEqual(qs["ui_locales"], ["vi-VN"])
         self.assertEqual(qs["ccaps"], ["login_methods chatgpt_login_finalizer_v1"])
         self.assertEqual(qs["auth_return_target_category"], ["chatgpt_home"])
 

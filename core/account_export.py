@@ -504,7 +504,7 @@ def _trigger_reauth(session: BrowserSession, email: str) -> str:
     resp.raise_for_status()
     auth_url = resp.json().get("url")
     if not auth_url:
-        raise RuntimeError(f"未拿到 reauth authorize URL: {resp.text}")
+        raise RuntimeError("未拿到 reauth authorize URL（不记录响应正文）")
     return auth_url
 
 
@@ -573,7 +573,7 @@ def _validate_reauth_otp(session: BrowserSession, code: str) -> str:
     session._reauth_validate_result = data
     continue_url = data.get("continue_url")
     if not continue_url:
-        raise RuntimeError(f"OTP 验证响应缺少 continue_url: {data}")
+        raise RuntimeError("OTP 验证响应缺少 continue_url（不记录响应正文）")
     return continue_url
 
 
@@ -756,13 +756,13 @@ def _enroll_totp(session: BrowserSession, access_token: str) -> tuple[str, str]:
     logger.info("[2FA] 注册 TOTP...")
     resp = session.post(url, headers=headers, data=body)
     if resp.status_code != 200:
-        logger.error(f"[2FA] enroll 失败 {resp.status_code}: {resp.text}")
+        logger.error("[2FA] enroll 失败，HTTP %s（不记录响应正文）", resp.status_code)
         resp.raise_for_status()
     data = resp.json()
     secret = data.get("secret")
     session_id = data.get("session_id")
     if not secret or not session_id:
-        raise RuntimeError(f"enroll 响应字段缺失: {data}")
+        raise RuntimeError("enroll 响应字段缺失（不记录密钥或会话）")
     logger.info("[2FA] TOTP secret 已获取")
     return secret, session_id
 
@@ -792,11 +792,11 @@ def _activate_totp(
     logger.info("[2FA] 激活 enrollment")
     resp = session.post(url, headers=headers, data=body)
     if resp.status_code != 200:
-        logger.error(f"[2FA] activate 失败 {resp.status_code}: {resp.text}")
+        logger.error("[2FA] activate 失败，HTTP %s（不记录响应正文）", resp.status_code)
         resp.raise_for_status()
     data = resp.json()
     if not data.get("success"):
-        raise RuntimeError(f"激活返回 success=false: {data}")
+        raise RuntimeError("激活返回 success=false（不记录密钥或会话）")
     return True
 
 
@@ -808,8 +808,8 @@ def setup_2fa(
 ) -> str:
     """
     完整的 2FA 设置流程。
-    会触发再发一份邮箱验证码：
-        - USE_EMAIL_SERVICE=True 时自动从 Outlook 账号池拉取
+    跟随重认证进入邮箱验证页，不额外调用首次重发接口：
+        - USE_EMAIL_SERVICE=True 时沿用账号的邮箱来源自动取码
         - 否则需要用户手动输入
 
     Args:

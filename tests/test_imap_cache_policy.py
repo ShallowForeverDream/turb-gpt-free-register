@@ -259,16 +259,17 @@ class MailTimeoutRoundTests(unittest.TestCase):
                 account_liveness._validate_with_retry(Mock(), TARGET, time.time())
         self.assertEqual((wait.call_count,send.call_count), (1,1))
 
-    def test_twofa_three_timeouts_do_not_restart_authentication_or_enroll(self):
+    def test_twofa_mail_timeout_does_not_restart_authentication_or_enroll(self):
         with patch.object(account_export, '_trigger_reauth_with_retry', return_value='https://example.test/auth') as trigger, \
-             patch.object(account_export, '_follow_reauth_with_retry'), patch.object(account_export, 'human_delay'), \
+             patch.object(account_export, '_follow_reauth_with_retry', return_value='https://auth.openai.com/email-verification'), \
+             patch.object(account_export, 'human_delay'), \
              patch('config.email.USE_EMAIL_SERVICE', True), \
              patch('core.openai_auth.send_email_otp') as send, \
              patch('core.email_provider.wait_for_otp', side_effect=imap.ImapOtpTimeout('fixture')) as wait, \
              patch.object(account_export, '_enroll_totp') as enroll:
             with self.assertRaises(imap.ImapOtpTimeout):
                 account_export.setup_2fa(SimpleNamespace(), TARGET)
-        self.assertEqual((wait.call_count,send.call_count,trigger.call_count), (3,3,1))
+        self.assertEqual((wait.call_count,send.call_count,trigger.call_count), (1,0,1))
         enroll.assert_not_called()
 
 

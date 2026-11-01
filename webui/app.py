@@ -180,7 +180,7 @@ def _compact_account_for_list(row: dict) -> dict:
         "plan_type", "current_plan_type", "plus_trial_eligible",
         "eligible_promo_campaigns", "plus_trial_discount_percentage",
         "plan_check_status", "codex_status", "codex_agent_status",
-        "totp_setup_status",
+        "totp_setup_status", "password_setup_status", "password_setup_error", "password_setup_at",
         "flow_traffic", "flow_completion",
     ):
         if key in row:
@@ -435,6 +435,12 @@ def create_app(auth_code: str | None = None, *, local_no_auth: bool = False) -> 
             return jsonify({"ok": True, **driver_status()})
         except ValueError as exc:
             return jsonify({"ok": False, "ready": False, "error": str(exc)}), 400
+
+    @app.before_request
+    def check_api_json_object():
+        if (request.path.startswith("/api/") and request.method in {"POST", "PUT", "PATCH"}
+                and request.is_json and not isinstance(request.get_json(silent=True), dict)):
+            return jsonify({"ok": False, "error": "JSON 请求体必须是对象"}), 400
 
     @app.before_request
     def check_workflow_configuration():

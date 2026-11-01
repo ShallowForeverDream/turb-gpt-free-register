@@ -149,5 +149,29 @@ class AccountSessionTests(unittest.TestCase):
         row=db.get_account(self.aid)
         self.assertEqual(row['session_json'],info);self.assertEqual(row['session_token'],'refreshed-cookie')
 
+    def test_foreign_live_session_cannot_replace_token_metadata_or_status(self):
+        saved.save_account_session(self.aid,self.session,self.info)
+        before=db.get_account(self.aid)
+        foreign={**self.info,'accessToken':'foreign-at',
+                 'user':{'email':'other@example.test','id':'foreign-user','name':'Other'},
+                 'account':{'planType':'plus','createdTime':1700000000}}
+        self.assertFalse(db.update_account_liveness(self.aid,{
+            'ok':True,'status':'live','access_token':'foreign-at',
+            'session':foreign,'session_token':'foreign-cookie'}))
+        self.assertEqual(db.get_account(self.aid),before)
+
+    def test_same_second_session_capture_changes_poll_revision_without_secrets(self):
+        with patch.object(db,'_now',return_value='2026-10-31T20:00:00'):
+            db.update_account_liveness(self.aid,{'ok':True,'status':'live'})
+            before=db.list_account_plan_check_statuses()
+            saved.save_account_session(self.aid,self.session,self.info)
+            after=db.list_account_plan_check_statuses()
+        self.assertNotEqual(before['revision'],after['revision'])
+        self.assertTrue(after['items'][0]['has_session_token'])
+        self.assertTrue(after['items'][0]['has_session_json'])
+        serialized=json.dumps(after)
+        self.assertNotIn('part-apart-b',serialized)
+        self.assertNotIn('fixture-at',serialized)
+
 
 if __name__=='__main__':unittest.main()

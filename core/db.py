@@ -1763,6 +1763,7 @@ def list_account_plan_check_statuses(
         "codex_agent_sub2api_mode", "codex_agent_sub2api_total",
         "totp_setup_status", "totp_setup_ok", "totp_setup_error",
         "totp_setup_message", "totp_setup_trigger", "totp_setup_queued_at",
+        "password_setup_status", "password_setup_error", "password_setup_at",
         "totp_setup_started_at", "totp_setup_completed_at", "totp_setup_checked_at",
         "original_email", "email_source", "email_change_status", "email_change_ok",
         "email_change_error", "email_change_new_email", "email_change_started_at", "email_change_completed_at",
@@ -1811,6 +1812,7 @@ def list_account_plan_check_statuses(
         item["has_access_token"] = bool(str(row.get("access_token") or "").strip())
         item["has_session_token"] = bool(row.get("session_token"))
         item["has_session_json"] = bool(row.get("session_json"))
+        item["has_gpt_password"] = bool(_extract_registration_password(row))
         items.append(item)
     # updated_at 目前只有秒级精度；一次快速查询可能在同一秒内完成
     # queued -> running -> success/failed，导致 revision 不变，前端跳过合并状态，
@@ -1846,6 +1848,11 @@ def list_account_plan_check_statuses(
                 "totp_setup_started_at": row.get("totp_setup_started_at"),
                 "totp_setup_completed_at": row.get("totp_setup_completed_at"),
                 "totp_enabled": bool(str(row.get("totp_secret") or "").strip()),
+                "has_gpt_password": bool(_extract_registration_password(row)),
+                "has_session_token": bool(row.get("session_token")),
+                "has_session_json": bool(row.get("session_json")),
+                "password_setup_status": row.get("password_setup_status"),
+                "password_setup_error": row.get("password_setup_error"),
                 "email": row.get("email"),
                 "original_email": row.get("original_email"),
                 "email_source": row.get("email_source"),
@@ -2343,6 +2350,15 @@ def update_account_liveness(acc_id: int, result: dict | None = None) -> bool:
         row = _read_record("accounts", record_id=acc_id)
         if row is None:
             return False
+
+        # Reject a foreign session before changing the token, metadata or live
+        # status. apply_session_fields alone only protects the saved JSON.
+        session_info = result.get("session")
+        if result.get("ok") and isinstance(session_info, dict):
+            user = session_info.get("user")
+            identity = str(user.get("email") or "").strip().lower() if isinstance(user, dict) else ""
+            if identity and identity != str(row.get("email") or "").strip().lower():
+                return False
 
         now = _now()
         ok = bool(result.get("ok"))

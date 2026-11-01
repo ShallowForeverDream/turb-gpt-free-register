@@ -8,6 +8,9 @@ from webui.app import create_app
 
 class CloudflareWebUiTests(unittest.TestCase):
     def setUp(self):
+        workers = patch("webui.app.svc.get_executor_workers", return_value=1)
+        workers.start()
+        self.addCleanup(workers.stop)
         self.client = create_app(auth_code="test-auth").test_client()
         self.client.environ_base["HTTP_X_AUTH_CODE"] = "test-auth"
 

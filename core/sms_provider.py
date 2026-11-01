@@ -583,7 +583,7 @@ def wait_for_sms_code(
                 raw = str(data.get("raw") or "").strip()
                 status = str((data.get("item") or {}).get("status") or "").strip()
                 if code:
-                    logger.info(f"[SMS:L] 第 {round_no} 轮收到验证码：{code}")
+                    logger.info("[SMS:L] 第 %s 轮收到验证码（不记录内容）", round_no)
                     return code
                 remaining = max(0, int(deadline - time.time()))
                 logger.info(
@@ -599,7 +599,7 @@ def wait_for_sms_code(
                 raw = str(data.get("raw") or "").strip()
                 status = str((data.get("item") or {}).get("status") or "").strip()
                 if code:
-                    logger.info(f"[SMS:H] 第 {round_no} 轮收到验证码：{code}")
+                    logger.info("[SMS:H] 第 %s 轮收到验证码（不记录内容）", round_no)
                     return code
                 remaining = max(0, int(deadline - time.time()))
                 logger.info(
@@ -629,7 +629,7 @@ def wait_for_sms_code(
 
             if text.startswith("STATUS_OK:"):
                 code = text.split(":", 1)[1].strip()
-                logger.info(f"[SMS] 第 {round_no} 轮收到验证码：{code}")
+                logger.info("[SMS] 第 %s 轮收到验证码（不记录内容）", round_no)
                 return code
             if text == "STATUS_CANCEL":
                 raise SmsProviderError("激活已被取消（STATUS_CANCEL）")

@@ -61,7 +61,7 @@ class ImapQuotaTests(unittest.TestCase):
     def test_twofa_does_not_resend_after_terminal_mail_refusal(self):
         quota = imap.ImapFetchLimitError("fetch_headers")
         with patch.object(account_export, "_trigger_reauth_with_retry", return_value="https://example.test/auth") as trigger, \
-             patch.object(account_export, "_follow_reauth_with_retry"), \
+             patch.object(account_export, "_follow_reauth_with_retry", return_value="https://auth.openai.com/email-verification"), \
              patch.object(account_export, "human_delay"), \
              patch("config.email.USE_EMAIL_SERVICE", True), \
              patch("core.openai_auth.send_email_otp") as send, \
@@ -70,7 +70,7 @@ class ImapQuotaTests(unittest.TestCase):
             with self.assertRaises(imap.ImapFetchLimitError):
                 account_export.setup_2fa(Mock(), TARGET)
         trigger.assert_called_once()
-        send.assert_called_once()  # Original trigger only; no resend on quota.
+        send.assert_not_called()  # Page delivery only; no resend on quota.
         wait.assert_called_once()
         enroll.assert_not_called()
 

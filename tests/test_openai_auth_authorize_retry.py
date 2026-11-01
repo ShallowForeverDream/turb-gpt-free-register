@@ -36,7 +36,8 @@ class AuthorizeRetryTests(unittest.TestCase):
         session = _Session()
         cookie_jar_identity = session.cookie_jar_identity
 
-        with patch.object(openai_auth.time, "sleep") as sleep:
+        with patch.object(openai_auth, "_proxy_retry_config", return_value=(3, 1.0)), \
+             patch.object(openai_auth, "_interruptible_sleep") as sleep:
             result = openai_auth.follow_authorize(
                 session,
                 "https://auth.openai.com/api/accounts/authorize?state=test",

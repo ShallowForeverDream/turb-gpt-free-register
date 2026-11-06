@@ -119,6 +119,40 @@ class AccountExportTwofaTests(unittest.TestCase):
         callback.assert_called_once()
         fetch.assert_called_once_with(session)
 
+    def test_reauth_email_otp_then_mfa_requires_and_submits_totp_before_callback(self):
+        session = Mock()
+        verified = {
+            "continue_url": "https://auth.openai.com/authorize/continue?state=mfa",
+            "page": {"type": "mfa_verified"},
+        }
+        with patch("core.account_liveness._account_totp_secret", return_value="fixture-secret"), \
+             patch("core.account_liveness._account_totp_code", return_value="123456"), \
+             patch("core.account_liveness._mfa_issue_challenge") as issue, \
+             patch("core.account_liveness._mfa_verify", return_value=verified) as verify, \
+             patch.object(account_export, "follow_oauth_callback",
+                          return_value="https://chatgpt.com/") as callback, \
+             patch.object(account_export, "fetch_session",
+                          return_value={"accessToken": "fresh-at"}):
+            token = account_export._exchange_new_token(
+                session,
+                "https://auth.openai.com/mfa-challenge/factor-fixture",
+                email="a@example.test",
+            )
+        self.assertEqual(token, "fresh-at")
+        issue.assert_called_once_with(session, "factor-fixture")
+        verify.assert_called_once_with(session, "factor-fixture", "123456")
+        callback.assert_called_once()
+
+    def test_reauth_mfa_without_saved_totp_stops_before_callback(self):
+        with patch("core.account_liveness._account_totp_secret", return_value=""), \
+             patch.object(account_export, "follow_oauth_callback") as callback:
+            with self.assertRaisesRegex(RuntimeError, "没有已激活的 2FA"):
+                account_export._exchange_new_token(
+                    Mock(), "https://auth.openai.com/mfa-challenge/factor-fixture",
+                    email="a@example.test",
+                )
+        callback.assert_not_called()
+
     def test_reauth_otp_keeps_workspace_metadata_for_2fa(self):
         session = Mock()
         payload = {

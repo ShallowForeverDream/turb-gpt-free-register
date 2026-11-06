@@ -17,6 +17,7 @@ from webui.app import _compact_account_for_list, create_app
 
 def response(data, status=200):
     result=Mock(status_code=status)
+    result.headers={}
     result.json.return_value=data
     return result
 
@@ -52,7 +53,7 @@ class PasswordSetupTests(unittest.TestCase):
         self.wait=self.stack.enter_context(patch('core.email_provider.wait_for_otp',return_value='123456'))
         self.stack.enter_context(patch('core.generic_api_mail_client.create_signature_poll_state',return_value=None))
         self.stack.enter_context(patch('core.generic_api_mail_client.uses_direct_icapi_polling',return_value=True))
-        self.stack.enter_context(patch('core.openai_auth.initialize_passwordless_email_otp',return_value=False))
+        self.stack.enter_context(patch('core.openai_auth.initialize_passwordless_login_otp',return_value=False))
         self.submissions=[]
         def get(url,**kwargs):
             if url.endswith('/add_password/eligibility'):return response({'eligible':True})
@@ -102,6 +103,124 @@ class PasswordSetupTests(unittest.TestCase):
         self.assertNotIn('123456','\n'.join(logs.output))
         self.assertNotIn('Fixture-password-20!',json.dumps(_compact_account_for_list(saved)))
         self.close.assert_not_called()
+
+    def test_official_continue_url_success_without_legacy_flags_is_saved(self):
+        original=self.session.post.side_effect
+        def post(url,**kwargs):
+            if url.endswith('/password/add'):
+                return response({'continue_url':'https://auth.openai.com/reset-password/success?auth_page=fixture',
+                                 'method':'GET'})
+            return original(url,**kwargs)
+        self.session.post.side_effect=post
+        self.assertTrue(self.run_setup()['ok'])
+        saved=db.get_account(self.aid)
+        self.assertEqual(saved['password_setup_status'],'success')
+        self.assertEqual(db._extract_registration_password(saved),'Fixture-password-20!')
+        self.assertNotIn('password_setup_candidate',json.loads(saved['extra_json']))
+        posts=[call for call in self.session.post.call_args_list if call.args[0].endswith('/password/add')]
+        self.assertEqual(len(posts),1)
+
+    def test_only_bound_success_continuation_confirms_a_password(self):
+        for data in (
+            {'continue_url':'https://evil.example.test/reset-password/success'},
+            {'continue_url':'https://auth.openai.com/log-in/password'},
+            {'continue_url':'https://auth.openai.com/reset-password/new-password'},
+            {'continue_url':'https://auth.openai.com/reset-password/success','method':'POST'},
+            {'continue_url':'https://auth.openai.com/reset-password/success','page':{'type':'login'}},
+            {'page':{'type':'reset_password_success'},'success':False},
+        ):
+            with self.subTest(data=data):
+                try:confirmed=pw._confirmed_add_result(data)
+                except pw.PasswordSetupError:confirmed=False
+                self.assertFalse(confirmed)
+
+    def test_explicit_password_rejection_records_safe_details_not_uncertainty(self):
+        original=self.session.post.side_effect
+        def post(url,**kwargs):
+            if url.endswith('/password/add'):
+                result=response({'error':{'code':'password_too_weak',
+                    'message':'Rejected Fixture-password-20! for fixture@example.test using fixture-at'}},422)
+                result.headers={'x-request-id':'req-password-fixture'}
+                return result
+            return original(url,**kwargs)
+        self.session.post.side_effect=post
+        with self.assertLogs(pw.logger,'WARNING') as logs:
+            result=self.run_setup()
+        self.assertEqual(result['status'],'failed')
+        saved=db.get_account(self.aid)
+        detail=saved['password_setup_diagnostic']
+        self.assertEqual((detail['stage'],detail['http_status'],detail['error_code'],detail['request_id']),
+                         ('password_add',422,'password_too_weak','req-password-fixture'))
+        self.assertNotIn('password_setup_candidate',json.loads(saved['extra_json']))
+        text=json.dumps(detail)+'\n'+'\n'.join(logs.output)+result['error']
+        for private in ('Fixture-password-20!','fixture@example.test','fixture-at'):
+            self.assertNotIn(private,text)
+        self.assertEqual(len([c for c in self.session.post.call_args_list if c.args[0].endswith('/password/add')]),1)
+
+    def test_unknown_success_response_retains_request_id_and_private_candidate(self):
+        original=self.session.post.side_effect
+        def post(url,**kwargs):
+            if url.endswith('/password/add'):
+                result=response({'page':{'type':'login'}})
+                result.headers={'x-request-id':'req-unrecognized-fixture'}
+                return result
+            return original(url,**kwargs)
+        self.session.post.side_effect=post
+        self.assertEqual(self.run_setup()['status'],'uncertain')
+        row=db.get_account(self.aid)
+        self.assertEqual(row['password_setup_diagnostic']['http_status'],200)
+        self.assertEqual(row['password_setup_diagnostic']['request_id'],'req-unrecognized-fixture')
+        self.assertEqual(json.loads(row['extra_json'])['password_setup_candidate'],'Fixture-password-20!')
+
+    def test_mail_failure_reports_its_stage_without_revealing_private_url(self):
+        self.wait.side_effect=TimeoutError('https://private.example.test/?token=private-fixture')
+        with self.assertLogs(pw.logger,'WARNING') as logs:
+            result=self.run_setup()
+        self.assertEqual(result['status'],'failed')
+        detail=db.get_account(self.aid)['password_setup_diagnostic']
+        self.assertEqual(detail['stage'],'email_otp')
+        self.assertEqual(detail['error_code'],'unavailable')
+        self.assertEqual(detail['exception_type'],'TimeoutError')
+        self.assertNotIn('private-fixture','\n'.join(logs.output))
+        self.assertFalse(any(c.args[0].endswith('/password/add') for c in self.session.post.call_args_list))
+
+    def test_unstructured_http_exception_does_not_discard_private_candidate(self):
+        original=self.session.post.side_effect
+        error=RuntimeError('https://private.example.test/?password=Fixture-password-20!')
+        error.response=response({},400)
+        def post(url,**kwargs):
+            if url.endswith('/password/add'):raise error
+            return original(url,**kwargs)
+        self.session.post.side_effect=post
+        self.assertEqual(self.run_setup()['status'],'uncertain')
+        row=db.get_account(self.aid)
+        self.assertEqual(row['password_setup_diagnostic']['error_code'],'unavailable')
+        self.assertEqual(json.loads(row['extra_json'])['password_setup_candidate'],'Fixture-password-20!')
+
+    def test_eligibility_failure_keeps_http_status_and_request_id_before_any_post(self):
+        self.session.get.side_effect=None
+        denied=response({'error':{'code':'invalid_token','message':'Expired fixture-at'}},401)
+        denied.headers={'x-request-id':'req-eligibility-fixture'}
+        self.session.get.return_value=denied
+        result=self.run_setup()
+        self.assertEqual(result['status'],'failed')
+        detail=db.get_account(self.aid)['password_setup_diagnostic']
+        self.assertEqual((detail['stage'],detail['http_status'],detail['request_id']),
+                         ('eligibility_add',401,'req-eligibility-fixture'))
+        self.assertNotIn('fixture-at',json.dumps(detail))
+        self.session.post.assert_not_called()
+
+    def test_refresh_failure_does_not_undo_confirmed_password_or_repost(self):
+        self.refresh.side_effect=TimeoutError('private-refresh-url')
+        with self.assertLogs(pw.logger,'WARNING') as logs:
+            result=self.run_setup()
+        self.assertTrue(result['ok'])
+        row=db.get_account(self.aid)
+        self.assertEqual(row['password_setup_status'],'success')
+        self.assertEqual(db._extract_registration_password(row),'Fixture-password-20!')
+        self.assertNotIn('password_setup_candidate',json.loads(row['extra_json']))
+        self.assertNotIn('private-refresh-url','\n'.join(logs.output))
+        self.assertEqual(len([c for c in self.session.post.call_args_list if c.args[0].endswith('/password/add')]),1)
 
     def test_saved_password_never_calls_network_or_generates_replacement(self):
         db.update_account_password_setup(self.aid,'success',password='keep-existing-password')

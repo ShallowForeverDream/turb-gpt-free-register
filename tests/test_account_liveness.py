@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -72,19 +73,22 @@ class AccountLivenessTests(unittest.TestCase):
         with patch.object(liveness, "_trigger_reauth_with_retry", return_value="auth"), \
              patch.object(liveness, "_follow_reauth_with_retry", return_value="https://auth.openai.com/email-verification"), \
              patch.object(liveness, "human_delay"), \
-             patch.object(liveness, "send_email_otp", side_effect=lambda *_: events.append("send")), \
+             patch.object(liveness, "initialize_passwordless_login_otp", side_effect=lambda *_args, **_kwargs: events.append("send") or False), \
              patch.object(liveness, "_validate_reauth_with_retry", side_effect=lambda *a, **kw: events.append("wait") or "continue") as validate, \
              patch.object(liveness, "_follow_continue_and_fetch", return_value={"accessToken": "fixture"}):
             result = liveness._login_via_reauth(session, "fixture@example.test", 1.0, email_source="outlook")
         self.assertEqual(events, ["send", "wait"])
         self.assertGreater(validate.call_args.args[2], 1.0)
+        # ICAPI/签名 API 的 30 秒首读延迟必须以验证码页面就绪为锚点，
+        # 不能把调用方传入的较早时间当作“页面已等待很久”。
+        self.assertGreaterEqual(validate.call_args.kwargs["first_read_anchor_ts"], time.time() - 5)
         self.assertEqual(result["accessToken"], "fixture")
 
     def test_refused_reauth_otp_send_does_not_start_mail_polling(self):
         with patch.object(liveness, "_trigger_reauth_with_retry", return_value="auth"), \
              patch.object(liveness, "_follow_reauth_with_retry", return_value="https://auth.openai.com/email-verification"), \
              patch.object(liveness, "human_delay"), \
-             patch.object(liveness, "send_email_otp", side_effect=RuntimeError("HTTP 403")) as send, \
+             patch.object(liveness, "initialize_passwordless_login_otp", side_effect=RuntimeError("HTTP 403")) as send, \
              patch.object(liveness, "_validate_reauth_with_retry") as validate:
             with self.assertRaisesRegex(RuntimeError, "HTTP 403"):
                 liveness._login_via_reauth(_DummyBrowserSession(), "fixture@example.test", 1.0)
@@ -109,14 +113,39 @@ class AccountLivenessTests(unittest.TestCase):
         with patch.object(liveness, "_network_preflight_with_retry", return_value=(session, "authorize")), \
              patch.object(liveness, "follow_authorize", return_value="https://auth.openai.com/email-verification"), \
              patch.object(liveness, "_account_registration_password", return_value=""), \
-             patch.object(liveness, "send_email_otp") as send, \
+             patch.object(liveness, "initialize_passwordless_login_otp", return_value=True) as send, \
              patch.object(liveness, "_login_via_password_or_otp", return_value={"accessToken": "test"}) as login:
             _, info = liveness._login_via_full_web_flow(
                 "user@outlook.test", "", email_source="outlook", fingerprint_state={},
             )
         self.assertEqual(info["accessToken"], "test")
-        send.assert_called_once_with(session)
+        send.assert_called_once_with(
+            session, "user@outlook.test", "https://auth.openai.com/email-verification")
         login.assert_called_once()
+
+    def test_reauth_never_calls_direct_resend_for_login_password_page(self):
+        session = _DummyBrowserSession(proxy="")
+        with patch.object(liveness, "_trigger_reauth_with_retry", return_value="auth"), \
+             patch.object(liveness, "_follow_reauth_with_retry", return_value="https://auth.openai.com/log-in/password"), \
+             patch.object(liveness, "human_delay"), \
+             patch.object(liveness, "initialize_passwordless_login_otp", return_value=False), \
+             patch.object(liveness, "send_email_otp", side_effect=AssertionError("resend forbidden")), \
+             patch.object(liveness, "_validate_reauth_with_retry", return_value="continue") as validate, \
+             patch.object(liveness, "_follow_continue_and_fetch", return_value={"accessToken": "fixture"}):
+            liveness._login_via_reauth(session, "fixture@example.test", 1.0)
+        validate.assert_called_once()
+        self.assertIsNotNone(validate.call_args.kwargs["first_read_anchor_ts"])
+
+    def test_reauth_error_page_stops_before_wait_or_resend(self):
+        with patch.object(liveness, "_trigger_reauth_with_retry", return_value="auth"), \
+             patch.object(liveness, "_follow_reauth_with_retry", return_value="https://auth.openai.com/log-in/password"), \
+             patch.object(liveness, "human_delay"), \
+             patch.object(liveness, "initialize_passwordless_login_otp",
+                          side_effect=liveness.LoginPageUnavailableError("邮箱登录页没有可读取的会话状态，尚未发码")), \
+             patch.object(liveness, "send_email_otp", side_effect=AssertionError("resend forbidden")), \
+             patch.object(liveness, "wait_for_otp", side_effect=AssertionError("mail read forbidden")):
+            with self.assertRaisesRegex(RuntimeError, "重认证登录页不可用"):
+                liveness._login_via_reauth(_DummyBrowserSession(), "fixture@example.test", 1.0)
 
     def test_preflight_preserves_explicit_direct_route_and_skips_providers(self):
         with patch.object(liveness, "BrowserSession", _DummyBrowserSession), \
@@ -322,6 +351,42 @@ class AccountLivenessTests(unittest.TestCase):
         full_login.assert_not_called()
         self.assertTrue(reauth_session.session.closed)
 
+    def test_live_check_rotates_exit_only_for_transport_failure(self):
+        slot = _DummyQueueSlot()
+        failed = {"ok": False, "status": "failed", "error": "Timeout: curl: (28) Connection timed out after 12001 milliseconds"}
+        ok = {"ok": True, "status": "live", "access_token": "fresh"}
+        with patch.object(live_service, "_QUEUE_SLOTS", slot), \
+             patch.object(live_service.db, "mark_account_live_check_running", return_value=True), \
+             patch.object(live_service.db, "get_account", return_value={"email_source": "generic_api"}), \
+             patch.object(live_service.db, "update_account_liveness"), \
+             patch.object(live_service, "_append_log"), \
+             patch.object(live_service, "resolve_plan_check_route", side_effect=[
+                 {"proxy": "socks5://proxy1", "network_route": "proxy_chain", "proxy_mode": "auto"},
+                 {"proxy": "socks5://proxy2", "network_route": "proxy_chain", "proxy_mode": "auto"},
+             ]), \
+             patch.object(live_service, "open_plan_check_proxy", side_effect=[("http://127.0.0.1:1", None), ("http://127.0.0.1:2", None)]), \
+             patch.object(live_service, "check_account_liveness", side_effect=[failed, ok]) as check:
+            result = live_service._run_live_check(account_id=1, email="user@example.com", proxy=None, trigger="manual")
+        self.assertTrue(result["ok"])
+        self.assertEqual(check.call_count, 2)
+        self.assertEqual([c.kwargs["proxy"] for c in check.call_args_list], ["http://127.0.0.1:1", "http://127.0.0.1:2"])
+        self.assertFalse(slot.released)
+
+    def test_live_check_does_not_rotate_after_deactivation(self):
+        slot = _DummyQueueSlot()
+        dead = {"ok": False, "status": "deactivated", "error": "account_deactivated"}
+        with patch.object(live_service, "_QUEUE_SLOTS", slot), \
+             patch.object(live_service.db, "mark_account_live_check_running", return_value=True), \
+             patch.object(live_service.db, "get_account", return_value={"email_source": "generic_api"}), \
+             patch.object(live_service.db, "update_account_liveness"), \
+             patch.object(live_service, "_append_log"), \
+             patch.object(live_service, "resolve_plan_check_route", return_value={"proxy": "socks5://proxy1", "network_route": "proxy", "proxy_mode": "auto"}), \
+             patch.object(live_service, "open_plan_check_proxy", return_value=("http://127.0.0.1:1", None)), \
+             patch.object(live_service, "check_account_liveness", return_value=dead) as check:
+            result = live_service._run_live_check(account_id=1, email="user@example.com", proxy=None, trigger="manual")
+        self.assertEqual(result["status"], "deactivated")
+        self.assertEqual(check.call_count, 1)
+
     def test_service_refusal_does_not_switch_to_direct_connection(self):
         slot = _DummyQueueSlot()
         failed = {"ok": False, "status": "blocked", "error": "HTTP Error 403: blocked"}
@@ -348,7 +413,7 @@ class AccountLivenessTests(unittest.TestCase):
         check.assert_called_once()
         self.assertEqual(check.call_args_list[0].kwargs["proxy"], "socks5://proxy.example:1080")
         self.assertEqual(check.call_args_list[0].kwargs["email_source"], "remail")
-        self.assertTrue(slot.released)
+        self.assertFalse(slot.released)
 
 
 if __name__ == "__main__":

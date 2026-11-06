@@ -48,6 +48,10 @@ _THREAD_CTX = threading.local()
 _PAUSE_GATE = threading.Event()
 _PAUSE_GATE.set()
 _PAUSE_LOCK = threading.Lock()
+# Set while an explicit 开始 action admits exactly one queued account. The
+# batch was already paused, so finishing that account must not start another.
+_STARTING_ONE = False
+_STARTING_JOBS: set[int] = set()
 
 
 class StopRequested(RuntimeError):
@@ -274,8 +278,18 @@ def _dispatch_pending() -> None:
 
 
 def _dispatch_finished(job_id, future):
+    global _STARTING_ONE
     with _executor_lock:
         _DISPATCHED_TASKS.pop(job_id, None)
+        # A start-one account is the last one to run while paused. If the task
+        # finishes before admit_queued() runs its closure, close the gate now
+        # instead of refilling a batch the user has not resumed.
+        if _STARTING_ONE and job_id in _STARTING_JOBS:
+            _STARTING_JOBS.discard(job_id)
+            with _PAUSE_LOCK:
+                if not _STARTING_JOBS:
+                    _STARTING_ONE = False
+                    _PAUSE_GATE.clear()
         _dispatch_pending()
 
 
@@ -534,10 +548,14 @@ def submit_registration(
     email_source: str | None = None,
     workers: int | None = None,
     selected_emails: list[dict] | None = None,
+    selected_checked: bool = False,
 ) -> list[dict]:
     """
     创建 N 项计划；按保存的并发数准入，余项不领取邮箱、不占执行线程。
     指定邮箱与自动池使用同一准入队列。
+
+    ``selected_checked`` 仅供 Web UI 使用：调用方已完成 claim_pool_emails 校验，
+    这里不再重复校验（重复校验会把同批刚创建的排队任务当成占用）。
 
     Returns:
         N 个新创建的 job dict
@@ -551,7 +569,8 @@ def submit_registration(
     # 创建/切换线程池和提交本批任务必须整体串行化：否则另一请求在本批提交中途
     # 切换 workers 并 shutdown 旧池，会导致后续 submit 报 cannot schedule new futures after shutdown。
     with _executor_lock:
-        if selected_emails:
+        paused_before = not _PAUSE_GATE.is_set()
+        if selected_emails and not selected_checked:
             _, skipped = db.claim_pool_emails(selected_emails, reserve=False)
             if skipped:
                 raise ValueError("所选邮箱已不可用，请刷新邮箱池后重试")
@@ -566,7 +585,10 @@ def submit_registration(
             job = db.create_job(email_source=fixed_source, email=fixed_email or None, batch_id=batch_id)
             _queue_task(_run_one_job, job["id"], job["log_file"])
             jobs.append(job)
-        _dispatch_pending()
+        if paused_before:
+            logger.info("[Service] 注册队列处于暂停状态：%s 个任务已入队，等待继续注册", len(jobs))
+        else:
+            _dispatch_pending()
     logger.info(f"[Service] 已提交 {count} 个注册任务，源={email_source}，workers={effective_workers}")
     return jobs
 
@@ -805,6 +827,77 @@ def retry_job(job_id: int, workers: int | None = None) -> dict:
         "retry_action": action,
         "job": job,
     }
+
+
+def recover_interrupted_queue() -> dict:
+    """Re-enqueue pending jobs after a WebUI restart; never replay started work.
+
+    ``pending`` rows never claimed a mailbox (claiming happens inside the
+    worker), so they are safe to enqueue again. ``running``/``stopping`` rows
+    lost their worker thread and may have partial remote side effects; they
+    are marked failed for explicit human review instead of being replayed.
+    """
+    with _executor_lock:
+        jobs = db.list_jobs(limit=100000)
+        interrupted = 0
+        now_iso = datetime.now().isoformat(timespec="seconds")
+        for job in jobs:
+            if job.get("status") in ("running", "stopping"):
+                if db.update_job_if_status(int(job["id"]), ("running", "stopping"), status="failed",
+                                           error="WebUI 重启中断：执行线程已丢失，未自动重放；请人工核验后重试",
+                                           completed_at=now_iso):
+                    interrupted += 1
+        pending = sorted((job for job in jobs if job.get("status") == "pending"), key=lambda item: int(item["id"]))
+        queued = 0
+        for job in pending:
+            job_id = int(job["id"])
+            if job_id in _DISPATCHED_TASKS or any(int(item[1][0]) == job_id for item in _PENDING_TASKS):
+                continue
+            _queue_task(_run_one_job, job_id, job.get("log_file"))
+            queued += 1
+        if queued:
+            # Restored work must not start by itself after a restart. Keep the
+            # intake gate closed until the user explicitly clicks 继续注册.
+            _PAUSE_GATE.clear()
+            get_executor()
+        logger.warning("[Service] 重启恢复：待启动任务重新入队 %s 个（保持暂停，需手动继续），运行中断标记失败 %s 个", queued, interrupted)
+        return {"queued": queued, "interrupted": interrupted, "paused": queued > 0}
+
+
+def admit_queued() -> int:
+    """Start one queued account for an explicit 开始注册 action.
+
+    A paused batch stays paused after this account starts; releasing its slot
+    never refills the queue until the user resumes the batch.
+    """
+    global _STARTING_ONE
+    with _executor_lock:
+        if not _PENDING_TASKS:
+            return 0
+        from core.workflow_driver import submit_with_driver
+        while _PENDING_TASKS:
+            task, args, driver = _PENDING_TASKS.popleft()
+            job_id = int(args[0])
+            job = db.get_job(job_id)
+            if not job or job.get("status") != "pending":
+                continue
+            _STARTING_ONE = True
+            _STARTING_JOBS.add(job_id)
+            _DISPATCHED_TASKS[job_id] = None
+            try:
+                future = submit_with_driver(_executor, _run_limited, task, *args, _driver=driver)
+                _DISPATCHED_TASKS[job_id] = future
+                future.add_done_callback(lambda f, jid=job_id: _dispatch_finished(jid, f))
+            except Exception as exc:
+                _DISPATCHED_TASKS.pop(job_id, None)
+                _STARTING_JOBS.discard(job_id)
+                _STARTING_ONE = False
+                db.update_job(job_id, status="failed", error=f"队列提交失败：{type(exc).__name__}"[:500],
+                              completed_at=datetime.now().isoformat(timespec="seconds"))
+                logger.exception("[Service] 任务 #%s 提交失败", job_id)
+                continue
+            return 1
+        return 0
 
 
 def cancel_pending_jobs() -> int:

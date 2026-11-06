@@ -1,12 +1,12 @@
-<div id="tab-github" class="hidden">
-  <section class="workspace-placeholder"><h1>github账号</h1><p>接下来开发。此页面暂不读取、导入或创建 GitHub 账号。</p></section>
-</div>
+{% include 'grok_page.html' %}
+{% include 'grok_registration_panel.html' %}
 <template id="workspaceLogTemplate">
   <section class="workspace-history">
     <header><h1>日志</h1><span id="workspaceLogSummary" class="muted" aria-live="polite">加载中…</span><button type="button" class="btn jobs-tb-btn" id="refreshLogHistory">刷新</button></header>
     <form id="workspaceLogFilters" class="history-filters">
+      <label>平台 <select name="platform"><option value="gpt">GPT</option><option value="grok">Grok</option></select></label>
       <input name="q" type="search" placeholder="邮箱 / 任务 ID" aria-label="邮箱或任务ID">
-      <label>状态 <select name="status"><option value="">全部</option><option value="running">运行中</option><option value="pending">排队</option><option value="success">成功</option><option value="failed">失败（含网络/收码异常）</option><option value="partial_success">部分成功</option><option value="blocked">受阻</option><option value="stopped">停止</option><option value="cancelled">取消</option><option value="disabled">停用</option><option value="already_registered">已注册</option></select></label>
+      <label>状态 <select name="status"><option value="">全部</option><option value="running">运行中</option><option value="pending">排队</option><option value="success">成功</option><option value="failed">失败（含网络/收码异常）</option><option data-platform="gpt" value="partial_success">部分成功</option><option value="blocked">受阻</option><option data-platform="gpt" value="stopped">停止</option><option value="cancelled">取消</option><option data-platform="gpt" value="disabled">停用</option><option data-platform="grok" value="manual_required">等待人工处理</option><option data-platform="grok" value="uncertain">结果未确认</option><option value="already_registered">已注册</option></select></label>
       <label>创建日期 <input name="date_from" type="date" aria-label="创建起始日期"> 至 <input name="date_to" type="date" aria-label="创建结束日期"></label>
       <button class="btn jobs-tb-btn" type="submit">筛选</button><button class="btn jobs-tb-btn" type="reset">清除筛选</button>
     </form>
@@ -19,6 +19,15 @@
     <div class="history-pager"><span id="workspaceLogPage"></span><button type="button" class="btn jobs-tb-btn" id="previousLogHistory">上一页</button><button type="button" class="btn jobs-tb-btn" id="nextLogHistory">下一页</button></div>
   </section>
 </template>
+<dialog id="grokProgressDialog" class="workspace-dialog workspace-progress-dialog" aria-labelledby="grokProgressTitle">
+  <header><h2 id="grokProgressTitle">Grok 注册进度</h2><button type="button" id="grokProgressClose" aria-label="关闭">×</button></header>
+  <div id="grokProgressSummary" class="workspace-progress-summary" role="status">加载中…</div>
+  <div id="grokProgressSteps" class="workspace-progress-groups" aria-label="Grok 注册、浏览器、接码、CLI 授权步骤"></div>
+  <p id="grokProgressNote" class="workspace-progress-note"></p>
+  <div class="grok-progress-log"><label>部分日志筛选 <select id="grokProgressFilter"><option value="">全部</option><option value="prepare">第一部分 · 准备与网络</option><option value="signup">第二部分 · 邮箱注册</option><option value="cli">第三部分 · Grok CLI 授权</option></select></label><pre id="grokProgressLogPreview" class="grok-progress-log-preview">加载中…</pre></div>
+  <footer><button type="button" id="grokProgressRawLog" class="btn jobs-tb-btn">查看原始日志</button><button type="button" id="grokProgressDone" class="btn jobs-tb-btn">关闭</button></footer>
+</dialog>
+
 <dialog id="workspaceProgressDialog" class="workspace-dialog workspace-progress-dialog" aria-labelledby="workspaceProgressTitle">
   <header><h2 id="workspaceProgressTitle">注册进度</h2><button type="button" id="workspaceProgressClose" aria-label="关闭">×</button></header>
   <div id="workspaceProgressSummary" class="workspace-progress-summary" role="status">加载中…</div>

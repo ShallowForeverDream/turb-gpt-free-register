@@ -359,7 +359,7 @@ def initialize_passwordless_email_otp(session: BrowserSession, email: str, page_
         return False
     destination = urlsplit(page_url)
     if (destination.scheme != "https" or destination.netloc != "auth.openai.com"
-            or destination.path.rstrip("/") != "/email-verification"
+            or destination.path.rstrip("/") not in {"/email-verification", "/log-in/password"}
             or getattr(session, "_registration_auth_page_url", None) != page_url
             or state.get("is_missing_session") is True or not state.get("session_id")
             or str(state.get("email") or "").lower() != email.lower()
@@ -794,6 +794,37 @@ def send_email_otp(session: BrowserSession, referer: str = "https://auth.openai.
         resp.raise_for_status()
     _rotate_document_navigation_id(session)
     logger.info("[OTP] 重新发送验证码请求完成，status=%s", resp.status_code)
+
+
+def initialize_passwordless_login_otp(session: BrowserSession, email: str, page_url: str) -> bool:
+    """Use the login page's pending initial send; never treat /error as sent.
+
+    The passwordless login page exposes its one-time send state in the server
+    document.  A bare /api/accounts/email-otp/send call is a resend endpoint:
+    for accounts whose login lands on /log-in/password it returns HTTP 200 with
+    the login page and then redirects to /error, so no mail is sent.  Return
+    False only when the page explicitly has no pending send and no evidence of
+    a recent delivery; callers then start the registration-style 30s x 3 read.
+    """
+    state = getattr(session, "_registration_auth_page_state", None)
+    if not isinstance(state, dict):
+        raise LoginPageUnavailableError("邮箱登录页没有可读取的会话状态，尚未发码")
+    if state.get("passwordless_email_otp_send_pending") is True:
+        return initialize_passwordless_email_otp(session, email, page_url)
+    if state.get("is_missing_session") is True or not state.get("session_id"):
+        raise RuntimeError("邮箱登录页会话已失效，未发送验证码；请先刷新登录态")
+    identity = str(state.get("email") or state.get("username_email") or "").strip().lower()
+    if identity and identity != email.strip().lower():
+        raise RuntimeError("邮箱登录页会话不匹配，未发送验证码")
+    if not identity:
+        # /log-in/password rendered "Something went wrong" without the
+        # passwordless fields.  Its session cannot initialize delivery.
+        raise LoginPageUnavailableError("邮箱登录页缺少账号与会话验证字段，尚未发码")
+    return False
+
+
+class LoginPageUnavailableError(RuntimeError):
+    """The Auth login document is an error page; no OTP was requested."""
 
 
 def validate_email_otp(session: BrowserSession, code: str, sentinel_header: str | None = None, so_header: str | None = None) -> dict:

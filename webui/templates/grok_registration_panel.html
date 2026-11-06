@@ -1,0 +1,30 @@
+<section class="registration-block registration-block--grok" id="grokRegistrationBlock" aria-label="GROK 注册">
+  <header class="registration-block-head">
+    <span class="registration-block-badge registration-block-badge--grok">GROK</span>
+    <div><h2>GROK 注册</h2><p>使用邮箱池当前选中的邮箱注册；队列、并发和驱动与 GPT 注册完全独立。</p></div>
+  </header>
+  <div class="jobs-toolbar-v2" id="grokRegistrationToolbar">
+    <label class="jobs-tb-field">Grok并发
+      <span class="el-input-number">
+        <input id="grokWorkers" type="number" min="1" max="4" value="1" inputmode="numeric" aria-label="Grok 注册并发">
+        <button type="button" class="el-input-number__increase" data-step-for="grokWorkers" data-step="1" aria-label="增加"><svg viewBox="0 0 24 24"><polyline points="6 14 12 8 18 14"/></svg></button>
+        <button type="button" class="el-input-number__decrease" data-step-for="grokWorkers" data-step="-1" aria-label="减少"><svg viewBox="0 0 24 24"><polyline points="6 10 12 16 18 10"/></svg></button>
+      </span>
+      <button type="button" class="jobs-tb-btn" id="grokSaveWorkers">保存</button>
+    </label>
+    <label class="jobs-tb-field">注册驱动
+      <select id="grokDriver">
+        <option value="protocol">HTTP注册＋无窗口原生SDK</option>
+        <option value="browser">普通可见浏览器</option>
+      </select>
+    </label>
+      <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="grokStart">用选中邮箱注册 Grok</button>
+      <button type="button" class="jobs-tb-btn" id="grokProgressList" title="查看 Grok 注册与 CLI 授权的可视化步骤">可视化进度</button>
+    <button type="button" class="jobs-tb-btn" id="grokImportMailViews">导入邮件页面链接</button>
+    <input type="file" id="grokMailViewsFile" accept=".txt,.csv" hidden>
+    <button type="button" class="jobs-tb-btn" data-grok-control="pause" title="只暂停补充新任务，已开始的注册和 CLI 授权继续">暂停补充</button>
+    <button type="button" class="jobs-tb-btn" data-grok-control="resume">继续</button>
+    <button type="button" class="jobs-tb-btn jobs-tb-btn--danger" data-grok-control="stop" title="停止尚未开始的 Grok 任务">停止待启动任务</button>
+    <span class="acc-v2-selected" id="grokQueueState" role="status">加载中…</span>
+  </div>
+</section>

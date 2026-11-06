@@ -15,6 +15,22 @@ test('Session copy buttons contain only account ID and requested field, never se
   assert.match(c.accountSessionCopyControls({id:6},'fixture-class'),/SESSION未留存/);
 });
 
+test('Password status distinguishes uncertain submissions from no password and copies only confirmed values',()=>{
+  const c=context();
+  for(const [status,label] of Object.entries({uncertain:'设置未确认',failed:'设置失败',blocked:'设置受阻',already_set:'已有密码（未留存）',running:'设置中'})){
+    const html=c.accountPasswordControl({id:5,password_setup_status:status,password_setup_candidate:'private-candidate'},'muted');
+    assert.ok(html.includes(label));assert.doesNotMatch(html,/private-candidate|data-account-copy-secret|未设置（OTP登录）/);
+  }
+  const html=c.accountPasswordControl({id:5,has_gpt_password:true,registration_password:'private-password'},'muted');
+  assert.match(html,/data-account-copy-secret="password"/);assert.doesNotMatch(html,/private-password/);
+});
+
+test('Both account tables render the shared password state control',()=>{
+  for(const file of ['index.html','index_legacy.html']){
+    assert.match(fs.readFileSync(path.join(base,file),'utf8'),/accountPasswordControl\(r,/);
+  }
+});
+
 for(const [file,name] of [['index.html','_emailOtpCellV2'],['index_legacy.html','_emailOtpAction']]){
   test(file+': account API mailbox query appears without exposing a token-bearing URL',()=>{
     const c=context();const source=fs.readFileSync(path.join(base,file),'utf8');

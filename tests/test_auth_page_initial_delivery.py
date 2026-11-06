@@ -171,6 +171,38 @@ class InitialDeliveryTests(unittest.TestCase):
                              (None, 150))
         resend.assert_not_called()
 
+    def test_login_password_page_without_pending_flag_is_not_a_resend(self):
+        session = self.session()
+        session._registration_auth_page_state["passwordless_email_otp_send_pending"] = False
+        session._registration_auth_page_state["session_id"] = "session-fixture"
+        self.assertFalse(openai_auth.initialize_passwordless_login_otp(session, self.email, self.url))
+        session.post.assert_not_called()
+
+    def test_login_password_page_uses_pending_initial_delivery_once(self):
+        session = self.session()
+        with patch.object(openai_auth, "initialize_passwordless_email_otp",
+                          return_value=True) as initialize:
+            self.assertTrue(openai_auth.initialize_passwordless_login_otp(
+                session, self.email, self.url))
+        initialize.assert_called_once_with(session, self.email, self.url)
+        session.post.assert_not_called()
+
+    def test_login_page_identity_mismatch_and_missing_session_fail_closed(self):
+        for changes in ({"email": "other@example.test"}, {"session_id": ""}):
+            session = self.session()
+            session._registration_auth_page_state.update(changes)
+            with self.assertRaises(RuntimeError):
+                openai_auth.initialize_passwordless_login_otp(session, self.email, self.url)
+            session.post.assert_not_called()
+
+    def test_login_page_without_readable_state_is_not_a_silent_poll(self):
+        for state in (None, {"session_id": "fixture-session"}):
+            session = self.session()
+            session._registration_auth_page_state = state
+            with self.assertRaisesRegex(openai_auth.LoginPageUnavailableError, "尚未发码"):
+                openai_auth.initialize_passwordless_login_otp(session, self.email, self.url)
+            session.post.assert_not_called()
+
     def test_authorize_retains_query_for_state_but_does_not_log_values(self):
         response = Mock(url=self.url, status_code=200, text=document(self.state()))
         session = SimpleNamespace(get_auth_navigate_headers=Mock(return_value={}), get=Mock(return_value=response))

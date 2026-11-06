@@ -106,7 +106,11 @@ def open_plan_check_proxy(route: dict, selected_proxy: str, *, timeout: float):
     return selected_proxy, None
 
 
-def resolve_plan_check_route(explicit_proxy: Optional[str] = None) -> dict:
+def resolve_plan_check_route(
+    explicit_proxy: Optional[str] = None,
+    *,
+    exclude_proxies: set[str] | None = None,
+) -> dict:
     """解析套餐查询的实际网络路径。
 
     explicit_proxy 不是 None 时表示 API 调用方明确覆盖配置；空字符串代表直连。
@@ -151,12 +155,23 @@ def resolve_plan_check_route(explicit_proxy: Optional[str] = None) -> dict:
         }
 
     candidates = _proxy_lines(getattr(proxy_cfg, "PLAN_CHECK_PROXY", ""))
+    pool_candidates = _proxy_lines(getattr(proxy_cfg, "PROXY_POOL", ""))
+    excluded = {str(item).strip() for item in (exclude_proxies or set()) if str(item).strip()}
     # 专用代理配置为代理池时，每次新的套餐查询随机选择一个；
     # 若未配置专用池，则继续从通用 PROXY_POOL 随机选择。
-    selected = random.choice(candidates) if candidates else str(proxy_cfg.pick_proxy() or "").strip()
+    # 专用代理失败时允许查活等后台任务换到通用池的下一个出口；这里只做
+    # 同一批候选内的轮换，不改变账号 Cookie/device_id，也不回退直连。
+    ordered = [item for item in candidates if item not in excluded]
+    if not ordered:
+        ordered = [item for item in pool_candidates if item not in excluded]
+    if not excluded:
+        # 保持原有默认选路：专用池优先，否则走 pick_proxy() 的随机策略。
+        selected = random.choice(candidates) if candidates else str(proxy_cfg.pick_proxy() or "").strip()
+    else:
+        selected = random.choice(ordered) if ordered else ""
     if not selected:
         if mode == "proxy":
-            raise ValueError("套餐查询网络模式为 proxy，但未配置 PLAN_CHECK_PROXY 或 PROXY_POOL")
+            raise ValueError("套餐查询网络模式为 proxy，但当前没有可用的 PLAN_CHECK_PROXY 或 PROXY_POOL 代理")
         return {
             "proxy": "",
             "proxy_mode": mode,
@@ -164,7 +179,8 @@ def resolve_plan_check_route(explicit_proxy: Optional[str] = None) -> dict:
             "proxy_used": None,
             "upstream_proxy": "",
             "upstream_proxy_used": None,
-            "proxy_fallback_reason": "未配置套餐查询代理或代理池",
+            "proxy_fallback_reason": ("套餐查询代理均已尝试且不可用" if excluded
+                                      else "未配置套餐查询代理或代理池"),
         }
 
     is_local, available, reason = _local_proxy_status(selected)

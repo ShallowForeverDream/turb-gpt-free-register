@@ -4,3 +4,11 @@ function accountSessionCopyControls(row, buttonClass) {
   if(row.has_session_json)buttons.push(`<button type="button" class="${buttonClass}" style="${style}" data-account-copy-secret="session_json" data-account-id="${id}" title="复制实际保存的 Session JSON（/api/auth/session 完整响应）">复制JSON</button>`);
   return buttons.length?`<div class="account-session-actions" style="display:flex;flex-direction:column;align-items:flex-start;gap:3px;margin-top:3px;white-space:normal">${buttons.join(' ')}</div>`:'<div class="muted" style="white-space:normal;font-size:12px" title="旧账号未留存 SESSION；下次正常登录或查活取得后自动保存">SESSION未留存</div>';
 }
+
+function accountPasswordControl(row, mutedClass) {
+  if(row.has_gpt_password)return `<button type="button" class="account-password-text" data-account-copy-secret="password" data-account-id="${esc(row.id)}" title="点击复制 GPT 登录密码">•••••• · 复制</button>`;
+  const labels={running:'设置中',uncertain:'设置未确认',failed:'设置失败',blocked:'设置受阻',already_set:'已有密码（未留存）',success:'已设置（未留存）'};
+  const label=labels[row.password_setup_status]||'未设置（OTP登录）';
+  const explanation=row.password_setup_error||(row.password_setup_status==='uncertain'?'上次提交结果未确认，不自动重提':label);
+  return `<span class="${mutedClass}" title="${esc(explanation)}">${label}</span>`;
+}

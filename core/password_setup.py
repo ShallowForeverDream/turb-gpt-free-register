@@ -7,13 +7,45 @@ from urllib.parse import urlencode, urljoin, urlsplit
 import pyotp
 
 from core import db
+from core.auth_diagnostics import auth_error_diagnostic, redact_error_text
 
 logger = logging.getLogger(__name__)
 _AUTH = "https://auth.openai.com"
 
 
 class PasswordSetupError(RuntimeError):
-    pass
+    def __init__(self, message: str, *, diagnostic=None):
+        super().__init__(message)
+        self.diagnostic = diagnostic
+
+
+def _stage(session, name: str) -> None:
+    session._password_setup_stage = name
+    logger.info("[密码] 阶段：%s", name)
+
+
+def _failure(exc, stage: str, *, sensitive_values=()) -> dict:
+    detail = getattr(exc, "diagnostic", None)
+    if not isinstance(detail, dict):
+        detail = auth_error_diagnostic(getattr(exc, "response", None), stage=stage,
+                                       sensitive_values=sensitive_values)
+    else:
+        detail = dict(detail)
+    detail["exception_type"] = type(exc).__name__
+    if isinstance(exc, PasswordSetupError):
+        detail["reason"] = redact_error_text(str(exc), sensitive_values=sensitive_values)
+    else:
+        # Network exceptions may contain credential-bearing URLs. Keep the
+        # structured response diagnostic, never the original exception text.
+        detail["reason"] = type(exc).__name__
+    return detail
+
+
+def _failure_summary(detail: dict) -> str:
+    return (f"阶段={detail['stage']} HTTP={detail['http_status']} "
+            f"error_code={detail['error_code']} request_id={detail['request_id']} "
+            f"exception={detail['exception_type']} "
+            f"原因={detail['reason']}；{detail['error_message']}")[:1000]
 
 
 def _auth_url(value: str) -> str:
@@ -25,39 +57,49 @@ def _auth_url(value: str) -> str:
     return url
 
 
-def _json_response(response) -> dict:
+def _json_response(response, *, stage="response", sensitive_values=()) -> dict:
     # Never include a credential-bearing response body or exception URL in logs.
-    if response.status_code != 200:
-        raise PasswordSetupError(f"密码流程请求失败（HTTP {response.status_code}），不自动重放")
-    data = response.json()
+    logger.info("[密码] %s 响应：HTTP %s", stage, response.status_code)
+    if not 200 <= response.status_code < 300:
+        raise PasswordSetupError("密码流程请求失败，不自动重放", diagnostic=auth_error_diagnostic(
+            response, stage=stage, sensitive_values=sensitive_values))
+    try:
+        data = response.json()
+    except ValueError:
+        raise PasswordSetupError("密码流程响应不是有效 JSON", diagnostic=auth_error_diagnostic(
+            response, stage=stage, sensitive_values=sensitive_values)) from None
     if not isinstance(data, dict) or data.get("error"):
-        raise PasswordSetupError("密码流程响应不符合预期，已停止")
+        raise PasswordSetupError("密码流程响应不符合预期，已停止", diagnostic=auth_error_diagnostic(
+            response, stage=stage, sensitive_values=sensitive_values))
     return data
 
 
 def _eligibility(session, token: str, action: str) -> bool:
+    _stage(session, "eligibility_" + action)
     headers = session.get_chatgpt_headers(referer="https://chatgpt.com/")
     headers["authorization"] = f"Bearer {token}"
     data = _json_response(session.get(
         f"https://chatgpt.com/backend-api/accounts/{action}_password/eligibility", headers=headers,
-    ))
+    ), stage="eligibility_" + action, sensitive_values=(token,))
     if type(data.get("eligible")) is not bool:
         raise PasswordSetupError("未取得明确的密码设置资格，已停止")
     return data["eligible"]
 
 
 def _start_reauth(session, email: str) -> str:
+    _stage(session, "reauth_csrf")
     headers = session.get_nextauth_headers(referer="https://chatgpt.com/")
-    csrf = _json_response(session.get("https://chatgpt.com/api/auth/csrf", headers=headers))
+    csrf = _json_response(session.get("https://chatgpt.com/api/auth/csrf", headers=headers), stage="reauth_csrf")
     if not csrf.get("csrfToken"):
         raise PasswordSetupError("密码重认证缺少 CSRF")
     query = {"connection": "password", "login_hint": email, "reauth": "password",
              "max_age": "0", "ext-oai-did": session.device_id, "post_login_add_password": "true"}
     headers.update({"content-type": "application/x-www-form-urlencoded", "origin": "https://chatgpt.com"})
+    _stage(session, "reauth_signin")
     data = _json_response(session.post(
         "https://chatgpt.com/api/auth/signin/openai?" + urlencode(query), headers=headers,
         data=urlencode({"csrfToken": csrf["csrfToken"], "callbackUrl": "https://chatgpt.com/", "json": "true"}),
-    ))
+    ), stage="reauth_signin", sensitive_values=(csrf["csrfToken"],))
     return _auth_url(data.get("url"))
 
 
@@ -70,11 +112,16 @@ def _continuation(data: dict) -> str:
 
 
 def _email_otp(session, row: dict, url: str) -> dict:
+    _stage(session, "email_otp")
     from core.email_provider import wait_for_otp
     from core.generic_api_mail_client import create_signature_poll_state, uses_direct_icapi_polling
-    from core.openai_auth import initialize_passwordless_email_otp, validate_email_otp, EmailOtpInvalidError
+    from core.openai_auth import (
+        initialize_passwordless_login_otp,
+        validate_email_otp,
+        EmailOtpInvalidError,
+    )
     ready = issued = time.time()
-    if initialize_passwordless_email_otp(session, row["email"], url):
+    if initialize_passwordless_login_otp(session, row["email"], url):
         ready = issued = session._registration_otp_ready_at
     logger.info("[密码] 等待邮箱重认证验证码；沿用邮箱来源，不重发")
     state = create_signature_poll_state(row["email"], ready_at=ready)
@@ -100,6 +147,7 @@ def _password_page(session, row: dict) -> str:
     for _ in range(4):
         from core.registration_service import check_stop_requested
         check_stop_requested()
+        _stage(session, "reauth_navigation")
         url = _auth_url(follow_authorize(session, url))
         path = urlsplit(url).path.rstrip("/")
         if path == "/reset-password/new-password":
@@ -115,12 +163,30 @@ def _password_page(session, row: dict) -> str:
             if not row.get("totp_secret"):
                 raise PasswordSetupError("密码重认证需要已激活的 2FA")
             factor_id = path.rsplit("/", 1)[-1]
+            _stage(session, "totp_reauth")
             logger.info("[密码] 按官网要求完成现有 TOTP 重认证")
             _mfa_issue_challenge(session, factor_id)
             url = _continuation(_mfa_verify(session, factor_id, pyotp.TOTP(row["totp_secret"]).now()))
         else:
             raise PasswordSetupError("密码重认证未进入预期页面，已停止")
     raise PasswordSetupError("密码重认证超过允许步骤数，已停止")
+
+
+def _confirmed_add_result(data: dict) -> bool:
+    """The official continuation client uses continue_url, not a success flag."""
+    page = data.get("page")
+    page_type = page.get("type") if isinstance(page, dict) else None
+    continuation = data.get("continue_url")
+    if continuation is not None:
+        if not isinstance(continuation, str) or data.get("method", "GET") != "GET":
+            return False
+        target = _auth_url(continuation)
+        if urlsplit(target).path.rstrip("/") != "/reset-password/success":
+            return False
+        if page_type not in (None, "reset_password_success") or data.get("success") is False:
+            return False
+        return True
+    return data.get("success") is not False and (data.get("success") is True or page_type == "reset_password_success")
 
 
 def _add_password(session, row: dict) -> dict:
@@ -132,6 +198,7 @@ def _add_password(session, row: dict) -> dict:
         raise PasswordSetupError("官网当前不允许添加密码，未修改账号")
     url = _password_page(session, row)
     from core.openai_auth import generate_registration_password, request_sentinel_token, build_sentinel_header
+    _stage(session, "password_challenge")
     bundle = request_sentinel_token(session, "password_reset")
     token, observer = build_sentinel_header(session, bundle, "password_reset")
     headers = session.get_auth_headers(referer=url)
@@ -143,20 +210,31 @@ def _add_password(session, row: dict) -> dict:
     # exporting it as a confirmed password or ever automatically submitting again.
     if not db.update_account_password_setup(row["id"], "running", candidate=password):
         raise PasswordSetupError("账号已不存在，未提交密码")
+    _stage(session, "password_add")
     try:
-        result = _json_response(session.post(_AUTH + "/api/accounts/password/add", headers=headers,
-                                             data=json.dumps({"password": password}), allow_redirects=False))
-        if (result.get("success") is not True
-                and (result.get("page") or {}).get("type") != "reset_password_success"):
-            raise PasswordSetupError("密码提交结果未明确确认成功，需人工核验")
-    except Exception:
-        db.update_account_password_setup(row["id"], "uncertain", error="密码提交结果未确认；不自动重复提交，请人工核验")
+        response = session.post(_AUTH + "/api/accounts/password/add", headers=headers,
+                                data=json.dumps({"password": password}), allow_redirects=False)
+        result = _json_response(response,
+                                stage="password_add", sensitive_values=(password, row["access_token"], row["totp_secret"]))
+        if not _confirmed_add_result(result):
+            raise PasswordSetupError("密码提交结果未明确确认成功，需人工核验", diagnostic=auth_error_diagnostic(
+                response, stage="password_add", sensitive_values=(password, row["access_token"], row["totp_secret"])))
+    except Exception as exc:
+        detail = _failure(exc, "password_add", sensitive_values=(password, row["access_token"], row["totp_secret"]))
+        # An explicit Auth error is a rejection, not an ambiguous timeout.
+        # All other outcomes retain the private candidate and never re-POST.
+        definitive = (400 <= detail["http_status"] < 500 and detail["http_status"] != 408
+                      and detail["error_code"] != "unavailable")
+        status = ("blocked" if detail["http_status"] in (403, 429) else "failed") if definitive else "uncertain"
+        db.update_account_password_setup(row["id"], status, error=_failure_summary(detail),
+                                         diagnostic=detail, **({"candidate": ""} if definitive else {}))
         raise
     if not db.update_account_password_setup(row["id"], "success", password=password):
         raise PasswordSetupError("官网已确认添加密码，但本地保存失败")
     logger.info("[密码] 设置完成：官网已确认，GPT 密码已保存（不记录密码）")
     try:
         from core.account_export import fetch_session
+        _stage(session, "session_refresh")
         latest = fetch_session(session)
         identity = str((latest.get("user") or {}).get("email") or "").strip().lower()
         if identity and identity != row["email"].strip().lower():
@@ -183,6 +261,7 @@ def set_missing_password(account_id: int, *, session=None) -> dict:
     raw = row.get("extra_json")
     extra = json.loads(raw) if isinstance(raw, str) and raw.strip() else dict(raw or {})
     if extra.get("password_setup_candidate"):
+        logger.warning("[密码] 上次提交结果未确认；保留候选，不再次请求改密，请先正常登录核验")
         return {"ok": False, "status": "uncertain", "error": "上次密码提交结果未确认，保留候选且不自动重提"}
     owns_session = session is None
     relay = None
@@ -196,17 +275,22 @@ def set_missing_password(account_id: int, *, session=None) -> dict:
                 from core.proxy_chain import open_proxy_pool_proxy
                 proxy, relay = open_proxy_pool_proxy(proxy)
             session = create_account_session(proxy=proxy, fingerprint_seed=f"account:{row['email'].lower()}")
+        _stage(session, "prepare")
         if getattr(session, "is_browser_workflow", False) is True:
             raise PasswordSetupError("当前浏览器驱动尚未支持补设密码，请在官网设置；未切换协议执行")
         return _add_password(session, row)
     except Exception as exc:
         fresh = db.get_account(account_id) or {}
         status = fresh.get("password_setup_status")
-        if status not in {"uncertain", "success"}:
-            db.update_account_password_setup(account_id, "failed", error="补设密码未完成，请核验官网设置入口")
-        logger.warning("[密码] 未完成（%s）；保留账号、登录态及 2FA，不自动改密重试", type(exc).__name__)
-        return {"ok": False, "status": status if status in {"uncertain", "success"} else "failed",
-                "error": "补设密码未完成，请核验官网设置入口"}
+        secrets = (row.get("access_token"), row.get("totp_secret"),
+                   (json.loads(fresh.get("extra_json") or "{}") or {}).get("password_setup_candidate"))
+        detail = _failure(exc, getattr(session, "_password_setup_stage", "prepare"), sensitive_values=secrets)
+        if status not in {"uncertain", "success", "failed", "blocked"}:
+            status = "blocked" if detail["http_status"] in (403, 429) else "failed"
+            db.update_account_password_setup(account_id, status, error=_failure_summary(detail), diagnostic=detail)
+        error = (db.get_account(account_id) or {}).get("password_setup_error") or _failure_summary(detail)
+        logger.warning("[密码] 未完成：%s；保留账号、登录态及 2FA，不自动改密重试", error)
+        return {"ok": False, "status": status, "error": error}
     finally:
         if owns_session and session is not None:
             from core.session import close_browser_session

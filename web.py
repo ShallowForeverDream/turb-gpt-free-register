@@ -115,6 +115,8 @@ def main() -> None:
 
     # debug=False：避免 reloader 双进程导致线程池/定时器重复
     try:
+        from core import registration_service
+        registration_service.recover_interrupted_queue()
         app.run(host=args.host, port=args.port, debug=False, threaded=True)
     finally:
         _release_single_instance(instance_lock)

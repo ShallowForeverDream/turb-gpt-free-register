@@ -92,21 +92,43 @@ class PoolSelectionRegistrationTests(unittest.TestCase):
         self.assertEqual(events, ["finish", "close"])
         send.assert_not_called()
 
-    def test_selected_pool_email_can_be_imported_as_registered_account(self):
+    def test_selected_pool_email_bookmark_does_not_become_gpt_account(self):
         with tempfile.TemporaryDirectory() as tmp, patch.multiple(db, **storage(Path(tmp))):
             db.import_forwarded_imap_emails([_imap("chosen@icloud.com")], inbox="in@yeah.net", server="imap.yeah.net", port=993, use_ssl=True)
             imported, skipped = db.import_pool_emails_as_registered([{"email": "chosen@icloud.com", "source": "imap"}])
             self.assertEqual([x["email"] for x in imported], ["chosen@icloud.com"])
             self.assertEqual(skipped, [])
-            self.assertEqual(db.get_account_by_email("chosen@icloud.com")["email_source"], "imap")
-            self.assertIsNone(db.claim_next_imap_email())
+            # The bookmark row has no GPT credential and must not count or list as an account.
+            self.assertEqual(db.count_accounts(usable_only=True), 0)
+            self.assertEqual(db.list_accounts_page(usable_only=True)['total'], 0)
+            self.assertEqual(db.get_generic_api_email_by_email("chosen@icloud.com"), None)
+            # Mailbox remains claimable for a real registration.
+            claimed = db.claim_next_imap_email()
+            self.assertEqual(claimed["email"], "chosen@icloud.com")
 
-    def test_auto_claim_skips_account_page_email(self):
+    def test_cleanup_removes_unusable_rows_and_releases_placeholders(self):
         with tempfile.TemporaryDirectory() as tmp, patch.multiple(db, **storage(Path(tmp))):
             db.import_forwarded_imap_emails([_imap("chosen@icloud.com"), _imap("next@icloud.com")], inbox="in@yeah.net", server="imap.yeah.net", port=993, use_ssl=True)
-            db.import_pool_emails_as_registered([{"email": "chosen@icloud.com", "source": "imap"}])
-            claimed = db.claim_next_imap_email()
-            self.assertEqual(claimed["email"], "next@icloud.com")
+            imported, _ = db.import_pool_emails_as_registered([{"email": "chosen@icloud.com", "source": "imap"}])
+            db.insert_account(email="next@icloud.com", access_token="fixture", email_source="imap")
+            result = db.cleanup_unusable_gpt_accounts()
+            self.assertEqual(result["deleted"], 1)
+            self.assertEqual(result["released_mailboxes"], 1)
+            self.assertEqual(db.count_accounts(), 1)
+            self.assertEqual(db.get_account_by_email("chosen@icloud.com"), None)
+            self.assertEqual(db.get_imap_email_by_email("chosen@icloud.com")["status"], "available")
+
+    def test_pool_gpt_unregistered_excludes_active_jobs_and_shows_processing_filter(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.multiple(db, **storage(Path(tmp))):
+            db.import_generic_api_emails([
+                {"email": "idle@icloud.com", "code_url": "https://fixture.test/api"},
+                {"email": "busy@icloud.com", "code_url": "https://fixture.test/api"},
+            ])
+            db.create_job("generic_api", "busy@icloud.com")
+            page = db.list_email_pool_page(source="generic_api", platform="gpt", platform_status="unregistered", limit=20)
+            self.assertEqual([x["email"] for x in page["items"]], ["idle@icloud.com"])
+            processing = db.list_email_pool_page(source="generic_api", platform="gpt", platform_status="processing", limit=20)
+            self.assertEqual([x["email"] for x in processing["items"]], ["busy@icloud.com"])
 
     def test_webui_pool_import_endpoint(self):
         with tempfile.TemporaryDirectory() as tmp, patch.multiple(db, **storage(Path(tmp))):

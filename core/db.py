@@ -157,6 +157,19 @@ def _ensure_sqlite() -> None:
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS grok_accounts (
+                id INTEGER PRIMARY KEY, email TEXT NOT NULL COLLATE NOCASE UNIQUE,
+                source TEXT NOT NULL, created_at TEXT NOT NULL, payload TEXT NOT NULL,
+                sso_digest TEXT NOT NULL UNIQUE
+            );
+            CREATE TABLE IF NOT EXISTS grok_jobs (
+                id INTEGER PRIMARY KEY, email TEXT NOT NULL COLLATE NOCASE,
+                source TEXT NOT NULL, status TEXT NOT NULL, stage TEXT NOT NULL,
+                created_at TEXT NOT NULL, started_at TEXT, completed_at TEXT,
+                owner_pid INTEGER NOT NULL, payload TEXT NOT NULL, events TEXT NOT NULL DEFAULT '[]'
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_grok_active_email ON grok_jobs(email)
+                WHERE status IN ('pending','running','manual_required','uncertain');
         """)
         for table in {"accounts", "email_pool", "registration_jobs"}:
             conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{table}_status ON {table}(status, id DESC)")
@@ -406,6 +419,37 @@ def _query_collection(collection: str, *, status: str | None = None, archived: s
         return [json.loads(row["payload"]) for row in conn.execute(sql, params)]
 
 
+def _usable_gpt_account_sql(alias: str = "") -> str:
+    """SQL predicate for a real, usable GPT account row.
+
+    A pool placeholder imported via ``import_pool_emails_as_registered`` has no
+    credential at all. A failed registration can leave ``registration_confirmed``
+    metadata but no token. Neither is a GPT account and neither should be shown
+    or counted as one.
+    """
+    prefix = f"{alias}." if alias else ""
+    return (f"(length(trim(COALESCE(json_extract({prefix}payload, '$.access_token'), ''))) > 0 "
+            f"OR length(trim(COALESCE(json_extract({prefix}payload, '$.session_token'), ''))) > 0 "
+            f"OR length(trim(COALESCE(json_extract({prefix}payload, '$.session_json'), ''))) > 0)")
+
+
+def _non_account_placeholder_sql(alias: str = "") -> str:
+    """Rows that were only mailbox bookmarks / interrupted before a credential.
+
+    These are not accounts even if an old list request passes column filters
+    and therefore cannot use ``usable_only``.  Keep this predicate separate
+    from the generic empty-token rule so legacy imported accounts that are
+    intentionally present without a token in tests/older data are not hidden
+    by unrelated filter queries.
+    """
+    prefix = f"{alias}." if alias else ""
+    extra = f"json_extract({prefix}payload, '$.extra_json')"
+    return (f"(COALESCE(json_extract({extra}, '$.placeholder_only'), 0) = 1 "
+            f"OR COALESCE(json_extract({prefix}payload, '$.user_name'), '') = 'Imported Registered Email' "
+            f"OR (COALESCE(json_extract({extra}, '$.registration_confirmed'), 0) = 1 "
+            f"AND length(trim(COALESCE(json_extract({prefix}payload, '$.access_token'), ''))) = 0))")
+
+
 def _query_collection_page(collection: str, *, status: str | None = None,
                            archived: str | bool | None = None, q: str | None = None,
                            date_from: str | None = None, date_to: str | None = None,
@@ -413,7 +457,8 @@ def _query_collection_page(collection: str, *, status: str | None = None,
                            account_group: str | None = None,
                            extra_where: list[str] | None = None,
                            extra_params: list[Any] | None = None,
-                           limit: int = 50, offset: int = 0) -> tuple[list[dict], int, str]:
+                           limit: int = 50, offset: int = 0,
+                           usable_only: bool = False) -> tuple[list[dict], int, str]:
     """执行真正的 SQL COUNT/LIMIT/OFFSET 分页，并返回最新更新时间。"""
     _ensure_sqlite()
     table = _TABLES[collection]
@@ -430,6 +475,13 @@ def _query_collection_page(collection: str, *, status: str | None = None,
         # back into the active list. Filter before COUNT/LIMIT, including polling.
         for key in ("live_check_status", "codex_status"):
             where.append(f"lower(COALESCE(json_extract(payload, '$.{key}'), '')) != 'deactivated'")
+    if table == "accounts" and usable_only:
+        where.append(_usable_gpt_account_sql())
+    if table == "accounts":
+        # Placeholder/bookmark rows must never appear in the GPT account pool,
+        # including when the UI sends column filters (which disables the broad
+        # usable_only shortcut above).
+        where.append("NOT " + _non_account_placeholder_sql())
     if q and str(q).strip():
         where.append("lower(payload) LIKE ?"); params.append("%" + str(q).strip().lower() + "%")
     if email_suffix and table == "accounts":
@@ -940,22 +992,42 @@ def _account_matches_plan_filter(row: dict, plan_filter: str | None = None) -> b
     return plan == f
 
 
+def _account_has_credentials(account: dict | None) -> bool:
+    if not isinstance(account, dict):
+        return False
+    return any(str(account.get(key) or "").strip() for key in ("access_token", "session_token", "session_json"))
+
+
+def _registered_account_emails() -> set[str]:
+    """Emails backed by a usable GPT credential, not a placeholder row."""
+    return {str(r.get("email") or "").lower() for r in _load_accounts() if _account_has_credentials(r)}
+
+
 def _pool_registration_status(row: dict, account: dict | None = None) -> str:
     """Expose one user-facing state for a pool row.
 
-    A local account record is authoritative: a used mailbox from a failed
-    attempt without an account remains ``unregistered`` and can be reused.
+    A local account record is authoritative only when it has a usable
+    credential. Placeholder/partial rows created before a token was obtained
+    are not GPT registrations and must not hide the mailbox from registration.
     """
     if account and any(str(account.get(key) or "").lower() == "deactivated" for key in ("live_check_status", "codex_status")):
         return "disabled"
     if row.get("registration_status") == "disabled" or row.get("status") == "disabled":
         return "disabled"
-    if account:
+    if _account_has_credentials(account):
         return "registered"
+    # A stale manual/legacy override must not contradict the mailbox's own
+    # used/failed state.  Only a real credential may present as registered;
+    # otherwise a consumed mailbox could be re-queued for a second signup.
     override = str(row.get("registration_status") or "").strip().lower()
+    raw_status = str(row.get("status") or "").lower()
+    if raw_status == "disabled":
+        return "disabled"
+    if raw_status in {"used", "failed"}:
+        return "used" if raw_status == "used" else "failed"
     if override in {"registered", "unregistered", "disabled"}:
         return override
-    return "disabled" if str(row.get("status") or "").lower() == "disabled" else "unregistered"
+    return "unregistered"
 
 
 def _decorate_outlook(row: dict, account_by_email: dict[str, dict] | None = None) -> dict:
@@ -1026,6 +1098,8 @@ def list_email_pool_page(
     source: str = "all",
     status: str | None = None,
     registration_status: str | None = None,
+    platform: str | None = None,
+    platform_status: str | None = None,
     q: str | None = None,
     limit: int = 50,
     offset: int = 0,
@@ -1053,21 +1127,45 @@ def list_email_pool_page(
         where.append("lower(ep.email) LIKE ?")
         params.append("%@icloud.com")
     reg_status = str(registration_status or "").strip().lower()
+    platform_name = str(platform or "").strip().lower()
+    platform_state = str(platform_status or "").strip().lower()
     if reg_status in {"registered", "unregistered", "disabled"}:
-        account_exists = "EXISTS (SELECT 1 FROM accounts AS a WHERE a.email = ep.email COLLATE NOCASE)"
-        account_dead = "EXISTS (SELECT 1 FROM accounts AS a WHERE a.email = ep.email COLLATE NOCASE AND (json_extract(a.payload, '$.live_check_status') = 'deactivated' OR json_extract(a.payload, '$.codex_status') = 'deactivated'))"
+        account_exists = "EXISTS (SELECT 1 FROM accounts AS a WHERE a.email = ep.email COLLATE NOCASE AND " + _usable_gpt_account_sql("a") + ")"
+        account_dead = "EXISTS (SELECT 1 FROM accounts AS a WHERE a.email = ep.email COLLATE NOCASE AND " + _usable_gpt_account_sql("a") + " AND (json_extract(a.payload, '$.live_check_status') = 'deactivated' OR json_extract(a.payload, '$.codex_status') = 'deactivated'))"
         override = "lower(COALESCE(json_extract(ep.payload, '$.registration_status'), ''))"
         raw = "lower(COALESCE(ep.status, ''))"
         disabled = f"({account_dead} OR {override} = 'disabled' OR {raw} = 'disabled')"
+        active_job = ("EXISTS (SELECT 1 FROM registration_jobs AS j WHERE j.email = ep.email COLLATE NOCASE "
+                      "AND j.status IN ('pending','running','stopping'))")
         if reg_status == "registered":
             where.append(f"(NOT {disabled} AND ({account_exists} OR {override} = 'registered'))")
         elif reg_status == "disabled":
             where.append(disabled)
         else:
-            where.append(f"(NOT {disabled} AND NOT {account_exists} AND {override} <> 'registered')")
+            where.append(f"(NOT {disabled} AND NOT {account_exists} AND {override} <> 'registered' "
+                         f"AND {override} <> 'disabled' "
+                         f"AND lower(COALESCE(ep.status, '')) NOT IN ('used','failed','disabled') "
+                         f"AND NOT {active_job})")
     elif status:
         where.append("ep.status=?")
         params.append(status)
+    if platform_name in {"gpt", "grok", "github"} and platform_state in {"registered", "unregistered", "processing"}:
+        if platform_name == "gpt":
+            exists = "EXISTS (SELECT 1 FROM accounts AS a WHERE a.email = ep.email COLLATE NOCASE AND " + _usable_gpt_account_sql("a") + ")"
+        elif platform_name == "grok":
+            exists = "EXISTS (SELECT 1 FROM grok_accounts AS g WHERE g.email = ep.email COLLATE NOCASE)"
+        else:
+            exists = "lower(COALESCE(json_extract(ep.payload, '$.github_registration_status'), '')) = 'registered'"
+        if platform_name == "gpt" and platform_state == "processing":
+            where.append("EXISTS (SELECT 1 FROM registration_jobs AS j WHERE j.email = ep.email COLLATE NOCASE "
+                         "AND j.status IN ('pending','running','stopping'))")
+        elif platform_name == "gpt" and platform_state == "unregistered":
+            where.append("NOT (" + exists + ") AND lower(COALESCE(ep.status, '')) NOT IN ('used','failed','disabled') "
+                         "AND lower(COALESCE(json_extract(ep.payload, '$.registration_status'), '')) <> 'disabled' "
+                         "AND NOT EXISTS (SELECT 1 FROM registration_jobs AS j "
+                         "WHERE j.email = ep.email COLLATE NOCASE AND j.status IN ('pending','running','stopping'))")
+        else:
+            where.append(exists if platform_state == "registered" else "NOT (" + exists + ")")
     if q and str(q).strip():
         like = "%" + str(q).strip().lower() + "%"
         # payload 覆盖邮箱池自身字段；source 和关联账号 payload 保持旧 WebUI
@@ -1091,8 +1189,10 @@ def list_email_pool_page(
         ).fetchone()[0] or "")
         rows = conn.execute(
             f"SELECT ep.payload, ep.source, "
+            f"(SELECT j.status FROM registration_jobs AS j WHERE j.email = ep.email COLLATE NOCASE "
+            f"AND j.status IN ('pending','running','stopping') ORDER BY j.id DESC LIMIT 1) AS gpt_job_status, "
             f"(SELECT a.payload FROM accounts AS a "
-            f" WHERE a.email = ep.email COLLATE NOCASE ORDER BY a.id DESC LIMIT 1) AS account_payload "
+            f" WHERE a.email = ep.email COLLATE NOCASE AND " + _usable_gpt_account_sql("a") + " ORDER BY a.id DESC LIMIT 1) AS account_payload "
             f"FROM email_pool AS ep WHERE {clause} "
             f"ORDER BY {order_by} LIMIT ? OFFSET ?",
             [*params, limit, offset],
@@ -1126,9 +1226,31 @@ def list_email_pool_page(
         else:
             item = dict(item)
         item["source"] = item_source
+        item["gpt_job_status"] = str(row["gpt_job_status"] or "")
         if not item.get("copy_line"):
             item["copy_line"] = item.get("email") or ""
         items.append(item)
+    if items:
+        emails = [str(item.get("email") or "").lower() for item in items]
+        with closing(_sqlite_conn()) as conn:
+            marks = ",".join("?" for _ in emails)
+            registered = {r[0].lower() for r in conn.execute(
+                f"SELECT email FROM grok_accounts WHERE email IN ({marks})", emails)}
+            states = {r[0].lower(): r[1] for r in conn.execute(
+                f"SELECT email,status FROM grok_jobs WHERE email IN ({marks}) ORDER BY id", emails)}
+        github_registered = {str(item.get("email") or "").lower() for item in items
+                             if str(item.get("github_registration_status") or "").lower() == "registered"}
+        for item in items:
+            email = str(item.get("email") or "").lower()
+            base = item.get("registration_status", "unregistered")
+            if base == "registered":
+                item["gpt_registration_status"] = "registered"
+            elif item.get("gpt_job_status"):
+                item["gpt_registration_status"] = "processing"
+            else:
+                item["gpt_registration_status"] = base
+            item["grok_registration_status"] = "registered" if email in registered else states.get(email, "unregistered")
+            item["github_registration_status"] = "registered" if email in github_registered else "unregistered"
     return {"items": items, "total": total, "offset": offset, "limit": limit, "latest": latest}
 
 
@@ -1246,6 +1368,8 @@ def claim_account_codex_agent(acc_id: int, trigger: str = "manual") -> bool:
     with _LOCK:
         row = _read_record("accounts", record_id=acc_id)
         if row is None:
+            return False
+        if grok_mailbox_busy(row.get("email")):
             return False
         current_status = row.get("codex_agent_status")
         if current_status in {"queued", "running"}:
@@ -1792,6 +1916,7 @@ def list_account_plan_check_statuses(
         account_group=account_group,
         limit=limit,
         offset=offset,
+        usable_only=False,
     )
     rows = [_decorate_account(row) for row in candidates]
     items = []
@@ -1884,6 +2009,7 @@ def list_accounts(
     email_suffix: str | None = None,
     account_group: str | None = None,
     column_filters: dict | None = None,
+    usable_only: bool = True,
 ) -> list[dict]:
     # 非分页兼容接口也走同一条 SQL 分页路径，避免 limit=500 时先读取整张表。
     result = list_accounts_page(
@@ -1899,6 +2025,7 @@ def list_accounts(
         email_suffix=email_suffix,
         account_group=account_group,
         column_filters=column_filters,
+        usable_only=usable_only,
     )
     return result["items"]
 
@@ -1916,6 +2043,7 @@ def list_accounts_page(
     email_suffix: str | None = None,
     account_group: str | None = None,
     column_filters: dict | None = None,
+    usable_only: bool = False,
 ) -> dict:
     limit = max(1, int(limit))
     offset = max(0, int(offset or 0))
@@ -1941,6 +2069,7 @@ def list_accounts_page(
         account_group=account_group,
         limit=limit,
         offset=offset,
+        usable_only=usable_only,
     )
     items = [_decorate_account(row) for row in candidates]
     return {"items": items, "total": total, "offset": offset, "limit": limit, "revision": f"{total}:{latest}"}
@@ -2018,7 +2147,7 @@ def update_account_flow(acc_id: int, *, traffic: dict | None = None, completion:
 
 
 def update_account_password_setup(acc_id: int, status: str, *, password: str | None = None,
-                                  candidate: str | None = None, error: str = "") -> bool:
+                                  candidate: str | None = None, error: str = "", diagnostic: dict | None = None) -> bool:
     """Keep mail credentials separate; only an acknowledged add becomes a GPT password."""
     if status not in {"running", "success", "already_set", "blocked", "failed", "uncertain"}:
         raise ValueError("密码设置状态不合法")
@@ -2039,10 +2168,18 @@ def update_account_password_setup(acc_id: int, status: str, *, password: str | N
             extra["registration_password"] = password
             extra.pop("password_setup_candidate", None)
         if candidate is not None:
-            extra["password_setup_candidate"] = candidate
+            if candidate:
+                extra["password_setup_candidate"] = candidate
+            else:
+                extra.pop("password_setup_candidate", None)
         row["extra_json"] = json.dumps(extra, ensure_ascii=False)
         row["password_setup_status"] = status
         row["password_setup_error"] = error
+        if diagnostic is not None:
+            row["password_setup_diagnostic"] = {key: value for key, value in diagnostic.items()
+                if key in {"stage", "http_status", "error_code", "error_message", "request_id", "cf_ray", "reason", "exception_type"}}
+        elif status in {"running", "success", "already_set"}:
+            row.pop("password_setup_diagnostic", None)
         row["password_setup_at"] = _now()
         row["updated_at"] = _now()
         _save_account(row)
@@ -2183,6 +2320,8 @@ def claim_account_email_change(acc_id: int, source: str, trigger: str = "manual"
     with _LOCK:
         row = _read_record("accounts", record_id=acc_id)
         if row is None or row.get("email_change_status") in {"queued", "running"}:
+            return False
+        if grok_mailbox_busy(row.get("email")):
             return False
         now = _now()
         row.update({
@@ -2346,6 +2485,10 @@ def sync_deactivated_accounts() -> int:
 def update_account_liveness(acc_id: int, result: dict | None = None) -> bool:
     """写回账号查活结果；成功时同步刷新最新 access_token 和账号基础信息。"""
     result = result or {}
+    # A transport/verification failure is not an explicit deactivation. It may
+    # retry the same account; only a structured server ban/deactivation can
+    # close the account or its mailbox.
+    dead_codes = {"account_deactivated", "account_deleted", "account_banned"}
     with _LOCK:
         row = _read_record("accounts", record_id=acc_id)
         if row is None:
@@ -2365,8 +2508,17 @@ def update_account_liveness(acc_id: int, result: dict | None = None) -> bool:
         status = str(result.get("status") or ("live" if ok else "failed"))
         # A revoked token or transport error cannot disprove an earlier,
         # explicit account_deactivated response.
-        if row.get("live_check_status") == "deactivated" and not ok and status != "deactivated":
+        if (row.get("live_check_status") == "deactivated" and not ok and
+                (status != "deactivated" or
+                 (status == "deactivated" and
+                  str(result.get("error_code") or "") not in dead_codes))):
             return True
+        # A failed test run must not leave a previous *false* deactivation
+        # sticky. Only an explicit deactivated result may archive an account.
+        if row.get("live_check_status") == "deactivated" and status != "deactivated":
+            row["archived"] = False
+            row["archive_reason"] = None
+            row["live_check_error_code"] = None
         row["live_check_status"] = status
         row["live_check_ok"] = ok
         row["live_checked_at"] = result.get("checked_at") or now
@@ -2436,6 +2588,8 @@ def claim_account_totp_setup(acc_id: int, trigger: str = "manual") -> bool:
     with _LOCK:
         row = _read_record("accounts", record_id=acc_id)
         if row is None:
+            return False
+        if grok_mailbox_busy(row.get("email")):
             return False
         current_status = row.get("totp_setup_status")
         if current_status in {"queued", "running"}:
@@ -2532,6 +2686,8 @@ def claim_account_live_check(acc_id: int, trigger: str = "manual") -> bool:
     with _LOCK:
         row = _read_record("accounts", record_id=acc_id)
         if row is None:
+            return False
+        if grok_mailbox_busy(row.get("email")):
             return False
         if row.get("live_check_status") in {"queued", "running"}:
             try:
@@ -2661,10 +2817,13 @@ def archive_accounts(account_ids: list[int] | None, archived: bool = True) -> tu
     return updated, skipped
 
 
-def count_accounts() -> int:
+def count_accounts(*, usable_only: bool = False) -> int:
     _ensure_sqlite()
+    # The dashboard counter must agree with the default (unarchived) account
+    # list: real credentials only, and no archived rows.
+    predicate = " WHERE archived=0 AND " + _usable_gpt_account_sql()
     with closing(_sqlite_conn()) as conn:
-        return int(conn.execute("SELECT COUNT(*) FROM accounts").fetchone()[0])
+        return int(conn.execute("SELECT COUNT(*) FROM accounts" + predicate).fetchone()[0])
 
 
 def delete_account(acc_id: int | None = None, email: str | None = None) -> bool:
@@ -2995,6 +3154,18 @@ def _pool_rows_for_source(source: str) -> tuple[list[dict], Any, str]:
     raise ValueError(f"不支持的邮箱池来源: {source}")
 
 
+def _reserved_grok_emails() -> set[str]:
+    _ensure_sqlite()
+    with closing(_sqlite_conn()) as conn:
+        return {str(r[0]).lower() for r in conn.execute(
+            "SELECT email FROM grok_jobs WHERE status IN ('pending','running','manual_required')")}
+
+
+def grok_mailbox_busy(email: str) -> bool:
+    """Call under _LOCK when reserving a GPT authentication operation."""
+    return str(email or "").strip().lower() in _reserved_grok_emails()
+
+
 def _reserved_registration_emails() -> set[str]:
     with closing(_sqlite_conn()) as conn:
         return {str(r[0]).lower() for r in conn.execute(
@@ -3003,13 +3174,15 @@ def _reserved_registration_emails() -> set[str]:
             "json_extract(payload,'$.registration_batch_id') IN ("
             "SELECT json_extract(payload,'$.registration_batch_id') FROM registration_jobs "
             "WHERE status IN ('pending','running','stopping')))"
-        ) if r[0]}
+        ) if r[0]} | _reserved_grok_emails()
 
 
 def claim_pool_email(email: str, source: str, *, note: str | None = None) -> dict | None:
     """按邮箱精确领取一个可用邮箱，避免注册页只能按池中顺序领取。"""
     email = str(email or "").strip()
     with _LOCK:
+        if email.lower() in _reserved_grok_emails():
+            return None
         rows, saver, normalized = _pool_rows_for_source(source)
         row = _find_by_email(rows, email)
         accounts = _load_accounts()
@@ -3031,8 +3204,8 @@ def claim_pool_emails(items: list[dict], *, note: str | None = None, reserve: bo
         selected: list[tuple[str, dict]] = []
         skipped: list[dict] = []
         seen: set[tuple[str, str]] = set()
-        registered = {str(r.get("email") or "").lower() for r in _load_accounts()}
-        active_jobs = {str(r.get("email") or "").lower() for r in _load_jobs() if r.get("status") in {"pending", "running", "stopping"}}
+        registered = _registered_account_emails()
+        active_jobs = {str(r.get("email") or "").lower() for r in _load_jobs() if r.get("status") in {"pending", "running", "stopping"}} | _reserved_grok_emails()
         for item in items if isinstance(items, list) else []:
             if not isinstance(item, dict):
                 skipped.append({"reason": "条目格式非法"})
@@ -3052,12 +3225,17 @@ def claim_pool_emails(items: list[dict], *, note: str | None = None, reserve: bo
                     skipped.append({"email": email, "source": source, "reason": "来源无效"})
                     continue
             row = _find_by_email(pools[source][0], email)
-            account = next((a for a in _load_accounts() if str(a.get("email") or "").lower() == email.lower()), None)
+            account = next((a for a in _load_accounts() if str(a.get("email") or "").lower() == email.lower()
+                            and _account_has_credentials(a)), None)
             registration_status = _pool_registration_status(row, account) if row is not None else "unregistered"
+            raw_pool_status = str(row.get("status") or "").lower() if row is not None else ""
             reason = (
                 "邮箱格式无效" if not valid_email(email) else
                 "账号页已存在，请勿重复注册" if email.lower() in registered else
                 "已有同邮箱注册任务在执行" if email.lower() in active_jobs else
+                "邮箱池状态为停用" if raw_pool_status == "disabled" or str((row or {}).get("registration_status") or "").lower() == "disabled" else
+                "邮箱池状态为已使用" if raw_pool_status == "used" else
+                "邮箱池状态为失败" if raw_pool_status == "failed" else
                 "邮箱不存在或不是未注册状态" if row is None or registration_status != "unregistered" else ""
             )
             if reason:
@@ -3090,6 +3268,7 @@ def set_pool_registration_status(email: str, source: str, registration_status: s
         if row is None:
             return False
         row["registration_status"] = value
+        row["gpt_registration_status"] = value
         row["status"] = "disabled" if value == "disabled" else ("used" if value == "registered" else "available")
         if value == "available" or value == "unregistered":
             row["used_at"] = None
@@ -3099,6 +3278,25 @@ def set_pool_registration_status(email: str, source: str, registration_status: s
             row["note"] = note
         saver(rows)
         return True
+
+
+def set_pool_platform_status(email: str, source: str, platform: str, platform_status: str) -> bool:
+    """Set per-platform mailbox registration status (gpt/grok/github)."""
+    name = str(platform or "").strip().lower()
+    value = str(platform_status or "").strip().lower()
+    if name not in {"gpt", "grok", "github"}:
+        raise ValueError("platform 非法")
+    if value not in {"registered", "unregistered"}:
+        raise ValueError("platform_status 非法")
+    email = str(email or "").strip()
+    with _LOCK:
+        rows, saver, _ = _pool_rows_for_source(source)
+        row = _find_by_email(rows, email)
+        if row is None:
+            return False
+        row[f"{name}_registration_status"] = value
+        saver(rows)
+    return True
 
 
 def import_pool_emails_as_registered(items: list[dict]) -> tuple[list[dict], list[dict]]:
@@ -3141,13 +3339,14 @@ def import_pool_emails_as_registered(items: list[dict]) -> tuple[list[dict], lis
                 "id": _next_id(accounts), "email": email, "created_at": now, "updated_at": now,
                 "access_token": "", "totp_secret": None, "user_name": "Imported Registered Email",
                 "email_source": source, "original_email_line": pool_row.get("copy_line") or email,
-                "extra_json": json.dumps({"imported_registered": True, "imported_from_pool": True}, ensure_ascii=False),
+                "extra_json": json.dumps({"imported_registered": True, "imported_from_pool": True,
+                                          "placeholder_only": True}, ensure_ascii=False),
             }
             accounts.append(account)
-            pool_row["status"] = "used"
-            pool_row["used_at"] = pool_row.get("used_at") or now
+            # This action is a mailbox bookmark, not a GPT registration. Keep
+            # the mailbox available so it can still be claimed for a real run.
             pool_row["registered_account_id"] = account["id"]
-            pool_row["note"] = "已从邮箱池导入账号页"
+            pool_row["note"] = "邮箱池书签（未验证 GPT 凭据）"
             imported.append({"id": account["id"], "email": email, "source": source})
         if imported:
             _save_accounts(accounts)
@@ -3156,11 +3355,68 @@ def import_pool_emails_as_registered(items: list[dict]) -> tuple[list[dict], lis
         return imported, skipped
 
 
+def cleanup_unusable_gpt_accounts() -> dict:
+    """Delete local account rows that never obtained a usable GPT credential.
+
+    Pool "bookmark" imports and partial registrations without an access/session
+    token are not GPT accounts. Imported placeholders also release their
+    mailbox back to ``available`` so the user can run a real registration.
+    """
+    with _LOCK:
+        accounts = _load_accounts()
+        unusable = [row for row in accounts if not _account_has_credentials(row)]
+        if not unusable:
+            return {"deleted": 0, "released_mailboxes": 0}
+        deleted_ids = {int(row.get("id") or 0) for row in unusable}
+        placeholder_ids = {int(row.get("id") or 0) for row in unusable
+                           if row.get("user_name") == "Imported Registered Email"}
+        keep = [row for row in accounts if int(row.get("id") or 0) not in deleted_ids]
+        _save_accounts(keep)
+        _ensure_sqlite()
+        with closing(_sqlite_conn()) as conn:
+            conn.executemany("DELETE FROM codex_agent_accounts WHERE account_id=?", [(x,) for x in deleted_ids])
+            conn.commit()
+        released = 0
+        usable_emails = _registered_account_emails()
+        remaining_ids = {int(a.get("id") or 0) for a in keep}
+        for source in ("outlook", "generic_api", "imap", "cloudflare_domain"):
+            try:
+                rows, saver, _ = _pool_rows_for_source(source)
+            except ValueError:
+                continue
+            changed = False
+            for row in rows:
+                ref = int(row.get("registered_account_id") or 0)
+                email = str(row.get("email") or "").lower()
+                if ref in placeholder_ids:
+                    pass
+                elif ref and ref not in remaining_ids and email not in usable_emails:
+                    pass
+                else:
+                    continue
+                row["status"] = "available"
+                row["used_at"] = None
+                row.pop("registered_account_id", None)
+                # A released placeholder must not keep a stale manual
+                # "registered" flag; that would hide it from real registration
+                # and make the pool contradict the account list.
+                if str(row.get("registration_status") or "").lower() == "registered":
+                    row["registration_status"] = "unregistered"
+                if str(row.get("gpt_registration_status") or "").lower() == "registered":
+                    row["gpt_registration_status"] = "unregistered"
+                row["note"] = "已清理未验证的账号页占位记录"
+                changed = True
+                released += 1
+            if changed:
+                saver(rows)
+        return {"deleted": len(deleted_ids), "released_mailboxes": released}
+
+
 def claim_next_outlook() -> dict | None:
     """原子领取一个可用 Outlook 账号并标记为 used。"""
     with _LOCK:
         rows = sorted(_load_outlook(), key=lambda x: int(x.get("id") or 0))
-        registered = {str(r.get("email") or "").lower() for r in _load_accounts()} | _reserved_registration_emails()
+        registered = _registered_account_emails() | _reserved_registration_emails()
         row = next((r for r in rows if r.get("status") == "available" and str(r.get("email") or "").lower() not in registered), None)
         if row is None:
             return None
@@ -3268,6 +3524,43 @@ def get_outlook_by_email(email: str) -> dict | None:
 # generic_api email pool
 # ============================================================
 
+def configure_icapi_mailboxes(records: list[dict], *, imported_at: str) -> int:
+    """Replace explicitly supplied links in one batch, preserving mailbox/account states."""
+    from core.icapi_mailbox import viewer_token
+    if not isinstance(records, list) or not 1 <= len(records) <= 1000:
+        raise ValueError("请选择1到1000条邮件页面映射")
+    clean, emails, tokens = [], set(), set()
+    for item in records:
+        if not isinstance(item, dict):
+            raise ValueError("邮件页面映射条目不合法")
+        email = str(item.get("email") or "").strip().lower()
+        url = str(item.get("url") or "").strip()
+        token = viewer_token(url)
+        digest = hashlib.sha256(token.encode()).hexdigest()
+        if not valid_email(email) or email in emails or digest in tokens:
+            raise ValueError("邮件页面映射有非法或重复邮箱/Token，未修改")
+        emails.add(email); tokens.add(digest); clean.append((email, url))
+    with _LOCK:
+        _ensure_sqlite()
+        with closing(_sqlite_conn()) as conn, conn:
+            conn.execute("BEGIN IMMEDIATE")
+            for email, url in clean:
+                row = conn.execute("SELECT id,payload FROM email_pool WHERE email=? COLLATE NOCASE AND source='generic_api' AND created_at=?", (email, imported_at)).fetchone()
+                if not row:
+                    raise ValueError("映射邮箱不属于指定导入批次，未修改任何条目")
+                if conn.execute("SELECT 1 FROM registration_jobs WHERE email=? COLLATE NOCASE AND status IN ('pending','running','stopping')", (email,)).fetchone() or conn.execute("SELECT 1 FROM grok_jobs WHERE email=? COLLATE NOCASE AND status IN ('pending','running','manual_required')", (email,)).fetchone():
+                    raise ValueError("邮箱仍有在途注册任务，未修改配置")
+                if conn.execute("SELECT 1 FROM accounts WHERE email=? COLLATE NOCASE AND (json_extract(payload,'$.totp_setup_status') IN ('queued','running') OR json_extract(payload,'$.live_check_status') IN ('queued','running') OR json_extract(payload,'$.email_change_status') IN ('queued','running') OR json_extract(payload,'$.codex_status')='retrying')", (email,)).fetchone():
+                    raise ValueError("邮箱仍有在途认证操作，未修改配置")
+                payload = json.loads(row[1])
+                if payload.get("code_url") != url:
+                    payload.setdefault("previous_code_url", payload.get("code_url", ""))
+                payload["code_url"] = url
+                payload["copy_line"] = _generic_api_email_line(payload)
+                conn.execute("UPDATE email_pool SET payload=? WHERE id=?", (json.dumps(payload, ensure_ascii=False), row[0]))
+    return len(clean)
+
+
 def import_generic_api_emails(records: list[dict]) -> tuple[int, int]:
     """
     批量导入通用 API 取码邮箱。
@@ -3306,7 +3599,7 @@ def claim_next_generic_api_email() -> dict | None:
     """原子领取一个可用通用 API 邮箱并标记为 used。"""
     with _LOCK:
         rows = sorted(_load_generic_api_emails(), key=lambda x: int(x.get("id") or 0))
-        registered = {str(r.get("email") or "").lower() for r in _load_accounts()} | _reserved_registration_emails()
+        registered = _registered_account_emails() | _reserved_registration_emails()
         row = next((r for r in rows if r.get("status") == "available" and str(r.get("email") or "").lower() not in registered), None)
         if row is None:
             return None
@@ -3457,7 +3750,7 @@ def import_forwarded_imap_emails(records: list[dict], *, inbox: str,
 def claim_next_imap_email() -> dict | None:
     with _LOCK:
         rows = sorted(_load_imap_emails(), key=lambda x: int(x.get("id") or 0))
-        registered = {str(r.get("email") or "").lower() for r in _load_accounts()} | _reserved_registration_emails()
+        registered = _registered_account_emails() | _reserved_registration_emails()
         row = next((r for r in rows if r.get("status") == "available" and str(r.get("email") or "").lower() not in registered), None)
         if row is None:
             return None

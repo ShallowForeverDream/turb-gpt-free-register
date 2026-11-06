@@ -1,0 +1,175 @@
+const GROK_LABELS={unregistered:'未注册',registered:'已注册',pending:'待启动',running:'运行中',manual_required:'等待人工处理',uncertain:'结果未确认',success:'成功',failed:'失败',blocked:'受阻',cancelled:'已取消',already_registered:'已有账号（未保存凭据）'};
+const grokSelected=new Map();let grokAccountPage=1,grokAccountPages=1,grokAccountFlight=null,grokLogId=null,grokLogTimer=null,grokLogText='',grokGeneration=0,grokWorkersLoaded=false;
+function poolPlatformStatus(row){const g=(v)=>esc(GROK_LABELS[v]||({processing:'注册中'}[v])||v||'未注册');return 'GPT：'+g(row.gpt_registration_status||row.registration_status)+'<br>Grok：'+g(row.grok_registration_status||'unregistered')+'<br>GitHub：'+g(row.github_registration_status||'unregistered');}
+function grokAccountStatus(row){return row.registration_origin==='manual_capture'?'人工抓包导入 · SSO未在线复验':row.registration_origin==='protocol'?'协议注册（未验证API套餐）':'普通浏览器注册（未验证API套餐）';}
+function grokPost(path,data){return api('/api/grok'+path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});}
+function grokSelectedItems(){return [...grokSelected.values()];}
+function grokCliCell(row){
+  const state=row.cli_auth_status||'missing';
+  const label=state==='ready'?'CLI 已授权':state==='failed'?'CLI 授权失败':'未授权 CLI';
+  const buttons=[`<button type="button" data-grok-cli="${row.id}">${state==='ready'?'重新授权':'授权 Grok CLI'}</button>`];
+  if(state==='ready')buttons.push(`<button type="button" class="secondary" data-grok-cli-download="${row.id}">下载 auth.json</button><button type="button" class="secondary" data-grok-cli-copy="${row.id}">复制 auth.json</button>`);
+  return `<div class="grok-cli-actions">${buttons.join('')}<span class="grok-cli-state ${esc(state)}" title="${esc(row.cli_auth_error||'')}">${esc(label)}</span></div>`;
+}
+async function loadGrok(){
+  if(grokAccountFlight)return grokAccountFlight;
+  grokAccountFlight=(async()=>{
+    try{
+      const aq=(document.getElementById('grokAccountQuery')?.value||'').trim();
+      const [accounts,queue]=await Promise.all([
+        api(`/api/grok/accounts?page=${grokAccountPage}&q=${encodeURIComponent(aq)}`),
+        api('/api/grok/queue')]);
+      grokAccountPages=Math.max(1,Math.ceil(accounts.total/20));
+      if(grokAccountPage>grokAccountPages){grokAccountPage=grokAccountPages;setTimeout(loadGrok,0);return;}
+      const queueState=document.getElementById('grokQueueState');
+      if(queueState)queueState.textContent=`${queue.paused?'已暂停补充':'可补充'} · 并发 ${queue.workers} · 运行 ${queue.active} · 待启动 ${queue.waiting}`+(grokSelected.size?` · 已选 ${grokSelected.size}`:'');
+      const workers=document.getElementById('grokWorkers');
+      if(workers&&!grokWorkersLoaded){workers.value=queue.workers;grokWorkersLoaded=true;}
+      document.getElementById('grokAccountRows').innerHTML=accounts.items.map(r=>`<tr><td>#${esc(r.id)}</td><td><div class="acc-v2-email">${esc(r.email)}</div></td><td>${esc(r.source)}</td><td>${esc(grokAccountStatus(r))}</td><td>${esc(r.created_at)}</td><td><button type="button" class="acc-v2-token-copy" data-grok-secret="${r.id}" data-field="sso">复制SSO</button></td><td><button type="button" class="acc-v2-token-copy" data-grok-secret="${r.id}" data-field="sso_rw">复制SSO-RW</button></td><td><button type="button" class="acc-v2-token-copy" data-grok-secret="${r.id}" data-field="password">复制密码</button></td><td class="col-cli">${grokCliCell(r)}</td></tr>`).join('')||'<tr><td colspan="9" style="text-align:center;color:#909399;padding:28px;">暂无已注册的 Grok 账号</td></tr>';
+      const count=document.getElementById('grokAccountCount');if(count)count.textContent=`已注册 ${accounts.total}`;
+      const pager=document.getElementById('pager-grok-accounts');
+      if(pager)pager.innerHTML=`<button type="button" data-grok-account-page="-1"${grokAccountPage<=1?' disabled':''}>← 上一页</button><span class="pager-info">第 ${grokAccountPage} / ${grokAccountPages} 页 · 共 ${accounts.total} 个</span><button type="button" data-grok-account-page="1"${grokAccountPage>=grokAccountPages?' disabled':''}>下一页 →</button>`;
+    }catch(e){const queueState=document.getElementById('grokQueueState');if(queueState)queueState.textContent='加载失败：'+e.message;}
+  })();try{await grokAccountFlight;}finally{grokAccountFlight=null;}
+}
+function grokSetSelectedFromPool(){
+  // 邮箱池选择跨页保留；后端仍会校验 GPT/Grok 在途任务和已注册状态。
+  grokSelected.clear();
+  for(const key of (typeof OUTLOOK_SELECTED!=='undefined'?OUTLOOK_SELECTED:[])){
+    const [source,...rest]=String(key).split('|');const email=rest.join('|');
+    if(!email)continue;
+    const row=(typeof OUTLOOK!=='undefined'?OUTLOOK:[]).find(item=>item.email===email&&(item.source||'')===source);
+    if(row&&row.grok_registration_status==='registered')continue;
+    grokSelected.set(key,{email,source});
+  }
+  const state=document.getElementById('grokQueueState');
+  if(state&&grokSelected.size)state.textContent=`已选 ${grokSelected.size} 个邮箱，可开始 Grok 注册`;
+}
+document.addEventListener('grok-pool-selection-changed',grokSetSelectedFromPool);
+document.getElementById('grokRefresh')?.addEventListener('click',loadGrok);
+document.getElementById('grokImportMailViews')?.addEventListener('click',()=>document.getElementById('grokMailViewsFile').click());
+document.getElementById('grokMailViewsFile')?.addEventListener('change',async e=>{const file=e.target.files[0];if(!file)return;try{if(file.size>1024*1024)throw new Error('文件不能超过1MB');if(!confirm('仅替换文件中属于新1000批次的邮件页面链接，不改变注册状态。确认导入？'))return;const r=await grokPost('/mailboxes/viewer-links',{text:await file.text()});showToast(`已配置${r.updated}个邮件页面，未启动注册`);await loadGrok();}catch(error){showToast(error.message);}finally{e.target.value='';}});
+const grokAccountQuery=document.getElementById('grokAccountQuery');
+if(grokAccountQuery)grokAccountQuery.addEventListener('input',debounce(()=>{grokAccountPage=1;loadGrok();},250));
+document.getElementById('grokAccountRefresh')?.addEventListener('click',loadGrok);
+document.getElementById('grokAccountCopyAll')?.addEventListener('click',async()=>{try{const r=await api('/api/grok/accounts?page=1&page_size=100&q='+encodeURIComponent((grokAccountQuery&&grokAccountQuery.value||'').trim()));const emails=(r.items||[]).map(x=>x.email).filter(Boolean);if(!emails.length)throw new Error('没有可复制的 Grok 账号');await copyText(emails.join('\n'));showToast('已复制 '+emails.length+' 个邮箱');}catch(e){showToast(e.message);}});
+document.getElementById('pager-grok-accounts')?.addEventListener('click',event=>{const b=event.target.closest('[data-grok-account-page]');if(!b)return;grokAccountPage=Math.max(1,grokAccountPage+Number(b.dataset.grokAccountPage));loadGrok();});
+document.getElementById('grokSaveWorkers')?.addEventListener('click',async()=>{try{const r=await grokPost('/queue',{action:'configure',workers:Number(document.getElementById('grokWorkers').value)});document.getElementById('grokWorkers').value=r.workers;await loadGrok();}catch(e){showToast(e.message);}});
+document.getElementById('grokProgressList')?.addEventListener('click',async()=>{
+  try{
+    const data=await api('/api/grok/jobs?page=1&page_size=20');
+    const job=(data.items||[])[0];
+    if(!job){showToast('暂无 Grok 任务，先提交注册');return;}
+    openGrokProgress(job.id);
+  }catch(e){showToast('读取 Grok 进度失败：'+e.message);}
+});
+document.querySelectorAll('[data-grok-control]').forEach(b=>b.addEventListener('click',async()=>{try{await grokPost('/queue',{action:b.dataset.grokControl});await loadGrok();}catch(e){showToast(e.message);}}));
+document.getElementById('grokStart')?.addEventListener('click',async()=>{
+  grokSetSelectedFromPool();
+  if(!grokSelected.size){showToast('请先在邮箱池勾选要注册 Grok 的邮箱');return;}
+  const driver=document.getElementById('grokDriver').value;
+  if(!confirm(`确认使用本人拥有或获授权的 ${grokSelected.size} 个邮箱注册Grok？\n${driver==='protocol'?'HTTP执行注册；原生SDK使用普通无窗口运行时。需要人工验证时暂停，不自动开可见窗口。':'将打开普通可见浏览器，人机验证/条款请人工完成。'}\n注册成功后会继续尝试官方 Grok CLI 设备授权。`))return;
+  const b=document.getElementById('grokStart');b.disabled=true;
+  try{const r=await grokPost('/jobs',{emails:grokSelectedItems(),authorized:true,driver});grokSelected.clear();showToast(`已建立 ${r.job_ids.length} 项Grok计划`);await loadGrok();}catch(e){showToast('Grok未启动：'+e.message);}finally{b.disabled=false;}
+});
+document.getElementById('grokAccountRows')?.addEventListener('click',async event=>{
+  const secret=event.target.closest('[data-grok-secret]');
+  if(secret){try{const r=await api(`/api/grok/accounts/${Number(secret.dataset.grokSecret)}/secret?field=${encodeURIComponent(secret.dataset.field)}`);if(r.value)await copyText(r.value);else showToast('该凭据未留存');}catch(e){showToast(e.message);}return;}
+  const download=event.target.closest('[data-grok-cli-download]');
+  if(download){
+    const a=document.createElement('a');a.href=`/api/grok/accounts/${Number(download.dataset.grokCliDownload)}/cli-auth/download`;a.download='auth.json';document.body.appendChild(a);a.click();a.remove();
+    return;
+  }
+  const copyCli=event.target.closest('[data-grok-cli-copy]');
+  if(copyCli){
+    try{
+      const r=await api(`/api/grok/accounts/${Number(copyCli.dataset.grokCliCopy)}/secret?field=cli_auth`);
+      if(!r.value||r.value==='{}')throw new Error('该账号尚未生成 auth.json');
+      await copyText(r.value);
+    }catch(e){showToast('复制 auth.json 失败：'+e.message);}
+    return;
+  }
+  const button=event.target.closest('[data-grok-cli]');
+  if(!button)return;
+  if(!confirm('使用该 Grok 账号完成官方 Grok CLI 设备授权？\n\n会在普通浏览器中自动完成设备确认，不需要邮箱验证码。授权成功后生成可导入 my-cockpit-tools 的 auth.json。'))return;
+  button.disabled=true;const old=button.textContent;button.textContent='授权中…';
+  try{const r=await grokPost(`/accounts/${Number(button.dataset.grokCli)}/cli-auth`,{confirmed:true});showToast('Grok CLI 授权完成');await loadGrok();}
+  catch(e){showToast('Grok CLI 授权失败：'+e.message);}
+  finally{button.disabled=false;button.textContent=old;}
+});
+async function pollGrokLog(){
+  const id=grokLogId,generation=grokGeneration;if(id==null)return;
+  try{const r=await api(`/api/grok/jobs/${id}`);if(id!==grokLogId||generation!==grokGeneration)return;
+    grokLogText=r.log||'';document.getElementById('grokLogBody').textContent=grokLogText||'暂无日志';
+    document.getElementById('grokLogStatus').textContent=`${GROK_LABELS[r.status]||r.status} · ${r.stage}`;
+    document.getElementById('grokCodeForm').hidden=r.stage!=='email_code'||!['running','manual_required'].includes(r.status);
+    document.getElementById('grokContinue').hidden=r.stage!=='access_check'||r.status!=='manual_required';
+    document.getElementById('grokNativeVerify').hidden=r.stage!=='native_challenge'||r.status!=='manual_required';
+    document.getElementById('grokStopActive').disabled=!['running','manual_required'].includes(r.status);
+    if(!['running','manual_required','pending'].includes(r.status))clearInterval(grokLogTimer);
+  }catch(e){if(id===grokLogId)document.getElementById('grokLogStatus').textContent=e.message;}
+}
+const GROK_PROGRESS_GROUPS=[
+  ['prepare','第一部分 · 准备与网络',[[/动态家宽出口已固定|固定动态家宽出口|proxy=/,'固定动态家宽出口'],[/开始 Grok 注册/,'任务启动'],[/打开独立的普通浏览器|普通浏览器就绪|浏览器/,'普通浏览器就绪']]],
+  ['signup','第二部分 · 邮箱注册',[[/提交邮箱表单|email_submit|发码请求/,'提交邮箱并请求发码'],[/email_code|等待.*验证码|ICAPI|取码/,'API/邮箱接码'],[/验证码已填写|code_submitted|verify-email/,'提交邮箱验证码'],[/profile|资料|创建账号/,'填写资料并建号'],[/session_confirm|save|SSO/,'确认登录态并保存 SSO']]],
+  ['cli','第三部分 · Grok CLI 授权',[[/CLI 设备授权|cli_auth/,'官方设备授权'],[/auth\.x\.ai|允许|继续/,'浏览器确认授权'],[/token|auth\.json|cli_auth_failed/,'换取 token / 生成 auth.json']]]
+];
+function grokProgressModel(job){
+  const events=Array.isArray(job.events)?job.events:[];
+  const text=events.map(e=>String(e.message||'')).join('\n');
+  const status=String(job.status||''),finished=['success','failed','blocked','cancelled','uncertain','already_registered'].includes(status),success=status==='success';
+  const groups=GROK_PROGRESS_GROUPS.map(([key,title,steps])=>{
+    let latest=-1;
+    steps.forEach((step,i)=>{const pattern=step[0];if(pattern && typeof pattern.test==='function' && pattern.test(text))latest=Math.max(latest,i);});
+    const items=steps.map((step,i)=>({label:step[1],status:i<latest?'success':i===latest?(finished?(success?'success':'failed'):'running'):'pending'}));
+    // 注册成功但未进入 CLI 授权时，第三部分显示“跳过”，而不是失败。
+    let state=latest<0?(finished?'skipped':'pending'):items[latest].status;
+    if(key==='cli'&&latest<0&&success)state='skipped';
+    return {key,title,state,steps:items};
+  });
+  return {status,finished,success,groups};
+}
+function grokLogRecords(log){
+  let phase='prepare';
+  return String(log||'').split(/\r?\n/).map(text=>{
+    if(/开始 Grok 注册/.test(text))phase='prepare';
+    else if(/动态家宽出口|普通浏览器|浏览器就绪|email_submit|email_send|email_code|code_submitted|profile|session_confirm|save|SSO/.test(text))phase='signup';
+    else if(/CLI 设备授权|cli_auth|auth\.x\.ai|auth\.json/.test(text))phase='cli';
+    return {text,phase};
+  });
+}
+function openGrokProgress(id){
+  const d=document.getElementById('grokProgressDialog');if(!d)return openGrokLog(id);
+  d.dataset.job=String(id);document.getElementById('grokProgressTitle').textContent=`Grok任务 G#${id} · 全流程进度`;d.showModal();
+  const render=async()=>{
+    try{const r=await api(`/api/grok/jobs/${id}`);const m=grokProgressModel(r);
+      document.getElementById('grokProgressSummary').textContent=(GROK_LABELS[m.status]||m.status||'状态待同步')+' · 点击各部分展开';
+      document.getElementById('grokProgressSummary').dataset.state=m.success?'success':m.finished?'failed':'running';
+      const filter=document.getElementById('grokProgressFilter');
+      if(filter){const phase=filter.value,lines=grokLogRecords(r.log||'').filter(x=>!phase||x.phase===phase).map(x=>x.text);
+        filter.onchange=()=>{const p=filter.value;document.getElementById('grokProgressLogPreview').textContent=grokLogRecords(r.log||'').filter(x=>!p||x.phase===p).map(x=>x.text).join('\n')||'该部分暂无日志';};
+        document.getElementById('grokProgressLogPreview').textContent=lines.join('\n')||'该部分暂无日志';}
+      const list=document.getElementById('grokProgressSteps');list.replaceChildren();
+      for(const g of m.groups){const sec=document.createElement('details');sec.className='workspace-progress-group';sec.dataset.state=g.state;
+        const sum=document.createElement('summary');sum.textContent=g.title;const badge=document.createElement('span');badge.textContent={success:'已完成',failed:'未完成',running:'进行中',pending:'等待中',skipped:'跳过'}[g.state]||'';sum.append(badge);sec.append(sum);
+        const ol=document.createElement('ol');ol.className='workspace-progress-steps';
+        for(const s of g.steps){const li=document.createElement('li');li.className={success:'is-done',failed:'is-stopped',running:'is-current',skipped:'is-skipped'}[s.status]||'';li.textContent=s.label;ol.append(li);}sec.append(ol);list.append(sec);}
+      document.getElementById('grokProgressNote').textContent=m.finished?'该任务已结束。':'仅根据已记录日志推断进度。';
+      if(!m.finished)setTimeout(render,3000);
+    }catch(e){document.getElementById('grokProgressSummary').textContent='进度加载失败：'+e.message;}
+  };
+  render();
+}
+function openGrokLog(id){grokLogId=id;grokGeneration++;grokLogText='';document.getElementById('grokLogTitle').textContent=`Grok任务 G#${id}`;document.getElementById('grokLogBody').textContent='加载中…';document.getElementById('grokManualCode').value='';const d=document.getElementById('grokLogDialog');if(!d.open)d.showModal();clearInterval(grokLogTimer);grokLogTimer=setInterval(pollGrokLog,3000);pollGrokLog();}
+document.getElementById('grokLogClose')?.addEventListener('click',()=>document.getElementById('grokLogDialog').close());
+document.getElementById('grokProgressClose')?.addEventListener('click',()=>document.getElementById('grokProgressDialog').close());
+document.getElementById('grokProgressDone')?.addEventListener('click',()=>document.getElementById('grokProgressDialog').close());
+document.getElementById('grokProgressRawLog')?.addEventListener('click',()=>{const id=Number(document.getElementById('grokProgressDialog').dataset.job);document.getElementById('grokProgressDialog').close();if(id)openGrokLog(id);});
+document.getElementById('grokLogDialog')?.addEventListener('close',()=>{if(document.getElementById('grokLogDialog').open)return;grokLogId=null;grokGeneration++;grokLogText='';clearInterval(grokLogTimer);});
+document.getElementById('grokCopyLog')?.addEventListener('click',()=>copyText(grokLogText));
+document.getElementById('grokLogVisual')?.addEventListener('click',()=>{const id=grokLogId;if(id==null)return;document.getElementById('grokLogDialog').close();openGrokProgress(id);});
+document.getElementById('grokCodeForm')?.addEventListener('submit',async e=>{e.preventDefault();try{await grokPost(`/jobs/${grokLogId}/code`,{code:document.getElementById('grokManualCode').value});document.getElementById('grokManualCode').value='';showToast('已传给当前浏览器，不记录验证码');}catch(error){showToast(error.message);}});
+document.getElementById('grokStopActive')?.addEventListener('click',async()=>{try{await grokPost(`/jobs/${grokLogId}/stop`,{});await pollGrokLog();}catch(e){showToast(e.message);}});
+document.getElementById('grokContinue')?.addEventListener('click',async()=>{if(!confirm('确认已在官网人工处理提示，允许当前任务继续？不会自动重发验证码。'))return;try{await grokPost(`/jobs/${grokLogId}/continue`,{confirmed:true});await pollGrokLog();}catch(e){showToast(e.message);}});
+document.getElementById('grokNativeVerify')?.addEventListener('click',async()=>{if(!confirm('允许为当前任务打开仅SDK验证窗口？只完成人机验证，不输入邮箱、不走页面注册、不重发验证码。'))return;try{await grokPost(`/jobs/${grokLogId}/verify-native`,{confirmed:true});await pollGrokLog();}catch(e){showToast(e.message);}});
+setInterval(()=>{if(!document.getElementById('tab-grok')?.classList.contains('hidden')||!document.getElementById('tab-outlook')?.classList.contains('hidden'))loadGrok();},5000);

@@ -22,9 +22,12 @@ from core.chatgpt_auth import get_csrf_token, get_providers, probe_auth_session,
 from core.openai_auth import (
     follow_authorize,
     send_email_otp,
+    initialize_passwordless_login_otp,
+    LoginPageUnavailableError,
     validate_email_otp,
     EmailOtpInvalidError,
     AccountUnusableError,
+    detect_account_unusable_response_body,
     detect_account_unusable_text,
 )
 from core.account_export import (
@@ -55,6 +58,7 @@ _REBUILD_SESSION_NETWORK_HINTS = (
     "ssl_error_syscall", "curl: (35)", "ssl_connect",
     "connection closed abruptly",
 )
+_LOGIN_DOCUMENT_UNAVAILABLE_HINT = "重认证登录页不可用"
 
 
 class LoginPreflightBlockedError(RuntimeError):
@@ -333,8 +337,22 @@ def _mfa_issue_challenge(session: BrowserSession, factor_id: str) -> dict:
 
 def _mfa_verify(session: BrowserSession, factor_id: str, code: str) -> dict:
     headers = session.get_auth_headers(referer="https://auth.openai.com/mfa-challenge")
-    headers.pop("openai-sentinel-token", None)
-    headers.pop("openai-sentinel-so-token", None)
+    # The password/2FA enrollment flow already proves these OTP-authenticated
+    # auth steps still expect a fresh sentinel for authorize_continue. Sending
+    # the TOTP without it is rejected with 403.
+    from core.openai_auth import request_sentinel_token, build_sentinel_header
+    sentinel_resp = request_sentinel_token(session, "authorize_continue")
+    sentinel_header, so_header = build_sentinel_header(
+        session, sentinel_resp, "authorize_continue",
+    )
+    if sentinel_header:
+        headers["openai-sentinel-token"] = sentinel_header
+    else:
+        headers.pop("openai-sentinel-token", None)
+    if so_header:
+        headers["openai-sentinel-so-token"] = so_header
+    else:
+        headers.pop("openai-sentinel-so-token", None)
     resp = session.post(
         "https://auth.openai.com/api/accounts/mfa/verify",
         headers=headers,
@@ -365,10 +383,22 @@ def _complete_totp_mfa_and_fetch(
         raise RuntimeError(f"登录后进入 MFA，但账号没有 totp_secret：{email}")
     logger.info("[查活] 已进入 MFA challenge，开始提交 TOTP：%s factor_id=%s", email, factor_id)
     _mfa_issue_challenge(session, factor_id)
+    try:
+        session._live_mfa_issued = True
+        session._live_last_auth_path = "/mfa-challenge"
+    except (AttributeError, TypeError):
+        pass
     code = _account_totp_code(email)
     if not code:
         raise RuntimeError(f"无法生成 TOTP 验证码：{email}")
-    mfa_result = _mfa_verify(session, factor_id, code)
+    # TOTP 与 HOTP/时间窗口相关；无结构化停用错误码的 401/403 仅在同一
+    # MFA 关卡刷新一次 challenge 后重试。绝不重发邮箱验证码。
+    mfa_result = _mfa_verify_with_fresh_challenge(session, factor_id, email)
+    mfa_result = mfa_result if isinstance(mfa_result, dict) else {}
+    try:
+        session._reauth_validate_result = mfa_result
+    except (AttributeError, TypeError):
+        pass
     mfa_page = mfa_result.get("page") if isinstance(mfa_result, dict) else {}
     if isinstance(mfa_page, dict) and mfa_page.get("type") == "workspace":
         return _select_workspace_and_fetch(session, email, mfa_result)
@@ -382,6 +412,40 @@ def _complete_totp_mfa_and_fetch(
         email=email,
         auth_result=mfa_result,
     )
+
+
+def _mfa_verify_with_fresh_challenge(
+    session: BrowserSession, factor_id: str, email: str,
+) -> dict:
+    """只重试无明确停用码的 MFA 拒绝；账号级拒绝立即返回。"""
+    attempts = 2
+    for attempt in range(1, attempts + 1):
+        code = _account_totp_code(email)
+        if not code:
+            raise RuntimeError(f"无法生成 TOTP 验证码：{email}")
+        try:
+            return _mfa_verify(session, factor_id, code)
+        except Exception as exc:
+            body = _exception_response_text(exc)
+            dead_code = (detect_account_unusable_response_body(body)
+                         or detect_account_unusable_text(body))
+            if dead_code:
+                raise AccountUnusableError(
+                    f"MFA/TOTP 服务端明确返回 {dead_code}；账号已停用", error_code=dead_code,
+                ) from exc
+            status = _exception_status_code(exc)
+            if status not in {401, 403} or attempt >= attempts:
+                raise
+            logger.warning(
+                "[查活] TOTP 提交被拒绝且无停用错误码（HTTP %s），"
+                "刷新 MFA challenge 后重试一次；不重发邮箱验证码、不判定废号",
+                status,
+            )
+            _clear_optional_bootstrap_circuit(session)
+            _mfa_issue_challenge(session, factor_id)
+            session._live_mfa_issued = True
+            time.sleep(1)
+    raise RuntimeError("TOTP 验证未完成")
 
 
 def _auth_workspaces(session: BrowserSession, result: dict | None = None) -> list[dict]:
@@ -453,6 +517,16 @@ def _select_workspace_and_fetch(session: BrowserSession, email: str, result: dic
 
 def _follow_continue_and_fetch(session: BrowserSession, continue_url: str, *, referer: str, email: str = "", auth_result: dict | None = None) -> dict:
     """完成 callback/session；仅临时传输错误重试，403/429 交由上层报告。"""
+    if "/mfa-challenge/" in str(continue_url):
+        if not email:
+            raise RuntimeError("登录进入 MFA 关卡，缺少账号邮箱，无法读取已保存的 TOTP")
+        logger.info("[查活] continue_url 指向 MFA 关卡；先提交 TOTP，避免把 MFA 页误当 OAuth callback")
+        return _complete_totp_mfa_and_fetch(
+            session, email, dict(auth_result or {}), continue_url,
+        )
+    if "/workspace" in str(continue_url) and email:
+        # OTP may be followed by workspace rather than directly by callback.
+        return _select_workspace_and_fetch(session, email, auth_result)
     if _requires_workspace_selection(continue_url):
         if email:
             return _select_workspace_and_fetch(session, email, auth_result)
@@ -565,6 +639,7 @@ def _validate_reauth_with_retry(
     otp_after_ts: float,
     max_otp_attempts: int = 3,
     email_source: str | None = None,
+    first_read_anchor_ts: float | None = None,
 ) -> str:
     """提交 reauth OTP；验证码错误时重新发送并重新取码。"""
     current_otp: str | None = None
@@ -578,6 +653,7 @@ def _validate_reauth_with_retry(
                     email,
                     after_ts=otp_after_ts,
                     email_source=email_source,
+                    first_read_anchor_ts=first_read_anchor_ts,
                     **({"exclude_codes": rejected_codes} if rejected_codes else {}),
                 )
             human_delay("otp_input")
@@ -625,6 +701,9 @@ def _login_via_reauth(
     email_source: str | None = None,
 ) -> dict:
     """按 2FA 已验证链路重新认证并刷新 ChatGPT session。"""
+    # 本函数可能在回调临时失败后重新进入；必须先清空上一轮的认证结果，
+    # 否则新一次 OTP 验证前的状态会被误用。
+    _reset_reauth_validate_result(session)
     auth_url = _trigger_reauth_with_retry(session, email)
     logger.info("[查活] reauth authorize URL 已获取")
     human_delay("api")
@@ -633,25 +712,64 @@ def _login_via_reauth(
     if dead_code:
         raise AccountUnusableError(f"账号已废弃（{dead_code}）", error_code=dead_code)
     human_delay("navigate")
-    if urlsplit(str(final_url or "")).path.rstrip("/") == "/email-verification":
-        otp_after_ts = time.time()
-        send_email_otp(session)
-        logger.info("[查活] 已显式触发重认证邮箱 OTP 发送")
+    final_path = urlsplit(str(final_url or "")).path.rstrip("/")
+    # Passwordless login can land on /email-verification or
+    # /log-in/password.  Only the page's one-time pending send is a safe
+    # initialization.  The resend endpoint returns 200/login/error for a
+    # passwordless reauth and sends no mail when called directly.
+    page_ready_at = time.time()
+    if final_path in {"/email-verification", "/log-in/password"}:
+        try:
+            if initialize_passwordless_login_otp(session, email, final_url):
+                page_ready_at = float(session._registration_otp_ready_at)
+                otp_after_ts = page_ready_at
+                logger.info("[查活] 邮箱验证页已完成首次发码，开始收码；不调用重发接口")
+            else:
+                otp_after_ts = page_ready_at
+                logger.info("[查活] 邮箱验证页已就绪，直接等待页面触发的验证码；不重复调用发送接口")
+        except LoginPageUnavailableError as exc:
+            logger.warning("[查活] 停止：%s；未发送验证码、未读取旧邮件", exc)
+            raise RuntimeError(
+                f"重认证登录页不可用（{exc}），尚未发码；请先在正常浏览器确认该账号登录状态，"
+                "系统不会自动重发或提交历史验证码"
+            ) from exc
     logger.info("[查活] 已跟随 reauth authorize URL，开始等待邮箱 OTP")
     continue_url = _validate_reauth_with_retry(
         session,
         email,
         otp_after_ts,
         email_source=email_source,
+        # ICAPI/签名接口按“页面就绪后等 30 秒再读、最多 3 次”的契约取码。
+        # 若不传锚点，它们会立即读取页面上已有的旧码并触发无谓重发。
+        first_read_anchor_ts=page_ready_at,
     )
     logger.info("[查活] reauth OTP 验证通过，开始交换新 token")
     human_delay("api")
+    validate_result = dict(getattr(session, "_reauth_validate_result", None) or {})
+    page = validate_result.get("page") if isinstance(validate_result, dict) else {}
+    page = page if isinstance(page, dict) else {}
+    page_type = str(page.get("type") or "")
+    # OTP 通过并不代表登录完成：已启用 TOTP 的账号会先返回
+    # /mfa-challenge。必须在这个同一会话内提交 TOTP，否则后续
+    # OAuth callback 只会停在 MFA 页，/api/auth/session 永远没有 AT。
+    if "/mfa-challenge/" in str(continue_url) or page_type == "mfa_challenge":
+        logger.info("[查活] 邮箱 OTP 通过后进入 MFA，继续提交 TOTP；不会重发邮箱验证码")
+        return _complete_totp_mfa_and_fetch(session, email, validate_result, continue_url)
     return _follow_continue_and_fetch(
         session,
         continue_url,
         referer="https://auth.openai.com/email-verification",
         email=email,
+        auth_result=validate_result,
     )
+
+
+def _reset_reauth_validate_result(session: BrowserSession) -> None:
+    """清除上一次 OTP/MFA 的认证结果，防止跨尝试复用旧状态。"""
+    try:
+        session._reauth_validate_result = {}
+    except (AttributeError, TypeError):
+        pass
 
 
 def _login_via_email_otp(
@@ -660,12 +778,29 @@ def _login_via_email_otp(
     otp_after_ts: float,
     email_source: str | None = None,
 ) -> dict:
+    return _login_via_email_otp_with_anchor(
+        session,
+        email,
+        otp_after_ts,
+        email_source=email_source,
+    )
+
+
+def _login_via_email_otp_with_anchor(
+    session: BrowserSession,
+    email: str,
+    otp_after_ts: float,
+    *,
+    email_source: str | None = None,
+    first_read_anchor_ts: float | None = None,
+) -> dict:
     """完成邮箱 OTP 登录，并跟随 OAuth callback 后拉取 ChatGPT session。"""
     validate_result = _validate_with_retry(
         session,
         email,
         otp_after_ts,
         email_source=email_source,
+        first_read_anchor_ts=first_read_anchor_ts,
     )
     page = validate_result.get("page") if isinstance(validate_result, dict) else {}
     page = page if isinstance(page, dict) else {}
@@ -689,16 +824,39 @@ def _login_via_password_or_otp(
     email: str,
     otp_after_ts: float,
     email_source: str | None = None,
+    *,
+    first_read_anchor_ts: float | None = None,
 ) -> dict:
     """优先密码登录；如进入 MFA challenge 则自动用 TOTP 完成。"""
     password = _account_registration_password(email)
     if not password:
         logger.info("[查活] 未找到注册密码，继续使用邮箱 OTP：%s", email)
-        return _login_via_email_otp(
+        # 仅在页面明确声明待首次发送时发码；直接调用 email-otp/send 是
+        # 重发接口，密码为空的重认证会返回登录页/error，并未发信。
+        if "/log-in/password" in str(getattr(session, "current_url", "") or ""):
+            page_url = str(getattr(session, "_registration_auth_page_url", "") or "")
+            try:
+                initialized = bool(page_url) and initialize_passwordless_login_otp(
+                    session, email, page_url)
+            except LoginPageUnavailableError as exc:
+                raise RuntimeError(
+                    f"重认证登录页不可用（{exc}），尚未发码；系统不会自动重发或读取旧邮件"
+                ) from exc
+            except Exception as exc:
+                raise RuntimeError(f"邮箱登录页首次发码未完成：{str(exc)[:180]}") from exc
+            if initialized:
+                otp_after_ts = float(
+                    getattr(session, "_registration_otp_ready_at", None) or time.time())
+                first_read_anchor_ts = otp_after_ts
+                logger.info("[查活] 密码登录页已完成首次发码")
+            else:
+                logger.info("[查活] 密码登录页无待首次发码状态；直接等待验证码")
+        return _login_via_email_otp_with_anchor(
             session,
             email,
             otp_after_ts,
             email_source=email_source,
+            first_read_anchor_ts=first_read_anchor_ts,
         )
 
     logger.info("[查活] 账号存在密码，优先走密码登录：%s", email)
@@ -740,11 +898,12 @@ def _login_via_password_or_otp(
                 ) from exc
             logger.warning("[查活] 密码认证步骤已失效，改走邮箱 OTP：%s", email)
             send_email_otp(session)
-            return _login_via_email_otp(
+            return _login_via_email_otp_with_anchor(
                 session,
                 email,
                 time.time(),
                 email_source=email_source,
+                first_read_anchor_ts=first_read_anchor_ts,
             )
         raise
     continue_url = _extract_continue_url(password_result)
@@ -757,11 +916,12 @@ def _login_via_password_or_otp(
 
     if "email-verification" in continue_url or page_type in {"email_verification", "email_otp_send"}:
         logger.info("[查活] 密码登录后仍进入邮箱 OTP，继续完成邮箱验证：%s", email)
-        return _login_via_email_otp(
+        return _login_via_email_otp_with_anchor(
             session,
             email,
             otp_after_ts,
             email_source=email_source,
+            first_read_anchor_ts=first_read_anchor_ts,
         )
 
     if page_type == "workspace":
@@ -788,6 +948,7 @@ def _login_via_full_web_flow(
         fingerprint_state=fingerprint_state,
     )
     otp_after_ts = time.time()
+    page_ready_at = otp_after_ts
     final_url = follow_authorize(session, authorize_url)
     dead_code = detect_account_unusable_text(final_url)
     if dead_code:
@@ -795,15 +956,33 @@ def _login_via_full_web_flow(
             f"账号已废弃（{dead_code}）",
             error_code=dead_code,
         )
-    if "/email-verification" in str(final_url) and not _account_registration_password(email):
-        otp_after_ts = time.time()
-        send_email_otp(session)
-        logger.info("[查活] 已显式触发密码为空账号的邮箱登录验证码")
+    # 已注册账号的密码为空也可能落到 /log-in/password。该页面的发码状态
+    # 与注册页相同：只执行页面声明的“待首次发送”，不直接调用重发接口；
+    # 无待发送标志时直接按 30s×3 收码。重发接口在此场景返回登录页/error，
+    # 即使 HTTP 200 也不会发信。
+    page_ready_at = time.time()
+    if "/log-in/password" in str(final_url) or "/email-verification" in str(final_url):
+        if not _account_registration_password(email):
+            try:
+                initialized = initialize_passwordless_login_otp(session, email, final_url)
+            except LoginPageUnavailableError as exc:
+                raise RuntimeError(
+                    f"重认证登录页不可用（{exc}），尚未发码；系统不会自动重发或读取旧邮件"
+                ) from exc
+            if initialized:
+                page_ready_at = float(
+                    getattr(session, "_registration_otp_ready_at", None) or time.time())
+                otp_after_ts = page_ready_at
+                logger.info("[查活] 密码为空账号已完成页面首次发码，开始收码")
+            else:
+                otp_after_ts = page_ready_at
+                logger.info("[查活] 密码为空账号的页面已就绪，直接收码；不调用重发接口")
     session_info = _login_via_password_or_otp(
         session,
         email,
         otp_after_ts,
         email_source=email_source,
+        first_read_anchor_ts=page_ready_at,
     )
     return session, session_info
 
@@ -825,6 +1004,7 @@ def _validate_with_retry(
     otp_after_ts: float,
     max_otp_attempts: int = 3,
     email_source: str | None = None,
+    first_read_anchor_ts: float | None = None,
 ) -> dict:
     current_otp = None
     rejected_codes = set()
@@ -837,6 +1017,7 @@ def _validate_with_retry(
                     email,
                     after_ts=otp_after_ts,
                     email_source=email_source,
+                    first_read_anchor_ts=first_read_anchor_ts,
                     **({"exclude_codes": rejected_codes} if rejected_codes else {}),
                 )
             result = validate_email_otp(session, current_otp, sentinel_header=None, so_header=None)
@@ -944,6 +1125,7 @@ def check_account_liveness(
                         "stage": "browser_login", "error": str(exc), "driver": driver_kind}
         existing_access_token = _stored_access_token(email)
         has_totp = bool(_account_totp_secret(email))
+        password_available = bool(_account_registration_password(email))
         if existing_access_token and not has_totp:
             # 2FA 设置流程已经验证：先用已有 AT 预热 ChatGPT 登录态，再走
             # reauth → 邮箱 OTP → callback。该链路不依赖容易被 CF 拦截的
@@ -967,6 +1149,8 @@ def check_account_liveness(
                     email_source=email_source,
                 )
             except Exception as reauth_exc:
+                if _LOGIN_DOCUMENT_UNAVAILABLE_HINT in str(reauth_exc):
+                    raise
                 if not _is_retryable_network_error(reauth_exc):
                     raise
                 # reauth/callback 的同会话阶段重试已经耗尽。继续复用熔断的
@@ -987,6 +1171,13 @@ def check_account_liveness(
                     email_source=email_source,
                     fingerprint_state=task_fingerprint_state,
                 )
+        elif existing_access_token and has_totp and not password_available:
+            # 有 AT + TOTP、但没有保存密码：优先用现有 AT 的 reauth 链；
+            # 这条链不需要密码，也不会落到不自动发码的密码页。
+            logger.info("[查活] 流程：现有AT预热 → CSRF → Reauth Signin → Authorize → 邮箱 OTP → OAuth callback → Session/AT")
+            session = _new_fingerprint_pinned_session(email, proxy, task_fingerprint_state)
+            _warm_authenticated_session(session, existing_access_token)
+            session_info = _login_via_reauth(session, email, time.time(), email_source=email_source)
         else:
             # 兼容没有本地 AT 或已开启 TOTP 的记录，按 plus 成功注册样本复现
             # 登录页 document 与完整 NextAuth 调用顺序。
@@ -1045,14 +1236,31 @@ def check_account_liveness(
             logger.warning("[查活] 已废号：%s %s", email, code)
             return {"ok": False, "status": "deactivated", "checked_at": checked_at,
                     "error": code, "error_code": code, "stage": "authentication"}
+        if session is not None and getattr(session, "_live_mfa_issued", 0):
+            stage = "mfa"
+        elif "email-verification" in str(getattr(session, "_live_last_auth_path", "") or ""):
+            stage = "email_otp"
+        else:
+            stage = "authentication"
         refusal = _access_refusal_status(exc)
         if refusal:
-            message = f"认证请求被拒绝或限流（HTTP {refusal}），已停止；账号状态未判定。请通过正常网页登录处理。"
+            message = (
+                f"认证请求被拒绝或限流（HTTP {refusal}，阶段 {stage}），已停止；"
+                "账号状态未判定。请通过正常网页登录处理。"
+            )
             logger.warning("[查活] 停止：%s", message)
             return {"ok": False, "status": "blocked", "checked_at": checked_at,
-                    "stage": "authentication", "error_code": f"http_{refusal}", "error": message}
+                    "stage": stage, "error_code": f"http_{refusal}", "error": message}
+        if _LOGIN_DOCUMENT_UNAVAILABLE_HINT in str(exc):
+            logger.warning("[查活] 停止：重认证登录页不可用，尚未发码；不提交历史验证码")
+            return {
+                "ok": False, "status": "action_required", "checked_at": checked_at,
+                "stage": "reauth_login_page", "error_code": "login_page_unavailable",
+                "error": str(exc)[:500],
+            }
         logger.warning("[查活] 失败：%s %s: %s", email, type(exc).__name__, str(exc)[:260])
-        return {"ok": False, "status": "failed", "checked_at": checked_at, "error": f"{type(exc).__name__}: {str(exc)[:500]}"}
+        return {"ok": False, "status": "failed", "checked_at": checked_at, "stage": stage,
+                "error": f"{type(exc).__name__}: {str(exc)[:500]}"}
     finally:
         try:
             logger.info("[查活] 结束：%s", email)

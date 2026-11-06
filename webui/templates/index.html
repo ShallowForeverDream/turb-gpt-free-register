@@ -1443,7 +1443,7 @@
     .outlook-table-v2 .col-email-otp { width: 220px; }
     {% include 'pool_mail_tools_styles.html' %}
     .outlook-table-v2 .col-source { width: 100px; }
-    .outlook-table-v2 .col-status { width: 100px; }
+    .outlook-table-v2 .col-status { width: 150px; }
     .outlook-table-v2 .col-token { width: 100px; }
     .outlook-table-v2 .col-time { width: 160px; }
     .outlook-table-v2 .col-actions {
@@ -2057,11 +2057,11 @@
     <span class="sidebar-brand-title">GPT Registrator</span>
   </div>
   <nav class="sidebar-nav">
-    <button type="button" data-tab="register" class="sidebar-item active">
+    <button type="button" data-tab="outlook" class="sidebar-item">
       <svg class="sidebar-item-icon" viewBox="0 0 24 24" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-        <path d="M12 5v14M5 12h14"/>
+        <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><path d="M22 6l-10 7L2 6"/>
       </svg>
-      <span class="sidebar-item-label">日志</span>
+      <span class="sidebar-item-label">邮箱池</span>
     </button>
     <button type="button" data-tab="accounts" class="sidebar-item">
       <svg class="sidebar-item-icon" viewBox="0 0 24 24" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -2069,23 +2069,23 @@
       </svg>
       <span class="sidebar-item-label">GPT账号</span>
     </button>
-    <button type="button" data-tab="github" class="sidebar-item">
+    <button type="button" data-tab="grok" class="sidebar-item">
       <svg class="sidebar-item-icon" viewBox="0 0 24 24" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>
       </svg>
-      <span class="sidebar-item-label">github账号</span>
+      <span class="sidebar-item-label">Grok账号</span>
     </button>
-    <button type="button" data-tab="outlook" class="sidebar-item">
+    <button type="button" data-tab="register" class="sidebar-item active">
       <svg class="sidebar-item-icon" viewBox="0 0 24 24" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-        <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><path d="M22 6l-10 7L2 6"/>
+        <path d="M12 5v14M5 12h14"/>
       </svg>
-      <span class="sidebar-item-label">邮箱池</span>
+      <span class="sidebar-item-label">日志</span>
     </button>
     <button type="button" data-tab="config" class="sidebar-item">
       <svg class="sidebar-item-icon" viewBox="0 0 24 24" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
       </svg>
-      <span class="sidebar-item-label">配置</span>
+      <span class="sidebar-item-label">设置</span>
     </button>
   </nav>
   <div class="sidebar-footer">
@@ -2218,7 +2218,7 @@
             <tr>
               <th class="col-check"><input type="checkbox" id="jobsSelectAllV2" title="全选/取消全选当前页可删除任务"></th>
               <th class="col-id">ID</th>
-              <th class="col-status">状态</th>
+          <th class="col-status">GPT / Grok / GitHub</th>
               <th class="col-email">邮箱</th>
               <th class="col-time">开始</th>
               <th class="col-time">完成</th>
@@ -2271,7 +2271,7 @@
         <div class="acc-v2-btn-group">
           <span class="acc-v2-btn-group-title">套餐/提链</span>
            <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnCheckSelectedLiveV2" onclick="checkSelectedLive()" title="重新登录选中账号；成功且未封号则标记正常，并刷新最新 AT/accessToken">查活</button>
-           <button type="button" class="jobs-tb-btn" id="btnImportSelectedPoolV2" title="把邮箱池页当前选中的邮箱登记到账号页">导入选中邮箱</button>
+           <button type="button" class="jobs-tb-btn" id="btnImportSelectedPoolV2" title="清理账号页中无 GPT 凭据的占位/半成品记录，并释放其邮箱">清理无效账号</button>
           <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnCheckSelectedPlansV2" disabled title="查询选中账号当前套餐；free 账号会检查 Plus 试用资格">查套餐</button>
           <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnExtractSelectedLinksV2" disabled title="给选中的 free(可Plus试用) 账号批量提链，类型按配置 PIX/UPI/KAKAO_PAY/IDEAL">提链</button>
         </div>
@@ -2453,6 +2453,18 @@
             <option value="unregistered">未注册</option>
             <option value="registered">已注册</option>
             <option value="disabled">停用</option>
+          </select>
+        </label>
+        <label class="acc-v2-inline" title="按平台注册状态筛选">
+          <select id="poolPlatformV2">
+            <option value="">全部平台</option>
+            <option value="gpt:registered">GPT 已注册</option>
+            <option value="gpt:unregistered">GPT 未注册</option>
+            <option value="gpt:processing">GPT 注册中</option>
+            <option value="grok:registered">Grok 已注册</option>
+            <option value="grok:unregistered">Grok 未注册</option>
+            <option value="github:registered">GitHub 已注册</option>
+            <option value="github:unregistered">GitHub 未注册</option>
           </select>
         </label>
         <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnMarkSelectedOutlookAvailableV2" disabled title="把选中的邮箱批量标记为未注册">标记未注册</button>
@@ -2841,7 +2853,11 @@ async function copyText(text) {
 async function api(url, opts) {
   const r = await fetch(url, opts);
   const j = await r.json().catch(()=>({}));
-  if (!r.ok) throw new Error(j.error || ('HTTP '+r.status));
+  if (!r.ok) {
+    const error = new Error(j.error || ('HTTP '+r.status));
+    error.payload = j;
+    throw error;
+  }
   return j;
 }
 function debounce(fn, wait=250) {
@@ -2857,8 +2873,9 @@ function activateTab(tab, persist=true) {
     tab = 'outlook';
   }
   if (tab === 'codex') tab = 'accounts';
-  const allowed = ['register','accounts','github','outlook','config'];
-  if (!allowed.includes(tab)) tab = 'register';
+  if (tab === 'github') tab = 'grok';
+  const allowed = ['outlook','accounts','grok','register','config'];
+  if (!allowed.includes(tab)) tab = 'outlook';
   const activeNav = tab;
   $$('nav button').forEach(x => x.classList.toggle('active', x.dataset.tab === activeNav));
   allowed.forEach(t => $('#tab-'+t).classList.toggle('hidden', t !== tab));
@@ -2869,8 +2886,9 @@ function activateTab(tab, persist=true) {
   }
   if (persist) localStorage.setItem('gpt_console_active_tab', activeNav);
   if (tab === 'accounts') loadAccounts();
+  if (tab === 'grok') loadGrok();
 
-  if (tab === 'outlook') { loadOutlook(); refreshJobs(); }
+  if (tab === 'outlook') { loadOutlook(); refreshJobs(); if (typeof grokSetSelectedFromPool === 'function') grokSetSelectedFromPool(); }
   if (tab === 'config') loadConfig();
   if (tab === 'register') refreshLogHistory();
 }
@@ -2947,17 +2965,26 @@ async function startRegistrationFromSelectedPool(btn) {
     const workers = typeof getSavedRegistrationWorkers === 'function' ? getSavedRegistrationWorkers() : Math.max(1, Math.min(16, Number($('#regWorkersV2')?.value || 3)));
     const r = await api('/api/jobs', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({count:items.length, workers, selected_emails:items})});
     showToast(`已提交 ${r.submitted || 0} 个指定邮箱注册任务`); refreshJobs();
-  } catch (e) { showToast(`指定邮箱注册失败：${e.message}`); }
+  } catch (e) {
+    const skipped = Array.isArray(e.payload?.skipped) ? e.payload.skipped : [];
+    if (skipped.length) {
+      const reasons = {};
+      for (const item of skipped) reasons[item.reason || '不可用'] = (reasons[item.reason || '不可用'] || 0) + 1;
+      const detail = Object.entries(reasons).map(([reason, count]) => `${reason} ×${count}`).join('；');
+      showToast(`指定邮箱注册失败：${e.message}（${detail}）`, 5000);
+    } else {
+      showToast(`指定邮箱注册失败：${e.message}`);
+    }
+  }
   finally { if (btn) btn.disabled = false; }
 }
 async function importSelectedPoolAsAccounts() {
-  const items = selectedPoolItems();
-  if (!items.length) { showToast('请先到“邮箱池”选择邮箱'); return; }
+  if (!confirm('清理账号页里所有没有 GPT 凭据的占位/半成品记录？\n\n会删除这些记录，并把对应邮箱恢复为可用；不会影响有 access token 的正常账号。')) return;
   try {
-    const r = await api('/api/accounts/import-pool', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({items})});
-    showToast(`已导入 ${r.imported_count || 0} 个账号，跳过 ${(r.skipped || []).length} 个`);
+    const r = await api('/api/accounts/cleanup-unusable', {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'});
+    showToast(`已清理 ${r.deleted || 0} 条无效账号记录，释放 ${r.released_mailboxes || 0} 个邮箱`, 5000);
     loadAccounts(); loadOutlook(); loadSummary();
-  } catch (e) { showToast(`导入账号失败：${e.message}`); }
+  } catch (e) { showToast(`清理无效账号失败：${e.message}`); }
 }
 async function cancelAllPendingJobs(btn) {
   const pendingCount = Number(JOB_STATUS_COUNTS.pending || 0);
@@ -3789,7 +3816,7 @@ function renderAccountsRows() {
       <td class="col-source">${esc(r.email_source || '-')}</td>
       <td class="col-small">${_emailOtpCellV2(r)}</td>
       <td class="col-token">${_tokenCellV2(r)}</td>
-      <td class="col-password">${r.has_gpt_password ? `<button type="button" class="account-password-text" data-account-copy-secret="password" data-account-id="${esc(r.id)}" title="点击复制 GPT 登录密码">•••••• · 复制</button>` : '<span class="acc-v2-muted">未设置（OTP登录）</span>'}</td>
+      <td class="col-password">${accountPasswordControl(r,'acc-v2-muted')}</td>
       <td class="col-password">${r.mail_password ? `<button type="button" class="account-password-text" data-account-copy-secret="mail_password" data-account-id="${esc(r.id)}" title="点击复制邮箱密码">${esc(r.mail_password)}</button>` : '<span class="acc-v2-muted">未保存</span>'}</td>
       <td class="col-plan">${_planCell(r)}<div class="acc-v2-sub">${_extractLinkCell(r)}</div></td>
       <td class="col-note">${r.note ? `<button type="button" class="account-note-summary" data-account-note-preview="${esc(r.id)}" title="点击查看完整备注">${esc(r.note)}</button>` : '<span class="acc-v2-muted">-</span>'}</td>
@@ -5484,6 +5511,13 @@ function getPoolStatus() {
   const el = document.getElementById('poolStatusV2');
   return (el ? el.value : '').trim();
 }
+function getPoolPlatform() {
+  const el = document.getElementById('poolPlatformV2');
+  const raw = (el ? el.value : '').trim();
+  if (!raw) return {platform: '', status: ''};
+  const parts = raw.split(':');
+  return {platform: parts[0], status: parts[1]};
+}
 function poolKey(r) { return `${r.source || getPoolSource() || 'all'}|${r.email || ''}`; }
 function poolLabel(src) {
   return ({outlook:'Outlook', generic_api:'通用API', imap:'通用IMAP', cloudflare_domain:'域名邮箱'})[src] || src || '-';
@@ -5499,8 +5533,9 @@ async function loadOutlook() {
     const source = getPoolSource();
     const q = getOutlookQuery();
     const status = getPoolStatus();
+    const platform = (typeof getPoolPlatform === 'function') ? getPoolPlatform() : {platform:'', status:''};
     const p = {...PAGERS.outlook};
-    const res = await api(`/api/outlook?paged=1&page=${encodeURIComponent(p.page)}&page_size=${encodeURIComponent(p.size)}&source=${encodeURIComponent(source)}&status=${encodeURIComponent(status)}&q=${encodeURIComponent(q)}`, {signal: controller.signal});
+    const res = await api(`/api/outlook?paged=1&page=${encodeURIComponent(p.page)}&page_size=${encodeURIComponent(p.size)}&source=${encodeURIComponent(source)}&status=${encodeURIComponent(status)}&platform=${encodeURIComponent(platform.platform)}&platform_status=${encodeURIComponent(platform.status)}&q=${encodeURIComponent(q)}`, {signal: controller.signal});
     if (generation !== poolLoadGeneration || controller.signal.aborted) return;
     OUTLOOK = res.items || [];
     OUTLOOK_TOTAL = Number(res.total ?? OUTLOOK.length);
@@ -5545,7 +5580,9 @@ function _outlookMoreMenu(r) {
   const items = [
     cbtn('复制Token', r.access_token, 'good'),
     cbtn('复制整行', r.account_copy_line, 'good'),
-    r.registration_status !== 'registered' ? `<button type="button" data-pool-act="registered" data-email="${email}" data-source="${src}">标记已注册</button>` : '',
+    r.gpt_registration_status !== 'registered' ? `<button type="button" data-pool-platform="gpt" data-pool-platform-status="registered" data-email="${email}" data-source="${src}">GPT 标记已注册</button>` : '',
+    r.grok_registration_status !== 'registered' ? `<button type="button" data-pool-platform="grok" data-pool-platform-status="registered" data-email="${email}" data-source="${src}">Grok 标记已注册</button>` : '',
+    r.github_registration_status !== 'registered' ? `<button type="button" data-pool-platform="github" data-pool-platform-status="registered" data-email="${email}" data-source="${src}">GitHub 标记已注册</button>` : '',
     r.registration_status !== 'unregistered' ? `<button type="button" data-pool-act="unregistered" data-email="${email}" data-source="${src}">标记未注册</button>` : '',
     r.registration_status !== 'disabled' ? `<button type="button" data-pool-act="disabled" data-email="${email}" data-source="${src}">停用</button>` : '',
   ].filter(Boolean).join('');
@@ -5568,7 +5605,7 @@ function renderOutlookRows() {
       </td>
       <td class="col-password">${poolEmailPasswordCell(r)}</td>
       <td class="col-source">${r.imap_forwarded ? '转发 IMAP' : esc(poolLabel(r.source))}</td>
-      <td class="col-status">${pill(r.registration_status)}</td>
+      <td class="col-status">${poolPlatformStatus(r)}</td>
       <td class="col-email-otp">${poolEmailOtpCell(r)}</td>
       <td class="col-token">${_outlookTokenCell(r)}</td>
       <td class="col-time" title="${esc(r.imported_at || r.created_at || '-')}">${esc(r.imported_at || r.created_at || '-')}</td>
@@ -5610,6 +5647,7 @@ function updateOutlookSelectionUi(pageRows = null) {
   cbAll.checked = allChecked;
   cbAll.indeterminate = someChecked;
   cbAll.disabled = pageKeys.length === 0;
+  document.dispatchEvent(new Event('grok-pool-selection-changed'));
 }
 function onPoolSourceChange(el) {
   if (el && el.id === 'poolSourceV2') setPoolSourceV2(el.value);
@@ -5657,6 +5695,16 @@ async function onOutlookBodyClick(e) {
   }
   if (e.target.closest('.acc-v2-more-menu')) closeOutlookV2MoreMenus();
 
+  const platformBtn = e.target.closest('[data-pool-platform]');
+  if (platformBtn) {
+    const source0 = platformBtn.dataset.source || getPoolSource();
+    try {
+      await api('/api/outlook/platform-status', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({email: platformBtn.dataset.email, source: source0, platform: platformBtn.dataset.poolPlatform, platform_status: platformBtn.dataset.poolPlatformStatus})});
+      showToast('已更新 ' + platformBtn.dataset.poolPlatform.toUpperCase() + ' 状态');
+      loadOutlook(); loadSummary();
+    } catch(err) { showToast('操作失败: ' + err.message); }
+    return;
+  }
   const t = e.target.closest('[data-pool-act]');
   if (!t) return;
   const { poolAct, email } = t.dataset;
@@ -5686,6 +5734,12 @@ async function onOutlookBodyClick(e) {
   }, 250));
   const statusV2 = $('#poolStatusV2');
   if (statusV2) statusV2.addEventListener('change', () => {
+    PAGERS.outlook.page = 1;
+    OUTLOOK_SELECTED.clear();
+    loadOutlook();
+  });
+  const platformV2 = $('#poolPlatformV2');
+  if (platformV2) platformV2.addEventListener('change', () => {
     PAGERS.outlook.page = 1;
     OUTLOOK_SELECTED.clear();
     loadOutlook();
@@ -7358,9 +7412,10 @@ function enableResizableTableHeaders(selector, storageKey) {
     });
   });
 }
+{% include 'grok_script.html' %}
 {% include 'workspace_layout_script.html' %}
 loadSummary();
-activateTab(localStorage.getItem('gpt_console_active_tab') || 'register', false);
+activateTab(localStorage.getItem('gpt_console_active_tab') || 'outlook', false);
 jobsTimer = pollVisiblePage('register', refreshLogHistory, 10000);
 pollVisiblePage('outlook', refreshJobs, 10000);
 pollVisiblePage(null, loadSummary, 30000);

@@ -68,9 +68,10 @@ for (const id of ['jobLogQuery','jobLogLevel','jobLogPhase']) {
 }
 $('#btnJobLogVisual').addEventListener('click', () => {
   const id = activeLogJob;
-  if (id == null || typeof openWorkspaceProgress !== 'function') return;
+  if (id == null) return;
   closeLogModal();
-  openWorkspaceProgress(id);
+  if (typeof openProgressForJob === 'function') openProgressForJob(id, 'gpt');
+  else if (typeof openWorkspaceProgress === 'function') openWorkspaceProgress(id);
 });
 
 $('#btnCopyJobLog').addEventListener('click', () => copyText(jobLogText));

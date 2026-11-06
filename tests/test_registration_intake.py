@@ -22,7 +22,8 @@ class RegistrationIntakeTests(unittest.TestCase):
         self.stack.enter_context(patch.multiple(db, **storage(self.root), _LOG_DIR=self.root/'logs'))
         self.stack.enter_context(patch.multiple(svc, _executor=None, _executor_workers=2,
             _EXECUTION_SLOTS=ConcurrencyLimit(2), _PENDING_TASKS=deque(), _DISPATCHED_TASKS={},
-            _ACTIVE_JOBS=set(), _STOP_EVENTS={}, _PAUSED_JOBS=set(), _PAUSE_GATE=threading.Event()))
+            _ACTIVE_JOBS=set(), _STOP_EVENTS={}, _PAUSED_JOBS=set(), _PAUSE_GATE=threading.Event(),
+            _PAUSE_LOCK=threading.Lock(), _STARTING_ONE=False, _STARTING_JOBS=set()))
         svc._PAUSE_GATE.set()
         self.stack.enter_context(patch('core.workflow_driver.require_driver_ready', return_value='protocol'))
         self.stack.enter_context(patch('config.email.USE_EMAIL_SERVICE', True))
@@ -81,6 +82,22 @@ class RegistrationIntakeTests(unittest.TestCase):
         self.assertEqual(db.list_jobs_page()['total'],4)
         self.assertTrue(all(db.get_job(j['id'])['status']=='success' for j in jobs))
 
+    def test_manual_start_while_paused_runs_one_and_keeps_batch_paused(self):
+        svc.pause_registration()
+        jobs=svc.submit_registration(count=3,workers=2,selected_emails=self.select(3))
+        self.assertEqual(len(self.entered),0)
+        self.assertEqual(svc.admit_queued(),1)
+        self.wait_started(1)
+        self.assertEqual(len(self.entered),1)
+        self.release[self.entered[0]].set()
+        self.wait_finished([jobs[0]['id']])
+        self.assertEqual(len(self.entered),1)
+        self.assertEqual(svc.registration_pause_status()['waiting_jobs'],2)
+        svc.resume_registration()
+        self.wait_started(3)
+        for release in self.release.values():release.set()
+        self.wait_finished([job['id'] for job in jobs])
+
     def test_stop_cancels_only_waiting_and_resume_cannot_resurrect_them(self):
         jobs=svc.submit_registration(count=5,workers=2,selected_emails=self.select(5));self.wait_started(2)
         svc.pause_registration();result=svc.stop_registration()
@@ -92,6 +109,22 @@ class RegistrationIntakeTests(unittest.TestCase):
         self.assertEqual(len(self.entered),2)
         self.assertEqual([db.get_job(j['id'])['status'] for j in jobs],['success','success','cancelled','cancelled','cancelled'])
         self.assertEqual(db.get_generic_api_email_by_email('fixture4@example.test')['status'],'available')
+
+    def test_restart_recovery_requeues_pending_paused_and_fails_interrupted_running(self):
+        svc.pause_registration()
+        jobs = svc.submit_registration(count=3, workers=2, selected_emails=self.select(3))
+        # Simulate a previous process: one pending row and one running row with no thread.
+        db.update_job(jobs[0]['id'], status='running', started_at='2026-11-04T00:00:00')
+        with svc._executor_lock:
+            svc._PENDING_TASKS.clear(); svc._DISPATCHED_TASKS.clear()
+        result = svc.recover_interrupted_queue()
+        self.assertEqual(result['interrupted'], 1)
+        self.assertEqual(result['queued'], 2)
+        self.assertTrue(result['paused'])
+        self.assertEqual(db.get_job(jobs[0]['id'])['status'], 'failed')
+        self.assertEqual([db.get_job(j['id'])['status'] for j in jobs[1:]], ['pending', 'pending'])
+        self.assertEqual(len(svc._PENDING_TASKS), 2)
+        self.assertTrue(svc.registration_pause_status()['paused'])
 
     def test_history_only_shows_started_rows_and_filters_before_counting(self):
         from webui.app import create_app
@@ -156,6 +189,25 @@ class RegistrationIntakeTests(unittest.TestCase):
         self.wait_finished([j['id'] for j in jobs[:3]])
         self.assertEqual(len(self.entered),3)
         self.assertTrue(all(db.get_job(j['id'])['status']=='success' for j in jobs[:3]))
+
+    def test_webui_selected_batch_claims_each_mailbox_once(self):
+        from webui.app import create_app
+        client=create_app(auth_code='fixture').test_client()
+        headers={'X-Auth-Code':'fixture','Accept-Encoding':'identity'}
+        svc.pause_registration()
+        emails=[f'fixture{i}@example.test' for i in range(6)]
+        response=client.post('/api/jobs',headers=headers,json={
+            'selected_emails':[{'email':email,'source':'generic_api'} for email in emails],
+            'email_source':'generic_api',
+        })
+        self.assertEqual(response.status_code,200,response.get_data(as_text=True))
+        self.assertEqual(response.get_json()['submitted'],len(emails))
+        self.assertEqual(db.list_jobs_page()['total'],len(emails))
+        self.assertEqual(len(svc._PENDING_TASKS),len(emails))
+        # Waiting mailboxes stay available until admitted; their batch reservation blocks another job.
+        self.assertTrue(all(db.get_generic_api_email_by_email(email)['status']=='available' for email in emails))
+        with self.assertRaises(ValueError):
+            svc.submit_registration(count=1,selected_emails=[{'email':emails[0],'source':'generic_api'}])
 
     def test_api_pause_selected_start_stop_and_resume_never_claims_waiting_pool(self):
         from webui.app import create_app

@@ -408,6 +408,8 @@ def create_app(auth_code: str | None = None, *, local_no_auth: bool = False) -> 
 
     init_auth(app, auth_code=auth_code)
     register_auth_routes(app, local_no_auth=local_no_auth)
+    from webui.grok_routes import register_grok_routes
+    register_grok_routes(app)
     db.sync_deactivated_accounts()
     recovered_plan_checks = db.recover_interrupted_plan_checks()
     if recovered_plan_checks:
@@ -607,6 +609,12 @@ def create_app(auth_code: str | None = None, *, local_no_auth: bool = False) -> 
         imported, skipped = db.import_pool_emails_as_registered(items)
         return jsonify({"ok": True, "imported": imported, "imported_count": len(imported), "skipped": skipped})
 
+    @app.post("/api/accounts/cleanup-unusable")
+    def api_accounts_cleanup_unusable():
+        """Remove non-account placeholder/partial rows and release their mailboxes."""
+        result = db.cleanup_unusable_gpt_accounts()
+        return jsonify({"ok": True, **result})
+
     @app.get("/api/accounts")
     def api_accounts():
         try:
@@ -636,11 +644,11 @@ def create_app(auth_code: str | None = None, *, local_no_auth: bool = False) -> 
             page = max(1, int(page_arg or 1))
             page_size = max(1, min(500, int(page_size_arg or limit or 50)))
             offset = (page - 1) * page_size
-            result = db.list_accounts_page(limit=page_size, offset=offset, archived=archived, plan_filter=plan_filter, codex_filter=codex_filter, q=q, date_from=date_from, date_to=date_to, totp_filter=totp_filter, email_suffix=email_suffix, account_group=account_group, column_filters=column_filters)
+            result = db.list_accounts_page(limit=page_size, offset=offset, archived=archived, plan_filter=plan_filter, codex_filter=codex_filter, q=q, date_from=date_from, date_to=date_to, totp_filter=totp_filter, email_suffix=email_suffix, account_group=account_group, column_filters=column_filters, usable_only=column_filters is None)
             result["items"] = [_compact_account_for_list(r) for r in (result.get("items") or [])]
             result.update({"ok": True, "page": page, "page_size": page_size, "compact": True})
             return jsonify(result)
-        rows = db.list_accounts(limit=limit, archived=archived, plan_filter=plan_filter, codex_filter=codex_filter, q=q, date_from=date_from, date_to=date_to, totp_filter=totp_filter, email_suffix=email_suffix, account_group=account_group, column_filters=column_filters)
+        rows = db.list_accounts(limit=limit, archived=archived, plan_filter=plan_filter, codex_filter=codex_filter, q=q, date_from=date_from, date_to=date_to, totp_filter=totp_filter, email_suffix=email_suffix, account_group=account_group, column_filters=column_filters, usable_only=column_filters is None)
         for row in rows:
             # Keep the legacy list contract, but don't add newly saved secrets
             # to it. Session credentials are available only via explicit copy.
@@ -2020,6 +2028,8 @@ def create_app(auth_code: str | None = None, *, local_no_auth: bool = False) -> 
     def api_outlook():
         status = request.args.get("status") or None
         registration_status = request.args.get("registration_status") or (status if status in {"registered", "unregistered", "disabled"} else None)
+        platform = request.args.get("platform") or None
+        platform_status = request.args.get("platform_status") or None
         limit = request.args.get("limit", default=500, type=int)
         source = _pool_source_arg()
         q = str(request.args.get("q", default="") or "").strip()
@@ -2031,13 +2041,15 @@ def create_app(auth_code: str | None = None, *, local_no_auth: bool = False) -> 
             page_size = max(1, min(500, int(page_size_arg or limit or 50)))
             offset = (page - 1) * page_size
             result = db.list_email_pool_page(
-                source=source, status=status, registration_status=registration_status, q=q, limit=page_size, offset=offset
+                source=source, status=status, registration_status=registration_status,
+                platform=platform, platform_status=platform_status, q=q, limit=page_size, offset=offset
             )
             result.update({"ok": True, "page": page, "page_size": page_size})
             return jsonify(result)
         # 兼容旧接口仍返回数组，但查询本身也只从 SQLite 读取 limit 条。
         result = db.list_email_pool_page(
-            source=source, status=status, registration_status=registration_status, q=q, limit=max(1, int(limit or 1)), offset=0
+            source=source, status=status, registration_status=registration_status,
+            platform=platform, platform_status=platform_status, q=q, limit=max(1, int(limit or 1)), offset=0
         )
         return jsonify(result["items"])
 
@@ -2189,6 +2201,21 @@ def create_app(auth_code: str | None = None, *, local_no_auth: bool = False) -> 
             source = "outlook"
         updated = db.set_pool_registration_status(email, source, status, note=data.get("note"))
         return jsonify({"ok": True, "updated": updated, "registration_status": status})
+
+    @app.post("/api/outlook/platform-status")
+    def api_outlook_platform_status():
+        """Set per-platform status: body {email, platform, platform_status, source?}."""
+        data = request.get_json(silent=True) or {}
+        email = (data.get("email") or "").strip()
+        platform = (data.get("platform") or "").strip().lower()
+        platform_status = (data.get("platform_status") or data.get("status") or "").strip().lower()
+        if not email or platform not in {"gpt", "grok", "github"} or platform_status not in {"registered", "unregistered"}:
+            return jsonify({"ok": False, "error": "email/platform/platform_status 非法"}), 400
+        source = (data.get("source") or _pool_source_arg()).strip()
+        if source == "all":
+            source = "outlook"
+        updated = db.set_pool_platform_status(email, source, platform, platform_status)
+        return jsonify({"ok": True, "updated": updated, "platform": platform, "platform_status": platform_status})
 
     @app.post("/api/outlook/status-bulk")
     def api_outlook_status_bulk():
@@ -2658,7 +2685,12 @@ def create_app(auth_code: str | None = None, *, local_no_auth: bool = False) -> 
 
     def _reserve_codex_retry(email: str) -> bool:
         """进程内防重复占位；成功返回 True。"""
-        return codex_retry_service.reserve(email)
+        with db._LOCK:
+            if db.grok_mailbox_busy(email) or not codex_retry_service.reserve(email):
+                return False
+            # Persist the claim before another platform can reserve this mailbox.
+            db.update_account_codex_status(email, "retrying", None)
+            return True
 
     def _release_codex_retry(email: str) -> None:
         codex_retry_service.release(email)
@@ -3045,6 +3077,7 @@ def create_app(auth_code: str | None = None, *, local_no_auth: bool = False) -> 
             submit_kwargs = {"count": count, "workers": workers}
             if selected:
                 submit_kwargs["selected_emails"] = selected
+                submit_kwargs["selected_checked"] = True
             try:
                 jobs = svc.submit_registration(**submit_kwargs)
             except ValueError as exc:
@@ -3198,6 +3231,7 @@ def create_app(auth_code: str | None = None, *, local_no_auth: bool = False) -> 
             submit_kwargs["email_source"] = requested_source
         if selected:
             submit_kwargs["selected_emails"] = selected
+            submit_kwargs["selected_checked"] = True
         try:
             jobs = svc.submit_registration(**submit_kwargs)
         except ValueError as exc:

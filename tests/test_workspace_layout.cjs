@@ -9,8 +9,8 @@ const shared=read('workspace_layout_script.html');
 for(const name of ['index.html','index_legacy.html']){
   test(`${name}: exactly five navigation pages and shared layout`,()=>{
     const html=read(name),nav=html.slice(html.indexOf('<nav'),html.indexOf('</nav>'));
-    assert.deepEqual([...nav.matchAll(/data-tab="([^"]+)"/g)].map(m=>m[1]),['register','accounts','github','outlook','config']);
-    for(const title of ['日志','GPT账号','github账号','邮箱池','配置'])assert.ok(nav.includes(title));
+    assert.deepEqual([...nav.matchAll(/data-tab="([^"]+)"/g)].map(m=>m[1]),['outlook','accounts','grok','register','config']);
+    for(const title of ['邮箱池','GPT账号','Grok账号','日志','设置'])assert.ok(nav.includes(title));
     for(const include of ['workspace_styles.html','workspace_pages.html','workspace_layout_script.html','account_workspace_layout.html'])assert.ok(html.includes(`include '${include}'`));
     assert.ok(!html.includes("include 'live_check_guidance.html'"));
     assert.ok(html.includes("if (tab === 'codex') tab = 'accounts'"));
@@ -45,7 +45,8 @@ test('archive toggle preserves other column filters and resets only account page
   context.toggleWorkspaceArchive();assert.equal(context.ACCOUNT_COLUMN_FILTER_STATE.status.values[0],'unarchived');
 });
 test('registration controls are moved without cloning listeners and log history is read-only',()=>{
-  assert.ok(shared.includes('pool.prepend(registration);pool.append(tasks)'));
+  assert.ok(shared.includes("poolTitle.insertAdjacentElement('afterend',registration)"));
+  assert.ok(shared.includes('pool.append(tasks)'));
   assert.ok(shared.includes("tasks.append(document.getElementById('jobsPanelV2'))"));
   const history=shared.slice(shared.indexOf('async function refreshLogHistory()'));
   assert.ok(history.includes('new URLSearchParams'));

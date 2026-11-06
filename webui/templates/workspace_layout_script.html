@@ -43,7 +43,10 @@ function mountWorkspaceLayout() {
   else{document.querySelector('.accounts-toolbar').style.display='none';document.body.classList.add('workspace-legacy');}
   syncWorkspaceAccountControls();
   const logs=document.getElementById('tab-register'),pool=document.getElementById('tab-outlook');
-  const registration=document.createElement('section');registration.className='workspace-registration';registration.id='poolRegistrationControls';
+  const registration=document.createElement('section');registration.className='workspace-registration registration-block registration-block--gpt';registration.id='poolRegistrationControls';
+  const gptHead=document.createElement('header');gptHead.className='registration-block-head';
+  gptHead.innerHTML='<span class="registration-block-badge registration-block-badge--gpt">GPT</span><div><h2>GPT 注册</h2><p>使用邮箱池领取邮箱并按 GPT 队列注册；2FA、Codex 与 Grok 队列互不影响。</p></div>';
+  registration.append(gptHead);
   const tasks=document.createElement('details');tasks.className='workspace-registration';tasks.id='poolTaskControls';
   const summary=document.createElement('summary');summary.textContent='注册任务控制';tasks.append(summary);
   if(workspaceSuffix){
@@ -57,7 +60,11 @@ function mountWorkspaceLayout() {
     const logPanel=document.getElementById('logPanel');document.body.append(logPanel);logPanel.classList.add('workspace-legacy-log');
     tasks.append(logs.querySelector('section'));
   }
-  pool.prepend(registration);pool.append(tasks);
+  const poolTitle=pool.querySelector(':scope > .register-title');
+  if(poolTitle)poolTitle.insertAdjacentElement('afterend',registration);else pool.prepend(registration);
+  const grokBlock=document.getElementById('grokRegistrationBlock');
+  if(grokBlock)registration.insertAdjacentElement('afterend',grokBlock);
+  pool.append(tasks);
   if(!workspaceSuffix){
     for(const id of ['btnCancelPending','btnPauseRegistration','btnResumeRegistration','registrationPauseStatus']){
       const control=document.getElementById(id);if(control)registration.append(control);
@@ -71,10 +78,8 @@ function mountWorkspaceLayout() {
       }catch(error){}
     }
     for(const [id,action] of [['btnPauseRegistration','pause'],['btnResumeRegistration','resume']]){
-      document.getElementById(id).addEventListener('click',async()=>{
-        try{await api(`/api/jobs/${action}`,{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});await refreshIntake();}
-        catch(error){showToast('注册队列操作失败：'+error.message);}
-      });
+      // Keep the legacy queue handler; only refresh the shared controls afterwards.
+      document.getElementById(id).addEventListener('click',()=>setTimeout(refreshIntake,400));
     }
     refreshIntake();setInterval(refreshIntake,5000);
   }
@@ -89,15 +94,25 @@ function mountWorkspaceLayout() {
   logs.replaceChildren(document.getElementById('workspaceLogTemplate').content.cloneNode(true));
   document.getElementById('refreshLogHistory').addEventListener('click',refreshLogHistory);
   const logFilters=document.getElementById('workspaceLogFilters');
+  const syncLogStatus=()=>{
+    const platform=logFilters.elements.platform.value,status=logFilters.elements.status;
+    for(const option of status.options){
+      option.hidden=!!option.dataset.platform&&option.dataset.platform!==platform;
+      option.disabled=option.hidden;
+    }
+    if(status.selectedOptions[0]?.disabled)status.value='';
+  };
+  logFilters.elements.platform.addEventListener('change',syncLogStatus);syncLogStatus();
   logFilters.addEventListener('submit',event=>{
     event.preventDefault();workspaceLogFilters=Object.fromEntries(new FormData(logFilters));workspaceLogPage=1;refreshLogHistory();
   });
   logFilters.addEventListener('reset',()=>{
     workspaceLogFilters={};workspaceLogPage=1;refreshLogHistory();
+    setTimeout(syncLogStatus,0);
   });
   document.getElementById('previousLogHistory').addEventListener('click',()=>{if(workspaceLogPage>1){workspaceLogPage--;refreshLogHistory();}});
   document.getElementById('nextLogHistory').addEventListener('click',()=>{if(workspaceLogPage<workspaceLogPages){workspaceLogPage++;refreshLogHistory();}});
-  document.getElementById('workspaceLogRows').addEventListener('click',event=>{const button=event.target.closest('[data-history-log]');if(button)openWorkspaceProgress(Number(button.dataset.historyLog));});
+  document.getElementById('workspaceLogRows').addEventListener('click',event=>{const grok=event.target.closest('[data-grok-log]');if(grok){openGrokProgress(Number(grok.dataset.grokLog));return;}const button=event.target.closest('[data-history-log]');if(button)openWorkspaceProgress(Number(button.dataset.historyLog));});
   const progressDialog=document.getElementById('workspaceProgressDialog');
   for(const button of ['workspaceProgressClose','workspaceProgressDone'])document.getElementById(button).addEventListener('click',()=>progressDialog.close());
   progressDialog.addEventListener('close',()=>{
@@ -209,6 +224,12 @@ function openWorkspaceProgress(jobId) {
   workspaceProgressTimer=setInterval(refreshWorkspaceProgress,5000);
   refreshWorkspaceProgress();
 }
+// A Grok job has no GPT registration log; clicking 返回可视化日志 from the
+// shared raw-log panel must reopen the Grok dialog, not a blank GPT view.
+function openProgressForJob(jobId, kind='gpt') {
+  if(kind==='grok') return openGrokProgress(jobId);
+  return openWorkspaceProgress(jobId);
+}
 async function refreshWorkspaceProgress() {
   if(workspaceProgressId==null||workspaceProgressFlight===workspaceProgressGeneration)return;
   const id=workspaceProgressId,generation=workspaceProgressGeneration;workspaceProgressFlight=generation;
@@ -256,6 +277,18 @@ function workspaceDateTime(value){
 async function refreshLogHistory() {
   const request=++workspaceLogRequest;workspaceLogAbort?.abort();workspaceLogAbort=new AbortController();
   try{
+    if(workspaceLogFilters.platform==='grok'){
+      const params=new URLSearchParams({page:String(workspaceLogPage),page_size:'20',...workspaceLogFilters});
+      const data=await api(`/api/grok/jobs?${params}`,{signal:workspaceLogAbort.signal});
+      if(request!==workspaceLogRequest)return;
+      workspaceLogPages=Math.max(1,Math.ceil(Number(data.total||0)/20));
+      if(workspaceLogPage>workspaceLogPages){workspaceLogPage=workspaceLogPages;return refreshLogHistory();}
+      document.getElementById('workspaceLogSummary').textContent=`Grok · ${data.total}条日志 · 运行${data.queue.active} · 待启动${data.queue.waiting}`;
+      document.getElementById('workspaceLogRows').innerHTML=data.items.map(j=>`<tr><td>G#${j.id}</td><td>${esc(GROK_LABELS[j.status]||j.status)}</td><td>${esc(j.email)}</td><td>${esc(workspaceDateTime(j.started_at))}</td><td>${esc(workspaceDateTime(j.completed_at))}</td><td>—</td><td>${esc(j.stage)}</td><td><button class="btn" type="button" data-grok-log="${j.id}">查看Grok进度</button></td></tr>`).join('')||'<tr><td colspan="8">暂无Grok日志</td></tr>';
+      document.getElementById('workspaceLogPage').textContent=`${workspaceLogPage}/${workspaceLogPages}页`;
+      document.getElementById('previousLogHistory').disabled=workspaceLogPage<=1;document.getElementById('nextLogHistory').disabled=workspaceLogPage>=workspaceLogPages;
+      workspaceLogSignature='';return;
+    }
     const query=new URLSearchParams({paged:'1',page:String(workspaceLogPage),page_size:'20',...workspaceLogFilters});
     const data=await api(`/api/jobs?${query}`,{signal:workspaceLogAbort.signal});
     if(request!==workspaceLogRequest)return;

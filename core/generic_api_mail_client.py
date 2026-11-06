@@ -25,6 +25,7 @@ from urllib.parse import quote, unquote, urlparse, urlunparse
 import requests
 from core.mail_traffic import track_mail_session
 from core.import_formats import normalize_generic_api_url
+from core.icapi_mailbox import is_viewer_url, latest_code as _mailbox_latest_code, MailboxError
 from core.otp_freshness import (MailBaseline, OtpFreshnessError, new_mail_baseline,
                                 new_code_candidates, verify_mail_freshness, parse_mail_time)
 
@@ -88,7 +89,7 @@ def is_direct_icapi_url(url: str) -> bool:
 
 def uses_direct_icapi_polling(email: str) -> bool:
     account = get_account_context(email)
-    return account is not None and is_direct_icapi_url(account.code_url)
+    return account is not None and (is_direct_icapi_url(account.code_url) or is_viewer_url(account.code_url))
 
 
 def is_smsbower_signature_url(url: str) -> bool:
@@ -116,6 +117,11 @@ def query_latest_otp(email: str) -> str:
     if not row or not row.get("code_url"):
         raise GenericApiMailError("未找到该邮箱已导入的取码 API 配置")
     url = row["code_url"]
+    if is_viewer_url(url):
+        try:
+            return _mailbox_latest_code(email, url, platform="gpt")
+        except MailboxError as exc:
+            raise GenericApiMailError(str(exc)) from None
     icapi = is_direct_icapi_url(url)
     signature = is_smsbower_signature_url(url)
     if not icapi and not signature:
@@ -232,7 +238,7 @@ def _wait_icapi_delay(seconds: float) -> None:
         time.sleep(min(0.25, remaining))
 
 
-def _fetch_direct_icapi_otp(account, *, ready_at=None, exclude_codes=None) -> str:
+def _fetch_direct_icapi_otp(account, *, ready_at=None, exclude_codes=None, after_ts=None) -> str:
     """Wait 30s after the ready page, then perform at most three direct GETs.
 
     No baseline, timestamp gate, settle delay, cache-busting URL rewrite or
@@ -248,6 +254,16 @@ def _fetch_direct_icapi_otp(account, *, ready_at=None, exclude_codes=None) -> st
     initial_delay = ICAPI_OTP_DELAY_SECONDS
     if ready_at is not None:
         initial_delay = max(0, ICAPI_OTP_DELAY_SECONDS - max(0, time.time() - ready_at))
+    # ICAPI's mailbox page has no pre-send baseline request, but its messages
+    # carry a received_at time.  Use the caller's send anchor with a 90s
+    # tolerance so a historical code cannot be mistaken for this challenge;
+    # the tolerance covers ordinary clock skew without requiring a baseline.
+    fresh_after = None
+    if after_ts is not None:
+        try:
+            fresh_after = max(0.0, float(after_ts) - 90.0)
+        except (TypeError, ValueError):
+            fresh_after = None
     try:
         for attempt in range(1, ICAPI_OTP_MAX_ATTEMPTS + 1):
             logger.info("[ICAPI] 页面已就绪；等待后读取验证码（第 %s/%s 次，间隔 %ss；不设基线、不重发）",
@@ -255,6 +271,20 @@ def _fetch_direct_icapi_otp(account, *, ready_at=None, exclude_codes=None) -> st
             _wait_icapi_delay(initial_delay if attempt == 1 else ICAPI_OTP_DELAY_SECONDS)
             check_stop_requested()
             try:
+                if is_viewer_url(account.code_url):
+                    # Direct ICAPI has no baseline by design.  The mailbox page
+                    # may show a newer "New sign-in" notification after the OTP
+                    # message; latest_code skips that notification and returns
+                    # the first actual code.  Do not pass the page-ready anchor:
+                    # clock skew between the mail host and this process would
+                    # otherwise discard the very OTP that triggered the read.
+                    code = _mailbox_latest_code(account.email, account.code_url, platform="gpt", http=http,
+                                                after_ts=fresh_after, exclude_codes=excluded)
+                    if code:
+                        logger.info("[ICAPI邮件页面] 已匹配本邮箱最新 OpenAI 邮件（不记录验证码）")
+                        return code
+                    logger.info("[ICAPI邮件页面] 本次没有符合平台/时间的验证码邮件，不重发")
+                    continue
                 response = http.get(account.code_url, headers=headers, timeout=20,
                                     verify=True, allow_redirects=False)
                 if response.status_code in (401, 403, 429):
@@ -277,9 +307,15 @@ def _fetch_direct_icapi_otp(account, *, ready_at=None, exclude_codes=None) -> st
                     logger.info("[ICAPI] HTTP=%s，响应结构无效（不记录响应正文）", response.status_code)
             except GenericApiMailError:
                 raise
-            except (requests.RequestException, ValueError):
-                # Intentionally omit raw exceptions/URLs/response bodies.
-                logger.warning("[ICAPI] 本次 API 请求失败或响应无效，未取得验证码")
+            except MailboxError as exc:
+                if exc.http_status in (401, 403, 429) or not exc.retryable:
+                    raise GenericApiMailError(str(exc)) from None
+                logger.warning("[ICAPI邮件页面] 本次读取失败，未切换线路或重发")
+            except requests.RequestException as exc:
+                # Never print the exception's credential-bearing URL.
+                logger.warning("[ICAPI] 本次 API 请求失败，类型=%s，未取得验证码（不记录地址或响应）", type(exc).__name__)
+            except ValueError:
+                logger.warning("[ICAPI] 本次 API 响应 JSON 无效，未取得验证码（不记录响应正文）")
             if attempt < ICAPI_OTP_MAX_ATTEMPTS:
                 logger.info("[ICAPI] 本次未取得有效验证码，再等待 %ss", ICAPI_OTP_DELAY_SECONDS)
         raise GenericApiMailError("验证码未获取")
@@ -779,7 +815,7 @@ def capture_mail_baseline(email: str) -> MailBaseline | None:
     account = get_account_context(email)
     if account is None:
         raise OtpFreshnessError("snapshot_mailbox_missing")
-    if is_direct_icapi_url(account.code_url) or is_smsbower_signature_url(account.code_url):
+    if is_direct_icapi_url(account.code_url) or is_viewer_url(account.code_url) or is_smsbower_signature_url(account.code_url):
         # User-selected fixed API polling policy: do not make a pre-send GET.
         return None
     if _public_inbox_page_api_url(account.code_url) or _parse_yangyang_code_url(account.code_url):
@@ -1128,9 +1164,9 @@ def fetch_latest_otp(
     account = get_account_context(email)
     if account is None:
         raise GenericApiMailError(f"通用 API 邮箱不存在或未导入: {email}")
-    if is_direct_icapi_url(account.code_url):
+    if is_direct_icapi_url(account.code_url) or is_viewer_url(account.code_url):
         return _fetch_direct_icapi_otp(account, ready_at=first_read_anchor_ts,
-                                       exclude_codes=exclude_codes)
+                                       exclude_codes=exclude_codes, after_ts=after_ts)
     if is_smsbower_signature_url(account.code_url):
         return _fetch_signature_otp(account, ready_at=first_read_anchor_ts, poll_state=signature_poll_state)
     if after_ts is None:

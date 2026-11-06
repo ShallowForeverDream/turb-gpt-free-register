@@ -78,6 +78,21 @@ main>div{min-width:0}
 .workspace-history .history-pager{display:flex;justify-content:flex-end;align-items:center;gap:12px;margin-top:14px}
 .workspace-placeholder h1{font-size:22px}.workspace-placeholder p{color:var(--muted,#64748b);margin-top:10px}
 .workspace-registration>summary{cursor:pointer;font-weight:600;padding:4px 0 12px}
+.registration-block{padding:18px;background:var(--surface,#fff);border:1px solid var(--line,#e5e7eb);border-radius:10px;margin-bottom:16px;min-width:0;max-width:100%;box-sizing:border-box}
+.registration-block-head{display:flex;align-items:flex-start;gap:12px;margin-bottom:8px}
+.registration-block-head h2{margin:0;font-size:19px;line-height:1.3;color:#303133}
+.registration-block-head p{margin:4px 0 0;color:#909399;font-size:12px;line-height:1.5}
+.registration-block-badge{display:inline-flex;align-items:center;justify-content:center;min-width:56px;height:30px;padding:0 10px;border-radius:6px;font-size:12px;font-weight:800;letter-spacing:.04em;color:#fff;flex-shrink:0;box-sizing:border-box}
+.registration-block-badge--gpt{background:#377DFF}
+.registration-block-badge--grok{background:#16a34a}
+.registration-block--gpt{border-color:#d6e4ff}
+.registration-block--gpt .register-overview .register-title{display:none}
+.registration-block--gpt .register-overview{padding:0;background:transparent;border:0;box-shadow:none;margin:0}
+.registration-block--grok{border-color:#cdebd8}
+.registration-block .jobs-toolbar-v2{padding:8px 0 0}
+.registration-block .jobs-tb-btn{min-height:36px;padding:0 14px;font-size:13px}
+.registration-block .jobs-tb-field select{min-height:34px;border:1px solid #dcdfe6;border-radius:6px;padding:0 8px;background:#fff;color:#606266;font:inherit;font-size:13px}
+.registration-block .acc-v2-selected{color:#909399;font-size:13px;font-weight:600}
 .workspace-registration .register-title{font-size:20px;margin-bottom:12px}
 .workspace-registration .stats{margin:0 0 16px}
 .workspace-registration .jobs-toolbar-v2{padding:10px 0}.workspace-registration .jobs-panel-v2{border:0}
@@ -105,4 +120,8 @@ body.workspace-legacy nav button.active{background:#edf2ff;color:#315ae9}
 body.workspace-legacy>header,body.workspace-legacy>main{margin-left:155px}
 body.workspace-legacy>main{width:calc(100% - 179px);margin-left:167px;margin-right:12px;max-width:none}
 @media(max-width:760px){.workspace-row{gap:12px}.workspace-group{gap:6px}.workspace-toolbar{padding:10px}.workspace-toolbar .queue-concurrency-hint{display:none}body.workspace-legacy nav{width:110px}body.workspace-legacy>header{margin-left:110px}body.workspace-legacy>main{width:calc(100% - 134px);margin-left:122px}}
+.grok-progress-log{margin:10px 0;border:1px solid #dbe7ff;border-radius:8px;background:#f8fbff;padding:10px}
+.grok-progress-log label{display:flex;align-items:center;gap:8px;font-size:12px;color:#52627a;margin-bottom:8px}
+.grok-progress-log select{min-height:30px;border:1px solid #dbe1ea;border-radius:6px;padding:0 8px;background:#fff}
+.grok-progress-log-preview{margin:0;max-height:180px;overflow:auto;white-space:pre-wrap;font-size:12px;line-height:1.55;color:#334155;background:#fff;border-radius:6px;padding:8px}
 </style>

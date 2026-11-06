@@ -702,13 +702,41 @@ def _exchange_new_token(session: BrowserSession, continue_url: str, *, email: st
     # 账号会先到 /workspace。必须在同一会话中完成选择，才能得到新的 Session。
     from core.account_liveness import _requires_workspace_selection, _select_workspace_and_fetch
 
+    verified: dict = {}
+    if "/mfa-challenge/" in str(continue_url):
+        if not email:
+            raise RuntimeError("重认证进入 MFA 关卡，需要账号邮箱对应已保存的 TOTP")
+        from core.account_liveness import (
+            _account_totp_code,
+            _account_totp_secret,
+            _mfa_issue_challenge,
+            _mfa_verify,
+        )
+        secret = _account_totp_secret(email)
+        if not secret:
+            raise RuntimeError("重认证需要 TOTP，但账号没有已激活的 2FA 密钥；未重复发码")
+        factor_id = str(continue_url).split("/mfa-challenge/", 1)[1].split("?", 1)[0].strip("/")
+        if not factor_id:
+            raise RuntimeError("MFA 关卡缺少 factor_id；未重复发码")
+        logger.info("[2FA] 重认证 OTP 已通过；继续提交同一账号的 TOTP")
+        _mfa_issue_challenge(session, factor_id)
+        verified = _mfa_verify(session, factor_id, _account_totp_code(email))
+        continue_url = str(
+            (verified or {}).get("continue_url")
+            or getattr(session, "_reauth_validate_result", {}).get("continue_url")
+            or ""
+        )
+        if not continue_url:
+            raise RuntimeError("TOTP 验证通过但没有 OAuth continue_url；未重复发码")
+        logger.info("[2FA] TOTP 验证通过，继续 OAuth 回调")
+
     logger.info("[2FA] 跟随 continue_url，完成工作区选择及 OAuth 回调...")
     if _requires_workspace_selection(continue_url):
         if not email:
             raise RuntimeError("2FA 重认证需要账号邮箱才能选择工作区")
-        new_session = _select_workspace_and_fetch(
-            session, email, getattr(session, "_reauth_validate_result", None)
-        )
+        auth_result = dict(getattr(session, "_reauth_validate_result", None) or {})
+        auth_result.update(verified if "/mfa-challenge/" in str(continue_url) else {})
+        new_session = _select_workspace_and_fetch(session, email, auth_result)
     else:
         final_url = follow_oauth_callback(
             session, continue_url, referer="https://auth.openai.com/email-verification"
@@ -716,9 +744,9 @@ def _exchange_new_token(session: BrowserSession, continue_url: str, *, email: st
         if _requires_workspace_selection(final_url):
             if not email:
                 raise RuntimeError("2FA 重认证需要账号邮箱才能选择工作区")
-            new_session = _select_workspace_and_fetch(
-                session, email, getattr(session, "_reauth_validate_result", None)
-            )
+            auth_result = dict(getattr(session, "_reauth_validate_result", None) or {})
+            auth_result.update(verified if "/mfa-challenge/" in str(continue_url) else {})
+            new_session = _select_workspace_and_fetch(session, email, auth_result)
         else:
             new_session = fetch_session(session)
     new_token = new_session["accessToken"]

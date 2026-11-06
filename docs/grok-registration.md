@@ -298,6 +298,18 @@ sundae.standby-0e@icloud.com 在 browser 驱动下完整注册成功：发码 20
 - 实测：`sundae.standby-0e@icloud.com`、`upbeats-shrill5s@icloud.com` 均完成 CLI 授权并下载到含 `key`、`refresh_token`、`expires_at`、`oidc_issuer`、`oidc_client_id` 的 auth.json；未在日志或文档中记录 token 值。
 - 重启恢复：`pending` 任务重新入队但保持“暂停补充”，需用户点“继续注册”；重启时丢失线程的 `running/stopping` 任务标记失败，不自动重放注册请求。
 
+### 导入 CPA / my-cockpit-tools
+
+1. 在“Grok账号”页找到 `cli_auth_status=ready` 的账号，点击“下载 auth.json”。
+2. my-cockpit-tools 的 Grok CLI 账号导入直接读取该 JSON；不要只复制内层
+   `{"key": ...}`，顶层注册键
+   `https://auth.x.ai::b1a00492-073a-47ea-816f-4c329264a828` 是 CLI 识别 provider
+   所必需的。
+3. 顶层每个账号条目含 `key`、`refresh_token`、`expires_at`、`oidc_issuer`、
+   `oidc_client_id` 与用户标识；这些是敏感凭据，不要上传到聊天、工单或日志。
+4. 访问令牌默认 6 小时过期；导入时保留 `refresh_token`，过期后由 CPA 按其既有刷新
+   逻辑更新。导入成功不等于套餐或模型调用权限可用，实际可用性仍需服务端响应确认。
+
 
 ## 2026-11-05 GPT 账号页与邮箱池清理
 

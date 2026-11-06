@@ -7,6 +7,7 @@ import logging
 import select
 import socket
 import threading
+import time
 
 from core.proxy_utils import mask_proxy_url, parse_proxy_url
 
@@ -66,6 +67,7 @@ class ProxyChainRelay:
         self._connections: set[socket.socket] = set()
         self._connections_lock = threading.Lock()
         self._last_error = ""
+        self._had_connect_failure = False
         self._traffic_lock = threading.Lock()
         self._upload_bytes = 0
         self._download_bytes = 0
@@ -73,6 +75,11 @@ class ProxyChainRelay:
     @property
     def last_error(self) -> str:
         return self._last_error
+
+    @property
+    def had_connect_failure(self) -> bool:
+        """Whether a host-side CONNECT or proxy handshake has ever failed."""
+        return self._had_connect_failure
 
     @property
     def proxy_url(self) -> str:
@@ -197,15 +204,23 @@ class ProxyChainRelay:
         remote.sendall(b"\x05" + bytes([len(methods)]) + methods)
         selected = _read_exact(remote, 2)
         if selected[0] != 5:
-            response = selected
-            try:
-                response += remote.recv(512)
-            except OSError:
-                pass
+            # The upstream can answer a SOCKS request with an HTTP error (for
+            # example when its tunnel is saturated) instead of a SOCKS reply.
+            # Read the remaining status line/headers as a short diagnostic so
+            # the caller can distinguish transport exhaustion from a dead
+            # dynamic exit.  Never keep these bytes for the tunnel itself.
+            response = self._read_upstream_rejection(remote, selected)
             if response.startswith(b"HTTP/"):
                 first_line = response.splitlines()[0].decode("latin1", errors="replace")
-                raise ProxyChainError(f"动态代理经本地上游返回 {first_line}，不是 SOCKS5 响应")
-            raise ProxyChainError("动态代理经本地上游返回了非 SOCKS5 响应")
+                self._last_error = f"ProxyChainError: {first_line[:160]}"
+                raise ProxyChainError(
+                    f"上游代理在SOCKS5握手时返回HTTP错误（{first_line[:120]}）；"
+                    "未重试同一账号，请检查本地代理服务"
+                )
+            self._last_error = f"ProxyChainError: non-SOCKS5 0x{selected[0]:02x}"
+            raise ProxyChainError(
+                f"动态代理经上游返回非SOCKS5响应（首字节0x{selected[0]:02x}）；已停止"
+            )
         if selected[1] == 0xFF:
             raise ProxyChainError("动态代理不接受当前认证方式")
         if selected[1] == 2:
@@ -222,6 +237,32 @@ class ProxyChainRelay:
         reply_code = self._read_socks_reply(remote)
         if reply_code:
             raise ConnectionError(f"动态代理 CONNECT 失败（SOCKS5 code {reply_code}）")
+
+    @staticmethod
+    def _read_upstream_rejection(sock: socket.socket, first: bytes) -> bytes:
+        """Collect only an HTTP rejection line without consuming tunnel data.
+
+        A non-SOCKS5 peer has no tunnel yet.  Bound the read so a broken local
+        gateway cannot stall a task or expose arbitrary response content.
+        """
+        data = bytearray(first)
+        deadline = time.monotonic() + 0.35
+        while b"\r\n" not in data and len(data) < 512 and time.monotonic() < deadline:
+            try:
+                # On Windows a blocking socket recv() does not yield to the
+                # timeout here until data arrives.  select bounds the wait even
+                # when the peer keeps a non-SOCKS connection open without more
+                # bytes.  This path never carries tunnel payload (handshake
+                # failed), so discarding pending bytes is safe.
+                if not select.select([sock], [], [], 0.1)[0]:
+                    break
+                chunk = sock.recv(512 - len(data))
+            except (socket.timeout, OSError, ValueError):
+                break
+            if not chunk:
+                break
+            data.extend(chunk)
+        return bytes(data)
 
     def _target_http_connect(self, remote: socket.socket, host: str, port: int) -> None:
         """经上游连接到 HTTP 目标代理，并在目标代理上建立 CONNECT 隧道。"""
@@ -314,6 +355,7 @@ class ProxyChainRelay:
         except Exception as exc:
             if self._stop.is_set():
                 return
+            self._had_connect_failure = True
             detail = str(exc or "").strip()
             self._last_error = f"{type(exc).__name__}: {detail[:240]}" if detail else type(exc).__name__
             logger.warning(

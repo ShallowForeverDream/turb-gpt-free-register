@@ -12,7 +12,7 @@ class GrokMailboxSourceTests(unittest.TestCase):
     def test_pool_item_mailbox_is_readable_by_grok_api(self):
         with tempfile.TemporaryDirectory() as root, patch.multiple(db, **storage(Path(root))):
             email = "fixture@icloud.com"
-            db.import_generic_api_emails([{"email": email, "code_url": "https://icapi.oaibx.com/api?token=fixture"}])
+            db.import_generic_api_emails([{"email": email, "code_url": f"https://icapi.oaibx.com/v#token={'A' * 43}"}])
             # A list view model uses source=generic_api, while the mailbox record
             # must preserve its own source after loading from the pool.
             item = db.list_email_pool_page(source="generic_api", limit=5)["items"][0]
@@ -24,7 +24,7 @@ class GrokMailboxSourceTests(unittest.TestCase):
     def test_grok_mailbox_does_not_claim_gpt_mailbox(self):
         with tempfile.TemporaryDirectory() as root, patch.multiple(db, **storage(Path(root))):
             email = "fixture@icloud.com"
-            db.import_generic_api_emails([{"email": email, "code_url": "https://icapi.oaibx.com/api?token=fixture"}])
+            db.import_generic_api_emails([{"email": email, "code_url": f"https://icapi.oaibx.com/v#token={'A' * 43}"}])
             box = grok_store.mailbox(email, "generic_api")
             self.assertEqual(box["source"], "generic_api")
             self.assertEqual(db.get_generic_api_email_by_email(email)["status"], "available")

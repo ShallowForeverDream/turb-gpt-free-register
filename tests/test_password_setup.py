@@ -73,12 +73,16 @@ class PasswordSetupTests(unittest.TestCase):
             if url.endswith('/password/add'):return response({'page':{'type':'reset_password_success'}})
             raise AssertionError('unexpected POST')
         self.session.post.side_effect=post
+        self.navigate=self.stack.enter_context(patch('core.openai_auth.follow_authorize',
+            side_effect=self.setUpNavigate()))
+
+    def setUpNavigate(self):
         def navigate(session,url):
             if '/oauth/authorize' in url:return 'https://auth.openai.com/email-verification?auth_page=fixture'
             session._registration_auth_page_state={'session_id':'fixture-session','email':'fixture@example.test',
                                                   'post_login_add_password':True}
             return url
-        self.navigate=self.stack.enter_context(patch('core.openai_auth.follow_authorize',side_effect=navigate))
+        return navigate
 
     def run_setup(self):
         return pw.set_missing_password(self.aid,session=self.session)
@@ -120,6 +124,38 @@ class PasswordSetupTests(unittest.TestCase):
         posts=[call for call in self.session.post.call_args_list if call.args[0].endswith('/password/add')]
         self.assertEqual(len(posts),1)
 
+    def test_official_success_continuation_without_method_and_empty_200_are_accepted(self):
+        for payload in ({'continue_url':'https://auth.openai.com/reset-password/success?auth_page=fixture'}, {}):
+            with self.subTest(payload=payload):
+                self.session.post.side_effect=self.setUpPost(payload)
+                result=self.run_setup()
+                self.assertTrue(result['ok'])
+                saved=db.get_account(self.aid)
+                self.assertEqual(saved['password_setup_status'],'success')
+                self.assertEqual(db._extract_registration_password(saved),'Fixture-password-20!')
+                posts=[c for c in self.session.post.call_args_list if c.args[0].endswith('/password/add')]
+                self.assertEqual(len(posts),1)
+
+    def setUpPost(self, add_payload):
+        def get(url,**kwargs):
+            if url.endswith('/add_password/eligibility'):return response({'eligible':True})
+            if url.endswith('/api/auth/csrf'):return response({'csrfToken':'fixture-csrf'})
+            raise AssertionError('unexpected GET')
+        def post(url,**kwargs):
+            if '/signin/openai?' in url:return response({'url':'https://auth.openai.com/oauth/authorize?fixture=1'})
+            if url.endswith('/email-otp/validate'):
+                return response({'continue_url':'https://auth.openai.com/mfa-challenge/factor-fixture',
+                                 'page':{'type':'mfa_challenge'}})
+            if url.endswith('/mfa/issue_challenge'):return response({'success':True})
+            if url.endswith('/mfa/verify'):
+                return response({'continue_url':'https://auth.openai.com/reset-password/new-password',
+                                 'page':{'type':'reset_password_new_password'}})
+            if url.endswith('/password/add'):return response(add_payload)
+            raise AssertionError('unexpected POST '+url)
+        self.session.post.side_effect=post
+        self.session.get.side_effect=get
+        return post
+
     def test_only_bound_success_continuation_confirms_a_password(self):
         for data in (
             {'continue_url':'https://evil.example.test/reset-password/success'},
@@ -133,6 +169,8 @@ class PasswordSetupTests(unittest.TestCase):
                 try:confirmed=pw._confirmed_add_result(data)
                 except pw.PasswordSetupError:confirmed=False
                 self.assertFalse(confirmed)
+        self.assertTrue(pw._confirmed_add_result(
+            {'continue_url':'https://auth.openai.com/reset-password/success?auth_page=fixture'}))
 
     def test_explicit_password_rejection_records_safe_details_not_uncertainty(self):
         original=self.session.post.side_effect
@@ -166,7 +204,7 @@ class PasswordSetupTests(unittest.TestCase):
                 return result
             return original(url,**kwargs)
         self.session.post.side_effect=post
-        self.assertEqual(self.run_setup()['status'],'uncertain')
+        self.assertEqual(self.run_setup()['status'],'accepted_unverified')
         row=db.get_account(self.aid)
         self.assertEqual(row['password_setup_diagnostic']['http_status'],200)
         self.assertEqual(row['password_setup_diagnostic']['request_id'],'req-unrecognized-fixture')
@@ -271,14 +309,31 @@ class PasswordSetupTests(unittest.TestCase):
         self.assertEqual(db._extract_registration_password(saved),'')
         self.assertEqual(json.loads(saved['extra_json'])['password_setup_candidate'],'Fixture-password-20!')
         self.assertNotIn('Fixture-password-20!',json.dumps(_compact_account_for_list(saved)))
+        # A retry first proves the retained candidate by logging in. It never
+        # re-POSTs that candidate to the add-password endpoint.
+        self.generate.return_value='Second-password-20!!'
+        self.session.post.side_effect=original
         self.session.post.reset_mock();self.session.get.reset_mock()
-        self.assertEqual(self.run_setup()['status'],'uncertain')
-        self.session.post.assert_not_called();self.session.get.assert_not_called()
+        self.navigate.side_effect=self.setUpNavigate()
+        def use_original_session(*args,**kwargs):
+            return False
+        with patch.object(pw,'verify_private_candidate',side_effect=use_original_session) as verify:
+            self.assertEqual(self.run_setup()['status'],'success')
+        verify.assert_called_once()
+        self.assertFalse(any(c.kwargs.get('data')==json.dumps({'password':'Fixture-password-20!'})
+                             for c in self.session.post.call_args_list))
+        self.assertEqual(db.get_account(self.aid)['password_setup_status'],'success')
+        self.assertEqual(db._extract_registration_password(db.get_account(self.aid)),'Second-password-20!!')
 
+    def test_official_bare_200_is_success_and_unexpected_page_is_not(self):
+        original=self.session.post.side_effect
+        self.session.post.side_effect=lambda url,**kw: response({}) if url.endswith('/password/add') else original(url,**kw)
+        self.assertEqual(self.run_setup()['status'],'success')
+        self.assertTrue(db._extract_registration_password(db.get_account(self.aid)))
     def test_200_without_success_ack_never_becomes_saved_password(self):
         original=self.session.post.side_effect
         self.session.post.side_effect=lambda url,**kw: response({'page':{'type':'login'}}) if url.endswith('/password/add') else original(url,**kw)
-        self.assertEqual(self.run_setup()['status'],'uncertain')
+        self.assertEqual(self.run_setup()['status'],'accepted_unverified')
         self.assertEqual(db._extract_registration_password(db.get_account(self.aid)),'')
 
     def test_403_or_429_never_switches_routes_or_replays_mutation(self):
@@ -336,11 +391,22 @@ class PasswordSetupTests(unittest.TestCase):
             events.append('password');return {'ok':True,'status':'success'}
         with patch('config.register.AUTO_PLAN_CHECK_AFTER_REGISTER',False), \
              patch('config.twofa.ENABLE_2FA',True), \
+             patch('config.register.SET_PASSWORD_AFTER_REGISTRATION',True), \
              patch('core.twofa_service.enqueue_account_totp_setup',side_effect=setup), \
              patch.object(pw,'set_missing_password',side_effect=password), \
              patch.object(completion,'_wait_plan_check',side_effect=lambda *a,**kw:events.append('verify') or {'ok':True}):
             outcome=completion.finish_account(self.aid,session=self.session)
         self.assertEqual(events,['twofa','password','verify'])
+        self.assertEqual(outcome['status'],'success')
+
+    def test_password_helper_is_optional_and_disabled_never_calls_it(self):
+        with patch('config.register.AUTO_PLAN_CHECK_AFTER_REGISTER',False), \
+             patch('config.twofa.ENABLE_2FA',True), \
+             patch('config.register.SET_PASSWORD_AFTER_REGISTRATION',False), \
+             patch.object(pw,'set_missing_password') as password:
+            outcome=completion.finish_account(self.aid,session=self.session)
+        password.assert_not_called()
+        self.assertEqual(outcome['password'],'skipped')
         self.assertEqual(outcome['status'],'success')
 
     def test_failed_twofa_never_starts_password_and_failed_password_is_partial(self):
@@ -353,7 +419,8 @@ class PasswordSetupTests(unittest.TestCase):
         with patch('config.register.AUTO_PLAN_CHECK_AFTER_REGISTER',False),patch('config.twofa.ENABLE_2FA',True), \
              patch.object(pw,'set_missing_password',return_value={'ok':False,'status':'failed'}):
             result=completion.finish_account(self.aid)
-        self.assertEqual((result['twofa'],result['password'],result['status']),('success','failed','partial'))
+        self.assertEqual((result['twofa'],result['password']),('success','skipped'))
+        self.assertEqual(result['status'],'success')
         self.assertEqual(db.get_account(self.aid)['access_token'],'fixture-at')
 
     def test_progress_exposes_password_status_but_not_candidate_or_credentials(self):

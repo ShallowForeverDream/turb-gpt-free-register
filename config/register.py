@@ -25,10 +25,15 @@ AUTO_PLAN_CHECK_AFTER_REGISTER = False
 # 格式：最小秒,最大秒。设为 "0,0" 表示不额外停留。
 POST_REGISTER_DWELL_SECONDS_RANGE = "5,15"
 
+# 注册成功并完成 2FA 后，对原本没有 GPT 密码的账号补设一个随机密码。
+# 开关关闭时完全不调用密码接口；已保存密码的账号永远不会被改动。
+SET_PASSWORD_AFTER_REGISTRATION = False
+
 # ---- .env overrides for WebUI editable fields ----
 apply_env_overrides(globals(), {
     'REGISTER_EMAIL': 'str',
     'REGISTER_NAME': 'str',
     'AUTO_PLAN_CHECK_AFTER_REGISTER': 'bool',
     'POST_REGISTER_DWELL_SECONDS_RANGE': 'str',
+    'SET_PASSWORD_AFTER_REGISTRATION': 'bool',
 })

@@ -5,10 +5,39 @@ import threading
 import time
 import unittest
 
-from core.proxy_chain import ProxyChainRelay
+from core.proxy_chain import ProxyChainError, ProxyChainRelay
 
 
 class ProxyChainTrafficTests(unittest.TestCase):
+    def test_upstream_http_rejection_is_reported_without_reading_the_tunnel(self):
+        upstream, client = socket.socketpair()
+        relay = object.__new__(ProxyChainRelay)
+        relay.target = type("Target", (), {"username": "", "password": ""})()
+        try:
+            client.sendall(b"\x05\x00")
+            self.assertEqual(upstream.recv(2), b"\x05\x00")
+            upstream.sendall(b"HTTP/1.1 502 Bad Gateway\r\nX-ID: hidden\r\n\r\n")
+            with self.assertRaisesRegex(ProxyChainError, "SOCKS5握手"):
+                relay._target_socks_connect(client, "chatgpt.com", 443)
+            self.assertIn("ProxyChainError", relay.last_error)
+        finally:
+            upstream.close()
+            client.close()
+
+    def test_non_socks_reply_stops_without_guessing_a_tunnel(self):
+        upstream, client = socket.socketpair()
+        relay = object.__new__(ProxyChainRelay)
+        relay.target = type("Target", (), {"username": "", "password": ""})()
+        try:
+            client.sendall(b"\x05\x00")
+            self.assertEqual(upstream.recv(2), b"\x05\x00")
+            upstream.sendall(b"\x15broken")
+            with self.assertRaisesRegex(ProxyChainError, "非SOCKS5"):
+                relay._target_socks_connect(client, "chatgpt.com", 443)
+        finally:
+            upstream.close()
+            client.close()
+
     def test_direct_gateway_relay_preserves_auth_and_measures_tunnel_payload(self):
         authenticated = []
 

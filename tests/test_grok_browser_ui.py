@@ -5,7 +5,7 @@ from pathlib import Path
 import tempfile
 import threading
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from core import db, grok_browser as browser, grok_service, grok_store
 from tests.test_forwarded_imap_and_account_import import storage
@@ -33,10 +33,26 @@ class GrokBrowserTests(unittest.TestCase):
         self.stack = ExitStack(); self.addCleanup(self.stack.close)
         root = Path(self.stack.enter_context(tempfile.TemporaryDirectory()))
         self.stack.enter_context(patch.multiple(db, **storage(root)))
+        browser._LAST_LAUNCH = None
         try:
             self.launch_options = browser.require_browser()
         except (RuntimeError, ImportError):
             self.skipTest('Ordinary Chrome/Edge/Chromium is not installed')
+
+    def test_visible_browser_uses_only_the_task_relay_and_is_not_automation_flagged(self):
+        ready = MagicMock()
+        ready.__enter__.return_value.status = 200
+        with patch.object(browser.subprocess, 'Popen') as popen, \
+             patch('urllib.request.urlopen', return_value=ready):
+            process, port = browser.launch_ordinary_browser('http://127.0.0.1:18431')
+        args = popen.call_args.args[0]
+        self.assertIn('--proxy-server=http://127.0.0.1:18431', args)
+        self.assertIn('--proxy-bypass-list=<-loopback>', args)
+        self.assertIn('--disable-blink-features=AutomationControlled', args)
+        self.assertFalse(any('--enable-automation' in arg for arg in args))
+        self.assertFalse(any('--no-proxy-server' in arg for arg in args))
+        self.assertIs(process, popen.return_value)
+        self.assertIsInstance(port, int)
 
     def test_complete_signup_in_real_browser_with_fake_site_and_manual_code(self):
         self._complete_signup_fixture()

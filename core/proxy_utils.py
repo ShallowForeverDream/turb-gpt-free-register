@@ -60,6 +60,20 @@ def mask_proxy_url(value: str) -> str:
     return f"{spec.scheme}://{auth}{spec.host}:{spec.port}"
 
 
+def is_loopback_proxy(value: str) -> bool:
+    """True for a localhost/loopback relay, which is never a dynamic exit."""
+    try:
+        host = parse_proxy_url(value).host.lower()
+    except ValueError:
+        return False
+    if host in {"localhost", "localhost.localdomain"} or host.endswith(".localhost"):
+        return True
+    try:
+        return __import__("ipaddress").ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
 def validate_proxy_lines(lines) -> None:
     for index, line in enumerate(lines or [], 1):
         try:

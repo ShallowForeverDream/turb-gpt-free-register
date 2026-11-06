@@ -372,6 +372,39 @@ class AccountLivenessTests(unittest.TestCase):
         self.assertEqual([c.kwargs["proxy"] for c in check.call_args_list], ["http://127.0.0.1:1", "http://127.0.0.1:2"])
         self.assertFalse(slot.released)
 
+    def test_live_check_rebuilds_stale_local_relay_before_rotating_exit(self):
+        slot = _DummyQueueSlot()
+        stale = SimpleNamespace(last_error="ProxyChainError: upstream returned HTTP 502", close=MagicMock())
+        fresh = SimpleNamespace(last_error="", close=MagicMock())
+        failed = {"ok": False, "status": "failed",
+                  "error": "ProxyError: curl: (97) Received invalid version in initial SOCKS5 response"}
+        ok = {"ok": True, "status": "live", "access_token": "fresh"}
+        with patch.object(live_service, "_QUEUE_SLOTS", slot), \
+             patch.object(live_service.db, "mark_account_live_check_running", return_value=True), \
+             patch.object(live_service.db, "get_account", return_value={"email_source": "generic_api"}), \
+             patch.object(live_service.db, "update_account_liveness"), \
+             patch.object(live_service, "_append_log"), \
+             patch.object(live_service, "resolve_plan_check_route", return_value={
+                 "proxy": "socks5://proxy.example:1080",
+                 "network_route": "proxy_chain",
+                 "proxy_mode": "auto",
+                 "upstream_proxy": "http://127.0.0.1:21483",
+             }) as route, \
+             patch.object(live_service, "open_plan_check_proxy", side_effect=[
+                 ("http://127.0.0.1:1", stale),
+                 ("http://127.0.0.1:2", fresh),
+             ]) as proxy_open, \
+             patch.object(live_service, "check_account_liveness", side_effect=[failed, ok]) as check:
+            result = live_service._run_live_check(
+                account_id=1, email="user@example.com", proxy=None, trigger="manual",
+            )
+        self.assertTrue(result["ok"])
+        self.assertEqual(route.call_count, 1)
+        self.assertEqual(proxy_open.call_count, 2)
+        self.assertEqual([c.kwargs["proxy"] for c in check.call_args_list],
+                         ["http://127.0.0.1:1", "http://127.0.0.1:2"])
+        self.assertEqual(slot.released, False)
+
     def test_live_check_does_not_rotate_after_deactivation(self):
         slot = _DummyQueueSlot()
         dead = {"ok": False, "status": "deactivated", "error": "account_deactivated"}

@@ -78,7 +78,12 @@ def launch_ordinary_browser(proxy_url=None):
     port = _free_port()
     profile = tempfile.mkdtemp(prefix="grok-browser-")
     args = [binary, f"--remote-debugging-port={port}", f"--user-data-dir={profile}",
-            "--no-first-run", "--no-default-browser-check", "--disable-features=Translate"]
+            "--no-first-run", "--no-default-browser-check", "--disable-features=Translate",
+            # Attaching over CDP makes Playwright add --enable-automation to
+            # its usual launched child. Starting Chrome ourselves does not,
+            # but this switch also keeps navigator.webdriver=false when a CDP
+            # client sets automation defaults. It is not a stealth patch.
+            "--disable-blink-features=AutomationControlled"]
     proxy = str(proxy_url or "").strip()
     if proxy:
         args.append(f"--proxy-server={proxy}")

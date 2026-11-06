@@ -56,6 +56,11 @@ EDITABLE_FIELDS = [
         "key": "AUTO_PLAN_CHECK_AFTER_REGISTER", "file": "register.py", "type": "bool", "group": "注册方式",
         "label": "注册后自动查套餐", "help": "注册成功后自动入队查询套餐/Plus 资格；关闭后仅保存账号，不自动查套餐",
     },
+    {
+        "key": "SET_PASSWORD_AFTER_REGISTRATION", "file": "register.py", "type": "bool", "group": "注册方式",
+        "label": "注册后补设 GPT 密码",
+        "help": "仅在 2FA 成功后，为原本没有密码的账号补设随机密码；关闭后不调用密码接口，已保存密码永不改动",
+    },
 
     {
         "key": "PROTOCOL_LOW_TRAFFIC", "file": "openai_protocol.py", "type": "bool", "group": "注册方式",

@@ -73,6 +73,7 @@ def _run_live_check(*, account_id: int, email: str, proxy: str | None, trigger: 
     acquired = False
     route: dict = {}
     selected_proxy: str | None = None
+    route_errors: list[dict] = []
     try:
         _EXECUTION_SLOTS.acquire()
         acquired = True
@@ -102,6 +103,7 @@ def _run_live_check(*, account_id: int, email: str, proxy: str | None, trigger: 
             if isinstance(saved.get("browser_profile"), dict):
                 saved_fingerprint_state["browser_profile"] = dict(saved["browser_profile"])
         result: dict = {}
+        stale_transport_retry_used = False
         for route_attempt in range(1, 4):
             route = resolve_plan_check_route(explicit_proxy=proxy, exclude_proxies=attempted_proxies)
             selected_proxy = str(route.get("proxy") or "").strip() or None
@@ -130,8 +132,43 @@ def _run_live_check(*, account_id: int, email: str, proxy: str | None, trigger: 
                 email_source=email_source,
                 fingerprint_state=fingerprint_state,
             )
+            # If CTF's host-side relay refuses (for example HTTP 502 at the
+            # SOCKS handshake), the same proxy can succeed once with a fresh
+            # local relay. The account identity is unchanged. Only retry this
+            # transport failure once; a 403/429 or account error never rotates.
+            if (not result.get("ok")
+                    and not stale_transport_retry_used
+                    and route.get("network_route") == "proxy_chain"
+                    and _is_retryable_live_result(result)):
+                relay_error = str(getattr(relay, "last_error", "") or "").lower()
+                if any(marker in relay_error for marker in (
+                        "socks5", "非socks5", "http错误", "bad gateway", "502",
+                )):
+                    stale_transport_retry_used = True
+                    _append_log(email, "[查活] 本地上游代理握手失败；重建同一固定出口的本地中继，账号身份与代理均不变")
+                    if relay is not None:
+                        relay.close()
+                        relay = None
+                    effective_proxy, relay = open_plan_check_proxy(
+                        route, selected_proxy or "", timeout=timeout,
+                    )
+                    result = check_account_liveness(
+                        email,
+                        proxy=effective_proxy,
+                        clear_log=False,
+                        email_source=email_source,
+                        fingerprint_state=fingerprint_state,
+                    )
             if result.get("ok") or not _is_retryable_live_result(result) or route_attempt >= 3:
+                if not result.get("ok") and route_errors:
+                    result["route_errors"] = route_errors
                 break
+            route_errors.append({
+                "proxy": route.get("proxy_used"),
+                "upstream": route.get("upstream_proxy_used"),
+                "relay_error": str(getattr(relay, "last_error", "") or "")[:240],
+                "error": str(result.get("error") or "")[:240],
+            })
             _append_log(email, f"[查活] 当前出口网络异常，切换同一代理池的下一个出口重试（{route_attempt}/3）")
             try:
                 if relay is not None:

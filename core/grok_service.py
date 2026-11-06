@@ -45,8 +45,8 @@ def control(action, workers=None):
         raise ValueError("队列操作不合法")
     with _LOCK:
         if workers is not None:
-            if type(workers) is not int or not 1 <= workers <= 4:
-                raise ValueError("Grok 并发必须为1到4的整数")
+            if type(workers) is not int or not 1 <= workers <= 10:
+                raise ValueError("Grok 并发必须为1到10的整数")
             _WORKERS = workers
             store.workers(workers)
         if action == "pause":
@@ -71,10 +71,19 @@ def submit(items, *, driver="protocol"):
         require_protocol()
     else:
         raise ValueError("Grok驱动必须为protocol或browser")
+    _require_dynamic_proxy()
     with _LOCK:
         ids = store.create_jobs(items, driver=driver)
-        if _EXECUTOR is None:
-            _EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="grok")
+        # A finished future frees its slot even when the next Grok task is
+        # still held by its result callback.  Keep capacity above the checked
+        # active limit so every configured slot can actually run concurrently.
+        threads = max(10, _WORKERS + 1)
+        current_threads = getattr(_EXECUTOR, "_max_workers", threads)
+        if _EXECUTOR is None or current_threads != threads:
+            old, _EXECUTOR = _EXECUTOR, ThreadPoolExecutor(max_workers=threads,
+                                                           thread_name_prefix="grok")
+            if old is not None:
+                old.shutdown(wait=False)
         _PENDING.extend(ids)
         _dispatch()
         return ids
@@ -100,40 +109,65 @@ def _finished(job_id):
         _dispatch()
 
 
-def _browser_proxy_route(*, exclude_targets: set[str] | None = None):
+def _dynamic_pool_route(*, exclude_targets: set[str] | None = None):
     """Pick one dynamic residential proxy and keep it for the whole browser flow.
 
-    The ordinary visible browser must use a single fixed dynamic residential
-    exit from navigation through SSO/CLI authorization.  If an exit is proven
-    broken before the page opens (the caller can pass its previous target in
-    ``exclude_targets``), another exit from the same pool is allowed; a browser
-    flow already in progress is never moved to a different exit.
+    Both Grok drivers, browser and HTTP, must use a single fixed dynamic
+    residential exit from navigation through SSO/CLI authorization.  If an exit
+    is proven broken before the page opens (the caller can pass its previous
+    target in ``exclude_targets``), another exit from the same pool is allowed;
+    a flow already in progress is never moved to a different exit.
     """
     from config import proxy as proxy_cfg
     from core.proxy_chain import ProxyChainRelay
-    from core.proxy_utils import mask_proxy_url
+    from core.proxy_utils import mask_proxy_url, is_loopback_proxy
     excluded = {str(item).strip() for item in (exclude_targets or set()) if str(item).strip()}
     with _LOCK:
         excluded |= set(_ACTIVE_BROWSER_TARGETS)
-    # A visible-browser task must never run on the machine's ambient/direct
-    # route.  Only a dynamic residential pool entry (non-loopback upstream)
-    # is a valid target; otherwise fail before a browser is opened.
-    candidates = [str(item).strip() for item in (getattr(proxy_cfg, "PROXY_POOL", []) or []) if str(item).strip()]
-    if not candidates:
-        raise RuntimeError("Grok 普通可见浏览器注册要求动态家宽代理，但当前没有可用出口；已停止")
-    upstream = str(getattr(proxy_cfg, "PROXY_POOL_UPSTREAM_PROXY", "") or "").strip()
+    # A Grok task must never run on the machine's ambient/direct route or a
+    # loopback-only relay.  Entries resolve through the configured upstream
+    # route; an entry identical to that local route is not a dynamic exit.
+    upstream = (
+        str(getattr(proxy_cfg, "PROXY_POOL_UPSTREAM_PROXY", "") or "").strip()
+        or str(getattr(proxy_cfg, "PLAN_CHECK_UPSTREAM_PROXY", "") or "").strip()
+    )
     if not upstream:
-        raise RuntimeError("Grok 普通可见浏览器注册要求经动态家宽代理池出口，但未配置上游链路；已停止")
+        raise RuntimeError("Grok 动态注册要求经动态家宽代理池出口，但未配置上游链路；已停止，不使用本机代理")
+    candidates = []
+    for item in (getattr(proxy_cfg, "PROXY_POOL", []) or []):
+        item = str(item).strip()
+        if not item or is_loopback_proxy(item):
+            continue
+        candidates.append(item)
+    if not candidates:
+        raise RuntimeError("Grok 动态注册要求动态家宽代理，但当前只有本机代理或没有可用出口；已停止")
     candidates = [item for item in candidates if item not in excluded]
     if not candidates:
-        raise RuntimeError("Grok 普通可见浏览器注册要求动态家宽代理，但当前没有可用出口；已停止")
+        raise RuntimeError("Grok 动态注册要求动态家宽代理，但当前没有可用出口；已停止")
     target = str(proxy_cfg.pick_proxy() or "").strip()
-    if not target or target in excluded:
+    if not target or target in excluded or target not in candidates:
         target = candidates[0]
     relay = ProxyChainRelay(target, upstream, timeout=30).start()
     with _LOCK:
         _ACTIVE_BROWSER_TARGETS.add(target)
     return relay, mask_proxy_url(target)
+
+
+def _require_dynamic_proxy(proxy_cfg=None):
+    """Validate the configured egress before any Grok job claims a mailbox."""
+    from config import proxy as proxy_cfg
+    from core.proxy_utils import is_loopback_proxy
+    upstream = (
+        str(getattr(proxy_cfg, "PROXY_POOL_UPSTREAM_PROXY", "") or "").strip()
+        or str(getattr(proxy_cfg, "PLAN_CHECK_UPSTREAM_PROXY", "") or "").strip()
+    )
+    if not upstream:
+        raise RuntimeError("Grok 动态注册要求经动态家宽代理池出口；当前未配置上游链路，已停止")
+    usable = [str(item).strip() for item in (getattr(proxy_cfg, "PROXY_POOL", []) or [])
+              if str(item).strip() and not is_loopback_proxy(item)]
+    if not usable:
+        raise RuntimeError("Grok 动态注册要求动态家宽代理；当前只有本机代理或没有可用出口，已停止")
+    return True
 
 
 def _release_browser_target(target):
@@ -155,37 +189,44 @@ def _run(job_id, signals):
             store.update_job(job_id, status, stage, message, private=private)
         update("running", "starting", f"开始 Grok 注册（driver={driver}）；不占用 GPT 邮箱注册状态")
         relay = None
-        if driver == "browser":
-            # A browser task owns exactly one dynamic residential exit.  Before
-            # the page opens, if the chosen exit is dead we may try another
-            # exit from the same pool; once navigation starts it is fixed.
-            from core.grok_browser import GrokBrowserError
-            attempted = set()
-            last_error = None
-            for attempt in range(1, 4):
-                relay, proxy_target = _browser_proxy_route(exclude_targets=attempted)
-                attempted.add(str(proxy_target))
-                record["private"]["proxy_target"] = proxy_target
-                record["private"]["proxy_transport"] = relay.proxy_url if relay else ""
-                update("running", "proxy", f"动态家宽出口已固定：{proxy_target}；本任务全程复用（出口 {attempt}/3）")
+        # Every Grok driver owns exactly one dynamic residential exit.  Both
+        # visible Chrome and HTTP use this same relay, never the machine's
+        # ambient or loopback proxy.  A dead exit is replaced only before any
+        # registration page or request starts.
+        from core.grok_browser import GrokBrowserError
+        attempted = set()
+        last_error = None
+        for attempt in range(1, 4):
+            relay, proxy_target = _dynamic_pool_route(exclude_targets=attempted)
+            attempted.add(str(proxy_target))
+            record["private"]["proxy_target"] = proxy_target
+            record["private"]["proxy_transport"] = relay.proxy_url if relay else ""
+            update("running", "proxy", f"动态家宽出口已固定：{proxy_target}；本任务全程复用（出口 {attempt}/3）")
+            try:
+                from core.grok_browser import verify_proxy_transport
+                verify_proxy_transport(relay.proxy_url)
+                record["private"]["proxy_prechecked"] = True
+                break
+            except GrokBrowserError as exc:
+                last_error = exc
+                if attempt >= 3:
+                    raise
+                update("running", "proxy", f"出口 {attempt}/3 预检失败，换下一个动态家宽出口；尚未打开注册页")
                 try:
-                    from core.grok_browser import verify_proxy_transport
-                    verify_proxy_transport(relay.proxy_url)
-                    record["private"]["proxy_prechecked"] = True
-                    break
-                except GrokBrowserError as exc:
-                    last_error = exc
-                    if attempt >= 3:
-                        raise
-                    update("running", "proxy", f"出口 {attempt}/3 预检失败，换下一个动态家宽出口；尚未打开注册页")
-                    try:
-                        relay.close()
-                    finally:
-                        relay = None
-            if relay is None:
-                raise last_error or RuntimeError("没有可用的动态家宽出口")
+                    relay.close()
+                finally:
+                    relay = None
+        if relay is None:
+            raise last_error or RuntimeError("没有可用的动态家宽出口")
         try:
-            result = run(record, store.mailbox(record["email"], record["source"]), signals, update)
+            if driver == "protocol":
+                result = _run_protocol(record, signals, update, relay.proxy_url)
+            else:
+                # Visible Chrome must receive the task relay explicitly.  Do not
+                # rely on a record field alone: a missing/stale value would let
+                # Chrome fall back to the machine's ambient network route.
+                result = run(record, store.mailbox(record["email"], record["source"]), signals, update,
+                             proxy_url=relay.proxy_url)
             if result:
                 saved = store.save_account(job_id, result)
                 cli_message = ""
@@ -202,8 +243,7 @@ def _run(job_id, signals):
         finally:
             if relay is not None:
                 relay.close()
-            if driver == "browser":
-                _release_browser_target(record["private"].get("proxy_target"))
+            _release_browser_target(record["private"].get("proxy_target"))
     except Exception as exc:
         record = store.job(job_id, private=True) or {}
         uncertain = record.get("private", {}).get("profile_submitted")
@@ -213,6 +253,7 @@ def _run(job_id, signals):
             http_status in (401, 403, 429) or reason_code in {"native_security", "protocol_challenge", "protocol_email_unavailable"}
         ) else "failed"
         reason = {"browser_closed": "注册浏览器已关闭", "third_party": "进入第三方页面，未提交后续信息",
+                  "dynamic_proxy": "Grok 要求动态住宅代理池出口；本机代理缺少上游已被拒绝",
                   "window_unavailable": "无法展开本任务浏览器窗口，未访问官网或发码",
                   "user_stop": "用户停止了此任务", "mail_timeout": "验证码未获取（已读取3次，未重发）",
                   "protocol_network": "原生HTTP连接未完成，不重放请求或切换线路",
@@ -241,11 +282,35 @@ def _run(job_id, signals):
                   "timeout": "等待页面或人工操作超时"}.get(getattr(exc, "reason", ""), "请查看浏览器阶段")
         if http_status in (401, 403, 429):
             reason = f"服务拒绝请求 HTTP {http_status}，已停止且不换线"
+        elif type(exc).__name__ not in {"GrokBrowserError", "GrokProtocolError", "ManualVerificationRequired",
+                                         "EmailCodeRejected", "TimeoutError", "RuntimeError"}:
+            # Fixture seams can replace the runner with an incompatible
+            # callable. Keep that internal defect distinguishable from a real
+            # signup failure, without logging exception text or credentials.
+            reason = f"内部执行异常（{type(exc).__name__}）；未重放注册或改密"
         # Never log browser exception strings, URLs, page HTML, candidate passwords or OTP.
         store.update_job(job_id, status, "stopped", f"Grok 流程已停止（{type(exc).__name__}）；" +
             reason + "；" + ("建号提交结果未确认，保留候选且不自动重提" if uncertain else "未自动重试"))
-        if record.get("private", {}).get("driver") == "browser":
-            _release_browser_target(record["private"].get("proxy_target"))
+        _release_browser_target(record["private"].get("proxy_target"))
+
+
+def _run_protocol(record, signals, update, proxy_url):
+    """Run native HTTP on the task's fixed relay, never an ambient proxy."""
+    import requests
+    from core.grok_browser import verify_proxy_transport
+    from core.grok_protocol import run
+    # The same transport check gates the HTTP driver.  It proves the relay
+    # reaches a public endpoint before any mailbox or account request.
+    verify_proxy_transport(proxy_url)
+    http = requests.Session()
+    http.trust_env = False
+    http.proxies = {"http": proxy_url, "https": proxy_url}
+    http.headers.update({"Accept": "application/json"})
+    update("running", "proxy", "原生HTTP使用本任务固定的动态家宽出口；不读取系统代理、不回退直连")
+    try:
+        return run(record, store.mailbox(record["email"], record["source"]), signals, update, http=http)
+    finally:
+        http.close()
 
 
 def authorize_cli(account_id, update=None, *, proxy_url=None):
@@ -261,7 +326,7 @@ def authorize_cli(account_id, update=None, *, proxy_url=None):
         if proxy_url is None:
             # CLI authorization opens a browser as well. It must use the same
             # kind of fixed dynamic residential exit, never the ambient route.
-            relay, _ = _browser_proxy_route()
+            relay, _ = _dynamic_pool_route()
             proxy_url = relay.proxy_url if relay else None
         result = grok_cli_auth.authorize_account(account["email"], payload.get("sso", ""), payload.get("sso_rw", ""),
                                                  proxy_url=proxy_url)

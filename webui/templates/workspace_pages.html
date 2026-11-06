@@ -8,7 +8,7 @@
       <input name="q" type="search" placeholder="邮箱 / 任务 ID" aria-label="邮箱或任务ID">
       <label>状态 <select name="status"><option value="">全部</option><option value="running">运行中</option><option value="pending">排队</option><option value="success">成功</option><option value="failed">失败（含网络/收码异常）</option><option data-platform="gpt" value="partial_success">部分成功</option><option value="blocked">受阻</option><option data-platform="gpt" value="stopped">停止</option><option value="cancelled">取消</option><option data-platform="gpt" value="disabled">停用</option><option data-platform="grok" value="manual_required">等待人工处理</option><option data-platform="grok" value="uncertain">结果未确认</option><option value="already_registered">已注册</option></select></label>
       <label>创建日期 <input name="date_from" type="date" aria-label="创建起始日期"> 至 <input name="date_to" type="date" aria-label="创建结束日期"></label>
-      <button class="btn jobs-tb-btn" type="submit">筛选</button><button class="btn jobs-tb-btn" type="reset">清除筛选</button>
+      <button class="btn jobs-tb-btn" type="reset">清除筛选</button>
     </form>
     <div class="table-wrap">
       <table class="history-table"><colgroup><col style="width:48px"><col style="width:85px"><col style="width:190px"><col style="width:130px"><col style="width:130px"><col style="width:145px"><col style="width:250px"><col style="width:95px"></colgroup>

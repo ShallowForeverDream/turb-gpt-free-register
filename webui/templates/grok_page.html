@@ -1,23 +1,39 @@
 <div id="tab-grok" class="hidden">
   <h1 class="register-title">Grok账号</h1>
   <section class="accounts-panel-v2 grok-accounts-panel" id="grokAccountsPanel" aria-label="Grok账号列表">
-    <div class="accounts-filter-v2" id="grokAccountsFilter">
+    <div class="accounts-filter-v2 grok-filter-v2" id="grokAccountsFilter">
       <div class="acc-v2-btn-group acc-v2-search-wrap">
         <input id="grokAccountQuery" type="search" placeholder="搜索邮箱" autocomplete="off" aria-label="搜索 Grok 账号">
       </div>
       <div class="acc-v2-btn-group">
         <span class="acc-v2-selected" id="grokAccountCount">已注册 0</span>
         <button type="button" class="jobs-tb-btn" id="grokAccountRefresh">刷新账号</button>
-        <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="grokAccountCopyAll">复制全部邮箱</button>
+        <button type="button" class="jobs-tb-btn" id="grokAccountSelectAll" aria-pressed="false">全选本页</button>
+        <button type="button" class="jobs-tb-btn" id="grokDownloadAuthZip" disabled>批量导出 auth.json</button>
+        <button type="button" class="jobs-tb-btn" id="grokCopySelected" disabled>批量复制</button>
+        <select id="grokBulkCopyField" aria-label="批量复制的字段">
+          <option value="email">邮箱</option>
+          <option value="auth_json">auth.json</option>
+          <option value="sso">SSO</option>
+          <option value="password">密码</option>
+        </select>
+        <span class="acc-v2-selected" id="grokAccountSelection">已选 0</span>
       </div>
     </div>
     <div class="accounts-table-v2-wrap">
-      <table class="accounts-table-v2 grok-accounts-table">
+      <table class="accounts-table-v2 grok-accounts-table" id="grokAccountsTable">
         <colgroup>
-          <col class="col-id"><col class="col-email"><col class="col-source"><col class="col-small"><col class="col-time"><col class="col-small"><col class="col-small"><col class="col-password"><col class="col-cli">
+          <col class="col-select"><col class="col-id"><col class="col-email"><col class="col-source"><col class="col-small"><col class="col-time"><col class="col-small"><col class="col-small"><col class="col-password"><col class="col-cli">
         </colgroup>
         <thead>
-          <tr><th class="col-id">ID</th><th class="col-email">邮箱</th><th class="col-source">来源</th><th class="col-small">注册方式</th><th class="col-time">创建时间</th><th class="col-sso">SSO</th><th class="col-sso">SSO-RW</th><th class="col-password">密码</th><th class="col-cli">Grok CLI</th></tr>
+          <tr><th class="col-select"><input type="checkbox" id="grokHeaderSelect" aria-label="全选本页 Grok 账号"></th>
+            <th class="col-id">ID</th>
+            <th class="col-email" data-grok-filter="q"><span class="account-col-heading"><span>邮箱</span><button type="button" class="account-filter-toggle" data-grok-filter-button="q" aria-label="邮箱筛选" title="筛选邮箱"><span aria-hidden="true">·</span></button></span></th>
+            <th class="col-source" data-grok-filter="source"><span class="account-col-heading"><span>来源</span><button type="button" class="account-filter-toggle" data-grok-filter-button="source" aria-label="来源筛选" title="筛选来源"><span aria-hidden="true">·</span></button></span></th>
+            <th class="col-small" data-grok-filter="origin"><span class="account-col-heading"><span>注册方式</span><button type="button" class="account-filter-toggle" data-grok-filter-button="origin" aria-label="注册方式筛选" title="筛选注册方式"><span aria-hidden="true">·</span></button></span></th>
+            <th class="col-time">创建时间</th><th class="col-sso">SSO</th><th class="col-sso">SSO-RW</th>
+            <th class="col-password">密码</th>
+            <th class="col-cli" data-grok-filter="cli"><span class="account-col-heading"><span>Grok CLI</span><button type="button" class="account-filter-toggle" data-grok-filter-button="cli" aria-label="CLI筛选" title="筛选 CLI 状态"><span aria-hidden="true">·</span></button></span></th></tr>
         </thead>
         <tbody id="grokAccountRows"></tbody>
       </table>
@@ -36,11 +52,32 @@
 </dialog>
 <style>
 .grok-accounts-panel{margin-top:0}
+.grok-filter-v2{align-items:stretch;padding:16px 16px 0}
+.grok-filter-v2 > .acc-v2-btn-group{box-sizing:border-box;min-height:44px;align-items:center}
+.grok-filter-v2 .acc-v2-search-wrap{display:flex;flex:0 1 280px;width:280px;min-width:220px;max-width:100%;min-height:44px;box-sizing:border-box;align-items:center}
+input#grokAccountQuery{display:block;flex:1 1 auto;width:100%;min-width:0;height:34px;min-height:34px;margin:0;padding:0 6px;box-sizing:border-box;border:0;background:transparent}
+.grok-filter-v2 #grokBulkCopyField{flex:0 0 132px;width:132px;min-width:132px;height:32px;min-height:32px;margin:0;padding:0 22px 0 6px;box-sizing:border-box;border:1px solid #dcdfe6;border-radius:6px;background:#fff;color:#606266;font:inherit;font-size:13px}
+.grok-filter-v2 .grok-selection-hint{color:#909399;font-size:13px}
 /* account_header_filter_styles hides columns 2/3 for the GPT table; Grok needs them visible. */
 .grok-accounts-table col:nth-child(2),.grok-accounts-table col:nth-child(3){display:table-column}
 .grok-accounts-table th:nth-child(2),.grok-accounts-table th:nth-child(3),
 .grok-accounts-table td:nth-child(2),.grok-accounts-table td:nth-child(3){display:table-cell}
 .grok-accounts-table{min-width:100%;width:100%}
+.grok-accounts-table .col-select{width:40px;min-width:40px}
+.grok-accounts-table .account-filter-toggle{display:inline-flex;flex:0 0 18px;align-items:center;justify-content:center;width:18px;height:18px;min-width:18px;min-height:18px;padding:0;border:1px solid #cbd5e1;border-radius:3px;background:#fff;color:#64748b;font-size:20px;line-height:16px;cursor:pointer}
+.grok-accounts-table .account-filter-toggle.is-filtered{color:#2563eb;border-color:#93b4f9;background:#eff6ff;font-size:10px}
+.grok-account-popup{position:fixed;z-index:2600;width:300px;box-sizing:border-box;padding:14px;border:1px solid #dbe2ed;border-radius:10px;background:#fff;color:#334155;box-shadow:0 12px 36px #152e582b;display:flex;flex-direction:column;gap:9px;font-size:13px}
+.grok-account-popup header,.grok-account-popup footer{display:flex;gap:8px;align-items:center;justify-content:space-between}
+.grok-account-popup button{min-height:28px;padding:3px 9px;border:1px solid #dbe2ed;border-radius:5px;background:#fff;color:#475569;cursor:pointer}
+.grok-account-popup .filter-apply{color:#fff;background:#4273ff;border-color:#4273ff}
+.grok-account-popup input:not([type=checkbox]){box-sizing:border-box;width:100%;min-height:32px;padding:5px 8px;border:1px solid #dbe2ed;border-radius:5px}
+.grok-account-popup .grok-filter-options{max-height:220px;overflow:auto}
+.grok-account-popup label{display:flex;align-items:center;gap:8px;padding:5px 2px;margin:0}
+.grok-account-popup input[type=checkbox]{width:15px;height:15px;min-height:15px;margin:0}
+.grok-selected-row{background:#f2f8ff}
+.grok-accounts-table th,.grok-accounts-table td{position:relative}
+.grok-col-resizer{position:absolute;top:0;right:0;width:6px;height:100%;cursor:col-resize;user-select:none}
+.grok-col-resizer:hover{background:#bcd4ff}
 .grok-accounts-table .col-cli{width:235px}
 .grok-accounts-table .col-id{width:52px}
 .grok-accounts-table .col-email{width:260px}
@@ -52,7 +89,13 @@
 .grok-accounts-table .col-cli{width:220px;white-space:normal;overflow:visible}
 .grok-accounts-table td.col-cli{padding-right:16px}
 .grok-accounts-table td.col-cli{white-space:normal;overflow:visible}
+.grok-accounts-table{min-width:1270px}
+.grok-accounts-table th.col-cli,.grok-accounts-table td.col-cli{white-space:normal;overflow:visible}
+.grok-accounts-table .account-col-heading{display:inline-flex;align-items:center;gap:4px;white-space:nowrap}
+.grok-filter-v2 .grok-check-status{min-width:150px}
 .grok-cli-actions{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.grok-cli-actions.ready{flex-direction:column;align-items:flex-start;flex-wrap:nowrap}
+.grok-cli-actions.ready .grok-cli-state{display:block;width:100%;padding-top:2px}
 .grok-cli-actions button{min-height:28px;padding:0 10px;border-radius:4px;border:1px solid #9ee0d6;background:#E7FCF8;color:#2bb8a6;font:inherit;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap}
 .grok-cli-actions button:hover:not(:disabled){background:#2bb8a6;border-color:#2bb8a6;color:#fff}
 .grok-cli-actions button.secondary{border-color:#bdd0ff;background:#f3f7ff;color:#1d4ed8}

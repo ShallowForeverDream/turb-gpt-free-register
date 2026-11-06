@@ -1,5 +1,8 @@
 const GROK_LABELS={unregistered:'未注册',registered:'已注册',pending:'待启动',running:'运行中',manual_required:'等待人工处理',uncertain:'结果未确认',success:'成功',failed:'失败',blocked:'受阻',cancelled:'已取消',already_registered:'已有账号（未保存凭据）'};
 const grokSelected=new Map();let grokAccountPage=1,grokAccountPages=1,grokAccountFlight=null,grokLogId=null,grokLogTimer=null,grokLogText='',grokGeneration=0,grokWorkersLoaded=false;
+const grokAccountPicked=new Set();let grokAccountRows=[];
+const GROK_ACCOUNT_FILTERS={};
+let grokAccountFilterPanel=null,grokAccountFilterAnchor=null;
 function poolPlatformStatus(row){const g=(v)=>esc(GROK_LABELS[v]||({processing:'注册中'}[v])||v||'未注册');return 'GPT：'+g(row.gpt_registration_status||row.registration_status)+'<br>Grok：'+g(row.grok_registration_status||'unregistered')+'<br>GitHub：'+g(row.github_registration_status||'unregistered');}
 function grokAccountStatus(row){return row.registration_origin==='manual_capture'?'人工抓包导入 · SSO未在线复验':row.registration_origin==='protocol'?'协议注册（未验证API套餐）':'普通浏览器注册（未验证API套餐）';}
 function grokPost(path,data){return api('/api/grok'+path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});}
@@ -9,15 +12,16 @@ function grokCliCell(row){
   const label=state==='ready'?'CLI 已授权':state==='failed'?'CLI 授权失败':'未授权 CLI';
   const buttons=[`<button type="button" data-grok-cli="${row.id}">${state==='ready'?'重新授权':'授权 Grok CLI'}</button>`];
   if(state==='ready')buttons.push(`<button type="button" class="secondary" data-grok-cli-download="${row.id}">下载 auth.json</button><button type="button" class="secondary" data-grok-cli-copy="${row.id}">复制 auth.json</button>`);
-  return `<div class="grok-cli-actions">${buttons.join('')}<span class="grok-cli-state ${esc(state)}" title="${esc(row.cli_auth_error||'')}">${esc(label)}</span></div>`;
+  return `<div class="grok-cli-actions${state==='ready'?' ready':''}">${buttons.join('')}<span class="grok-cli-state ${esc(state)}" title="${esc(row.cli_auth_error||'')}">${esc(label)}</span></div>`;
 }
 async function loadGrok(){
   if(grokAccountFlight)return grokAccountFlight;
   grokAccountFlight=(async()=>{
     try{
-      const aq=(document.getElementById('grokAccountQuery')?.value||'').trim();
+      const aq=(GROK_ACCOUNT_FILTERS.q?.values?.[0]??document.getElementById('grokAccountQuery')?.value??'').trim();
+      const filters=Object.keys(GROK_ACCOUNT_FILTERS).length?`&filters=${encodeURIComponent(JSON.stringify(GROK_ACCOUNT_FILTERS))}`:'';
       const [accounts,queue]=await Promise.all([
-        api(`/api/grok/accounts?page=${grokAccountPage}&q=${encodeURIComponent(aq)}`),
+        api(`/api/grok/accounts?page=${grokAccountPage}&q=${encodeURIComponent(aq)}${filters}`),
         api('/api/grok/queue')]);
       grokAccountPages=Math.max(1,Math.ceil(accounts.total/20));
       if(grokAccountPage>grokAccountPages){grokAccountPage=grokAccountPages;setTimeout(loadGrok,0);return;}
@@ -25,10 +29,16 @@ async function loadGrok(){
       if(queueState)queueState.textContent=`${queue.paused?'已暂停补充':'可补充'} · 并发 ${queue.workers} · 运行 ${queue.active} · 待启动 ${queue.waiting}`+(grokSelected.size?` · 已选 ${grokSelected.size}`:'');
       const workers=document.getElementById('grokWorkers');
       if(workers&&!grokWorkersLoaded){workers.value=queue.workers;grokWorkersLoaded=true;}
-      document.getElementById('grokAccountRows').innerHTML=accounts.items.map(r=>`<tr><td>#${esc(r.id)}</td><td><div class="acc-v2-email">${esc(r.email)}</div></td><td>${esc(r.source)}</td><td>${esc(grokAccountStatus(r))}</td><td>${esc(r.created_at)}</td><td><button type="button" class="acc-v2-token-copy" data-grok-secret="${r.id}" data-field="sso">复制SSO</button></td><td><button type="button" class="acc-v2-token-copy" data-grok-secret="${r.id}" data-field="sso_rw">复制SSO-RW</button></td><td><button type="button" class="acc-v2-token-copy" data-grok-secret="${r.id}" data-field="password">复制密码</button></td><td class="col-cli">${grokCliCell(r)}</td></tr>`).join('')||'<tr><td colspan="9" style="text-align:center;color:#909399;padding:28px;">暂无已注册的 Grok 账号</td></tr>';
+      grokAccountRows=accounts.items||[];
+      // Rebuild the header after the first page so its resizers and filter
+      // indicators operate on the table that is actually rendered.
+      grokMountAccountColumns();
+      // Keep choices across pages; hide nothing when another page differs.
+      document.getElementById('grokAccountRows').innerHTML=grokAccountRows.map(r=>`<tr class="${grokAccountPicked.has(r.id)?'grok-selected-row':''}"><td><input type="checkbox" data-grok-select="${r.id}" aria-label="选择 ${esc(r.email)}"${grokAccountPicked.has(r.id)?' checked':''}></td><td>#${esc(r.id)}</td><td><div class="acc-v2-email" title="${esc(r.email)}">${esc(r.email)}</div></td><td title="${esc(r.source)}">${esc(r.source)}</td><td>${esc(grokAccountStatus(r))}</td><td>${esc(r.created_at)}</td><td><button type="button" class="acc-v2-token-copy" data-grok-secret="${r.id}" data-field="sso">复制SSO</button></td><td><button type="button" class="acc-v2-token-copy" data-grok-secret="${r.id}" data-field="sso_rw">复制SSO-RW</button></td><td><button type="button" class="acc-v2-token-copy" data-grok-secret="${r.id}" data-field="password">复制密码</button></td><td class="col-cli">${grokCliCell(r)}</td></tr>`).join('')||'<tr><td colspan="10" style="text-align:center;color:#909399;padding:28px;">暂无已注册的 Grok 账号</td></tr>';
       const count=document.getElementById('grokAccountCount');if(count)count.textContent=`已注册 ${accounts.total}`;
       const pager=document.getElementById('pager-grok-accounts');
       if(pager)pager.innerHTML=`<button type="button" data-grok-account-page="-1"${grokAccountPage<=1?' disabled':''}>← 上一页</button><span class="pager-info">第 ${grokAccountPage} / ${grokAccountPages} 页 · 共 ${accounts.total} 个</span><button type="button" data-grok-account-page="1"${grokAccountPage>=grokAccountPages?' disabled':''}>下一页 →</button>`;
+      syncGrokAccountSelection();
     }catch(e){const queueState=document.getElementById('grokQueueState');if(queueState)queueState.textContent='加载失败：'+e.message;}
   })();try{await grokAccountFlight;}finally{grokAccountFlight=null;}
 }
@@ -52,7 +62,149 @@ document.getElementById('grokMailViewsFile')?.addEventListener('change',async e=
 const grokAccountQuery=document.getElementById('grokAccountQuery');
 if(grokAccountQuery)grokAccountQuery.addEventListener('input',debounce(()=>{grokAccountPage=1;loadGrok();},250));
 document.getElementById('grokAccountRefresh')?.addEventListener('click',loadGrok);
-document.getElementById('grokAccountCopyAll')?.addEventListener('click',async()=>{try{const r=await api('/api/grok/accounts?page=1&page_size=100&q='+encodeURIComponent((grokAccountQuery&&grokAccountQuery.value||'').trim()));const emails=(r.items||[]).map(x=>x.email).filter(Boolean);if(!emails.length)throw new Error('没有可复制的 Grok 账号');await copyText(emails.join('\n'));showToast('已复制 '+emails.length+' 个邮箱');}catch(e){showToast(e.message);}});
+function syncGrokAccountSelection(){
+  const count=grokAccountPicked.size;
+  const label=document.getElementById('grokAccountSelection');if(label)label.textContent=`已选 ${count}`;
+  for(const id of ['grokDownloadAuthZip','grokCopySelected']){const b=document.getElementById(id);if(b)b.disabled=!count;}
+  const all=grokAccountRows.length&&grokAccountRows.every(row=>grokAccountPicked.has(row.id));
+  const header=document.getElementById('grokHeaderSelect');if(header)header.checked=!!all;
+  const toggle=document.getElementById('grokAccountSelectAll');
+  if(toggle){toggle.textContent=all?'全不选本页':'全选本页';toggle.setAttribute('aria-pressed',all?'true':'false');}
+}
+function toggleGrokAccountPage(){
+  const all=grokAccountRows.length&&grokAccountRows.every(row=>grokAccountPicked.has(row.id));
+  for(const row of grokAccountRows){if(all)grokAccountPicked.delete(row.id);else grokAccountPicked.add(row.id);}
+  loadGrok();
+}
+document.getElementById('grokAccountSelectAll')?.addEventListener('click',toggleGrokAccountPage);
+document.getElementById('grokHeaderSelect')?.addEventListener('change',toggleGrokAccountPage);
+document.getElementById('grokAccountRows')?.addEventListener('change',event=>{
+  const box=event.target.closest('[data-grok-select]');if(!box)return;
+  const id=Number(box.dataset.grokSelect);
+  if(box.checked)grokAccountPicked.add(id);else grokAccountPicked.delete(id);
+  box.closest('tr')?.classList.toggle('grok-selected-row',box.checked);
+  syncGrokAccountSelection();
+});
+async function copyGrokSelected(){
+  const field=document.getElementById('grokBulkCopyField')?.value||'email';
+  if(!grokAccountPicked.size)throw new Error('请先勾选 Grok 账号');
+  const r=await grokPost('/accounts/bulk-auth',{ids:[...grokAccountPicked],field});
+  if(!r.items?.length)throw new Error('选中账号中没有该字段的凭据');
+  const values=r.items.map(item=>field==='auth_json'?JSON.stringify(item.value,null,2):item.value);
+  await copyText(values.join('\n---\n'));
+  showToast(`已复制 ${r.items.length} 项${r.missing?`（${r.missing} 项无该凭据）`:''}`);
+}
+document.getElementById('grokCopySelected')?.addEventListener('click',()=>copyGrokSelected().catch(error=>showToast(error.message)));
+document.getElementById('grokDownloadAuthZip')?.addEventListener('click',async()=>{
+  if(!grokAccountPicked.size)return showToast('请先勾选 Grok 账号');
+  try{
+    const response=await fetch('/api/grok/accounts/bulk-auth.zip',{method:'POST',credentials:'same-origin',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({ids:[...grokAccountPicked]})});
+    if(!response.ok){let message='导出失败';try{message=(await response.json()).error||message;}catch(error){}throw new Error(message);}
+    const url=URL.createObjectURL(await response.blob()),link=document.createElement('a');
+    link.href=url;link.download='grok-auth-json.zip';document.body.append(link);link.click();link.remove();
+    setTimeout(()=>URL.revokeObjectURL(url),1000);
+  }catch(error){showToast(error.message);}
+});
+function grokFilterLabels(key){
+  if(key==='source')return {generic_api:'icloud / generic_api',imap:'IMAP',outlook:'Outlook'};
+  if(key==='origin')return {protocol:'协议注册',browser:'普通浏览器',manual_capture:'人工抓包导入'};
+  if(key==='cli')return {ready:'CLI 已授权',failed:'CLI 授权失败',missing:'未授权 CLI'};
+  return {};
+}
+function grokCloseAccountFilter(){
+  grokAccountFilterPanel?.remove();grokAccountFilterPanel=null;
+  grokAccountFilterAnchor?.setAttribute('aria-expanded','false');grokAccountFilterAnchor=null;
+}
+function grokFilterButtonIndicators(){
+  document.querySelectorAll('[data-grok-filter-button]').forEach(button=>{
+    const active=!!GROK_ACCOUNT_FILTERS[button.dataset.grokFilterButton];
+    const dot=button.querySelector('span');if(dot)dot.textContent=active?'■':'·';
+    button.classList.toggle('is-filtered',active);
+    button.title=`筛选：${active?'已选择':'未筛选'}`;
+  });
+}
+async function grokOpenAccountFilter(button){
+  if(grokAccountFilterAnchor===button){grokCloseAccountFilter();return;}
+  grokCloseAccountFilter();grokAccountFilterAnchor=button;button.setAttribute('aria-expanded','true');
+  const key=button.dataset.grokFilterButton;
+  const panel=document.createElement('section');panel.className='grok-account-popup';panel.setAttribute('role','dialog');
+  panel.setAttribute('aria-label',button.getAttribute('aria-label'));
+  const head=document.createElement('header');const title=document.createElement('strong');title.textContent=button.getAttribute('aria-label');head.append(title);
+  const close=document.createElement('button');close.type='button';close.textContent='×';close.setAttribute('aria-label','关闭');close.addEventListener('click',grokCloseAccountFilter);head.append(close);
+  const body=document.createElement('div');body.className='grok-filter-options';body.textContent='加载选项…';panel.append(head,body);
+  const foot=document.createElement('footer'),clear=document.createElement('button'),all=document.createElement('button'),apply=document.createElement('button');
+  clear.type=all.type=apply.type='button';clear.textContent='清除';all.textContent='全选';apply.textContent='应用';apply.className='filter-apply';
+  foot.append(clear,all,apply);panel.append(foot);document.body.append(panel);
+  const rect=button.getBoundingClientRect();
+  panel.style.left=`${Math.max(8,Math.min(rect.left,innerWidth-panel.offsetWidth-8))}px`;
+  panel.style.top=`${Math.max(8,Math.min(rect.bottom+6,innerHeight-panel.offsetHeight-8))}px`;
+  const draft=new Set(GROK_ACCOUNT_FILTERS[key]?.values||[]);
+  let choices=[];
+  const render=()=>{
+    body.replaceChildren();
+    if(!choices.length){const note=document.createElement('p');note.className='muted';note.textContent='没有可选值';body.append(note);return;}
+    for(const option of choices){
+      const label=document.createElement('label'),box=document.createElement('input'),text=document.createElement('span');
+      box.type='checkbox';box.checked=draft.has(option.value);text.textContent=option.label;
+      box.addEventListener('change',()=>{box.checked?draft.add(option.value):draft.delete(option.value);});
+      label.append(box,text);body.append(label);
+    }
+  };
+  clear.addEventListener('click',()=>{delete GROK_ACCOUNT_FILTERS[key];grokCloseAccountFilter();grokAccountPage=1;grokFilterButtonIndicators();loadGrok();});
+  all.addEventListener('click',()=>{choices.forEach(option=>draft.add(option.value));render();});
+  apply.addEventListener('click',()=>{
+    const value=apply.dataset.grokQuery?.trim()||'';
+    if(key==='q'){draft.clear();if(value)draft.add(value);}
+    if(draft.size)GROK_ACCOUNT_FILTERS[key]={values:[...draft]};else delete GROK_ACCOUNT_FILTERS[key];
+    grokCloseAccountFilter();grokAccountPage=1;grokFilterButtonIndicators();loadGrok();
+  });
+  grokAccountFilterPanel=panel;
+  try{
+    const result=await api('/api/grok/accounts/filter-options?column='+encodeURIComponent(key));
+    if(grokAccountFilterPanel!==panel)return;
+    if(key==='q'){
+      const query=document.createElement('input');query.type='search';query.placeholder='输入邮箱关键词';query.value=draft.values().next().value||'';
+      query.setAttribute('aria-label','筛选邮箱关键词');query.addEventListener('input',()=>{apply.dataset.grokQuery=query.value;});
+      body.replaceChildren(query);choices=[{value:'__q__',label:'按邮箱关键词筛选'}];apply.dataset.grokQuery=query.value;query.focus();
+    }else{
+      const labels=grokFilterLabels(key);choices=(result.items||[]).map(item=>({value:item.value,label:labels[item.value]||item.label}));render();
+    }
+  }catch(error){body.textContent='加载失败：'+error.message;}
+}
+document.querySelectorAll('[data-grok-filter-button]').forEach(button=>button.addEventListener('click',event=>{
+  event.stopPropagation();grokOpenAccountFilter(button);
+}));
+document.addEventListener('pointerdown',event=>{
+  if(grokAccountFilterPanel&&!grokAccountFilterPanel.contains(event.target)&&!grokAccountFilterAnchor?.contains(event.target))grokCloseAccountFilter();
+});
+// Explicit column resizers, persisted separately from the GPT table.
+function grokMountAccountColumns(){
+  const table=document.getElementById('grokAccountsTable');if(!table)return;
+  if(table.dataset.grokColumnsReady==='1')return;
+  table.dataset.grokColumnsReady='1';
+  const key='resize:grok-accounts-columns-v1';
+  let saved={};try{saved=JSON.parse(localStorage.getItem(key)||'{}')||{};}catch(error){}
+  const cols=[...table.querySelectorAll('colgroup col')],headers=[...table.querySelectorAll('thead th')];
+  const apply=()=>cols.forEach((col,index)=>{const width=Number(saved[index]);if(width>=40)col.style.width=width+'px';});
+  apply();
+  headers.forEach((header,index)=>{
+    const grip=document.createElement('span');grip.className='grok-col-resizer';grip.setAttribute('aria-hidden','true');
+    grip.addEventListener('pointerdown',event=>{
+      event.preventDefault();event.stopPropagation();
+      const startX=event.clientX,startWidth=header.getBoundingClientRect().width;
+      const move=moveEvent=>{
+        const width=Math.max(40,Math.round(startWidth+moveEvent.clientX-startX));
+        saved[index]=width;col.style.width=width+'px';header.style.width=width+'px';
+      };
+      const end=()=>{document.removeEventListener('pointermove',move);document.removeEventListener('pointerup',end);
+        try{localStorage.setItem(key,JSON.stringify(saved));}catch(error){}};
+      document.addEventListener('pointermove',move);document.addEventListener('pointerup',end);
+    });
+    header.append(grip);
+  });
+}
 document.getElementById('pager-grok-accounts')?.addEventListener('click',event=>{const b=event.target.closest('[data-grok-account-page]');if(!b)return;grokAccountPage=Math.max(1,grokAccountPage+Number(b.dataset.grokAccountPage));loadGrok();});
 document.getElementById('grokSaveWorkers')?.addEventListener('click',async()=>{try{const r=await grokPost('/queue',{action:'configure',workers:Number(document.getElementById('grokWorkers').value)});document.getElementById('grokWorkers').value=r.workers;await loadGrok();}catch(e){showToast(e.message);}});
 document.getElementById('grokProgressList')?.addEventListener('click',async()=>{

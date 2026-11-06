@@ -73,6 +73,19 @@ test('copy and download the displayed log, preserving Unicode and line breaks', 
   assert.deepEqual(h.revoked, ['blob:test']);
 });
 
+test('Grok raw logs read the Grok job API and return to the Grok visual view', async () => {
+  const h = harness();
+  h.context.grokLogRecords = text => text.split(/\r?\n/).map(line => ({text: line, phase: 'grok'}));
+  h.context.openLog(17, 'grok');
+  assert.equal(h.pending[0].url, '/api/grok/jobs/17');
+  h.pending[0].resolve({id: 17, status: 'success', log: '[proxy] fixed\n[email_code] read once'});
+  await flush();
+  assert.equal(h.$('#logContent').textContent, '[proxy] fixed\n[email_code] read once');
+  h.$('#btnJobLogVisual').handlers.click();
+  assert.equal(h.context.visualId, 17);
+  assert.equal(h.context.activeLogJob, null);
+});
+
 test('empty logs cannot be copied or downloaded', async () => {
   const h = harness();
   h.context.openLog(1);

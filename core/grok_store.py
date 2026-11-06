@@ -158,11 +158,30 @@ def save_account(job_id, cookies):
     return {**payload, "account_id": account_id}
 
 
-def accounts(*, query="", offset=0, limit=20):
+def accounts(*, query="", offset=0, limit=20, filters=None):
+    filters = filters if isinstance(filters, dict) else {}
+    where, params = [], []
+    if query:
+        where.append("instr(lower(email),lower(?))>0"); params.append(str(query)[:200])
+    for column in ("source", "origin", "cli"):
+        values = filters.get(column)
+        values = [str(v)[:80] for v in values] if isinstance(values, list) else []
+        if not values:
+            continue
+        if column == "source":
+            where.append(f"source IN ({','.join('?' * len(values))})"); params.extend(values)
+        elif column == "origin":
+            where.append(f"json_extract(payload,'$.registration_origin') IN ({','.join('?' * len(values))})")
+            params.extend(values)
+        else:
+            where.append("COALESCE(json_extract(payload,'$.cli_auth.status'),'missing') IN "
+                         f"({','.join('?' * len(values))})")
+            params.extend(values)
+    sql = (" WHERE " + " AND ".join(where)) if where else ""
     with closing(connect()) as conn:
-        total = conn.execute("SELECT COUNT(*) FROM grok_accounts WHERE instr(email,?)>0", (query,)).fetchone()[0]
-        rows = conn.execute("SELECT * FROM grok_accounts WHERE instr(email,?)>0 ORDER BY id DESC LIMIT ? OFFSET ?",
-                            (query, limit, offset)).fetchall()
+        total = conn.execute("SELECT COUNT(*) FROM grok_accounts" + sql, params).fetchone()[0]
+        rows = conn.execute("SELECT * FROM grok_accounts" + sql + " ORDER BY id DESC LIMIT ? OFFSET ?",
+                            [*params, limit, offset]).fetchall()
     items = []
     for row in rows:
         payload = json.loads(row["payload"])
@@ -179,6 +198,20 @@ def accounts(*, query="", offset=0, limit=20):
                       "registration_origin": payload.get("registration_origin") if payload.get("registration_origin") in {"manual_capture", "protocol", "browser"} else "browser",
                       "session_validation_status": payload.get("session_validation_status") if payload.get("session_validation_status") in {"capture_only", "protocol_identity", "browser_identity"} else "browser_identity"})
     return {"items": items, "total": total}
+
+
+def account_filter_options(column):
+    """Distinct values for a Grok account table column; no credentials."""
+    expressions = {"source": "source", "origin": "json_extract(payload,'$.registration_origin')",
+                   "cli": "COALESCE(json_extract(payload,'$.cli_auth.status'),'missing')"}
+    if column not in expressions:
+        raise ValueError("不支持筛选此列")
+    with closing(connect()) as conn:
+        rows = conn.execute(f"SELECT DISTINCT {expressions[column]} AS value FROM grok_accounts").fetchall()
+    values = sorted({str(row[0]) for row in rows if row[0] not in (None, "")})
+    labels = {"protocol": "协议注册", "browser": "普通浏览器", "manual_capture": "人工抓包导入",
+              "ready": "CLI 已授权", "failed": "CLI 授权失败", "missing": "未授权 CLI"}
+    return {"items": [{"value": value, "label": labels.get(value, value)} for value in values]}
 
 
 def secret(account_id, field):
@@ -282,4 +315,4 @@ def workers(value=None):
             conn.execute("INSERT INTO storage_meta(key,value) VALUES('grok_workers',?) "
                          "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (str(value),))
         row = conn.execute("SELECT value FROM storage_meta WHERE key='grok_workers'").fetchone()
-    return max(1, min(4, int(row[0]))) if row else 1
+    return max(1, min(10, int(row[0]))) if row else 1

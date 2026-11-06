@@ -2,11 +2,13 @@ let jobLogText = '';
 let jobLogGeneration = 0;
 let jobLogPending = null;
 let jobLogJob = null;
+let jobLogKind = 'gpt';
 
 function renderJobLog() {
   const level = $('#jobLogLevel').value || '', phase = $('#jobLogPhase').value || '';
   const query = ($('#jobLogQuery').value || '').trim().toLowerCase();
-  const lines = typeof workspaceLogRecords === 'function' ? workspaceLogRecords(jobLogText)
+  const lines = jobLogKind === 'grok' && typeof grokLogRecords === 'function' ? grokLogRecords(jobLogText)
+    : typeof workspaceLogRecords === 'function' ? workspaceLogRecords(jobLogText)
     : jobLogText.split(/\r?\n/).map(text => ({text, phase:'registration'}));
   const filtered = lines.filter(line => (!level || line.text.includes(`[${level}]`))
     && (!phase || line.phase === phase) && (!query || line.text.toLowerCase().includes(query)));
@@ -17,11 +19,15 @@ function renderJobLog() {
   $('#jobLogMatchCount').textContent = `${filtered.length} / ${lines.length} 行 · 复制/下载保留完整日志`;
 }
 
-function openLog(jobId) {
+function openLog(jobId, kind = 'gpt') {
   activeLogJob = jobId;
+  jobLogKind = kind;
   jobLogGeneration++;
   jobLogText = '';
   jobLogJob = null;
+  // Grok events use service stages, not GPT registration phases. Leaving the
+  // phase selector empty also keeps GPT's first phase group visible, so do not
+  // force a phase value based on the platform.
   for (const id of ['jobLogQuery','jobLogLevel','jobLogPhase']) $('#'+id).value = '';
   $('#jobLogMatchCount').textContent = '';
   $('#logJobId').textContent = jobId;
@@ -41,12 +47,13 @@ async function pollLog() {
   if (activeLogJob == null || jobLogPending === jobLogGeneration) return;
   const jobId = activeLogJob;
   const generation = jobLogGeneration;
+  const kind = jobLogKind;
   jobLogPending = generation;
   try {
-    const r = await api(`/api/jobs/${jobId}/log`);
+    const r = kind === 'grok' ? await api(`/api/grok/jobs/${jobId}`) : await api(`/api/jobs/${jobId}/log`);
     if (activeLogJob !== jobId || jobLogGeneration !== generation) return;
     jobLogText = r.log || '';
-    jobLogJob = r.job || null;
+    jobLogJob = kind === 'grok' ? (r.job || r) : (r.job || null);
     renderJobLog();
     $('#btnCopyJobLog').disabled = !jobLogText;
     $('#btnDownloadJobLog').disabled = !jobLogText;
@@ -70,7 +77,7 @@ $('#btnJobLogVisual').addEventListener('click', () => {
   const id = activeLogJob;
   if (id == null) return;
   closeLogModal();
-  if (typeof openProgressForJob === 'function') openProgressForJob(id, 'gpt');
+  if (typeof openProgressForJob === 'function') openProgressForJob(id, jobLogKind);
   else if (typeof openWorkspaceProgress === 'function') openWorkspaceProgress(id);
 });
 

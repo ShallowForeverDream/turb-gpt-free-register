@@ -28,6 +28,13 @@ class GrokStorageTests(unittest.TestCase):
         self.stack.enter_context(patch.multiple(db, **storage(root)))
         self.stack.enter_context(patch.multiple(service, _PENDING=deque(), _RUNNING={}, _EXECUTOR=None,
                                                _WORKERS=1, _PAUSED=False))
+        # Fixture jobs never leave the process. A real Grok job is refused
+        # before claiming mailboxes unless a residential pool is configured.
+        self._route_original = service._dynamic_pool_route
+        relay = SimpleNamespace(proxy_url='http://127.0.0.1:21483', close=Mock())
+        self._route_patch = patch.object(service, '_dynamic_pool_route', return_value=(relay, 'socks5://***'))
+        self.stack.enter_context(self._route_patch)
+        self.stack.enter_context(patch('core.grok_browser.verify_proxy_transport'))
         self.email = 'fixture@icloud.com'
         db.import_generic_api_emails([{'email': self.email, 'code_url': 'https://icapi.oaibx.com/api?token=private-fixture'}])
         self.item = {'email': self.email, 'source': 'generic_api'}
@@ -220,7 +227,7 @@ class GrokStorageTests(unittest.TestCase):
         def run(record, mailbox, signals, update):
             update('running', 'profile_submit', 'fixture', profile_submitted=True)
             raise TimeoutError('private-password https://private-url/?token=private')
-        with patch('core.grok_protocol.run', side_effect=run): service._run(jid, service.Signals())
+        with patch('core.grok_protocol.run', side_effect=lambda *a, **kw: run(*a[:4])): service._run(jid, service.Signals())
         record = store.job(jid)
         self.assertEqual(record['status'], 'uncertain')
         self.assertNotIn('private-password', json.dumps(record))
@@ -257,8 +264,39 @@ class GrokStorageTests(unittest.TestCase):
         self.assertEqual(store.workers(), 3)
         self.assertEqual(service.state()['workers'], 3)
         self.assertEqual(registration_service.get_executor_workers(), before)
-        for bad in (0, 5, True, '2', 2.5):
+        service.control('configure', 10)
+        self.assertEqual(service.state()['workers'], 10)
+        self.assertEqual(store.workers(), 10)
+        for bad in (0, 11, True, '2', 2.5):
             with self.assertRaises(ValueError): service.control('configure', bad)
+
+    def test_all_configured_worker_slots_can_run_after_immediate_completion(self):
+        from concurrent.futures import wait
+        for index in range(10):
+            db.import_generic_api_emails([{'email': f'worker{index}@icloud.com',
+                                           'code_url': 'https://fixture.test/api'}])
+        release = threading.Event()
+        started = []
+        def quick(record, *_args, **_kwargs):
+            started.append(record['email'])
+            release.wait(2)
+            return {'sso': 'fixture-' + record['email']}
+        service.control('configure', 10)
+        with patch('core.grok_protocol.run', side_effect=quick), patch.object(store, 'save_account'), \
+             patch.object(store, 'update_job'):
+            ids = service.submit([{'email': f'worker{index}@icloud.com', 'source': 'generic_api'}
+                                  for index in range(10)])
+            self.assertEqual(len(ids), 10)
+            future = service._EXECUTOR.submit(lambda: None)
+            wait([future], timeout=3)
+            deadline = __import__('time').monotonic() + 3
+            while len(started) < 10 and __import__('time').monotonic() < deadline:
+                __import__('time').sleep(0.02)
+            release.set()
+        self.assertEqual(len(started), 10)
+        deadline = __import__('time').monotonic() + 3
+        while service.state()['active'] and __import__('time').monotonic() < deadline:
+            __import__('time').sleep(0.02)
 
     def test_protocol_default_does_not_require_browser_and_persists_driver(self):
         executor = Mock()
@@ -274,6 +312,61 @@ class GrokStorageTests(unittest.TestCase):
             json={'authorized':True, 'emails':[self.item], 'driver':'invalid'})
         self.assertEqual(result.status_code, 400)
 
+    def test_protocol_and_browser_share_the_task_fixed_non_loopback_relay(self):
+        from core import proxy_utils
+        bodies, clients, browser_proxies = [], [], []
+        class Relay:
+            proxy_url = 'http://127.0.0.1:18431'
+            def __init__(self, target, upstream, timeout=30):
+                bodies.append((target, upstream))
+            def start(self): return self
+            def close(self): pass
+        def run_protocol(_record, _mailbox, _signals, _update, *, http=None):
+            clients.append(http); return {'sso': 'relay-fixture-sso'}
+        def run_browser(_record, _mailbox, _signals, _update, *, proxy_url=None):
+            browser_proxies.append(proxy_url); return {'sso': 'relay-fixture-sso'}
+        is_loopback = lambda value: value == 'http://127.0.0.1:7890'
+        # setUp stubs the route for unrelated fixture jobs; this test needs
+        # the real selector to prove the loopback pool entry is rejected.
+        self._route_patch.stop()
+        service._dynamic_pool_route = self._route_original
+        self.addCleanup(setattr, service, '_dynamic_pool_route', self._route_original)
+        with patch.object(proxy_utils, 'is_loopback_proxy', side_effect=is_loopback), \
+             patch('core.proxy_chain.ProxyChainRelay', Relay), \
+             patch('core.grok_protocol.run', side_effect=run_protocol), \
+             patch('core.grok_browser.run', side_effect=run_browser), patch.object(store, 'save_account'):
+            with patch('config.proxy.PROXY_POOL', ['http://127.0.0.1:7890', 'socks5://pool.example:1080']), \
+                 patch('config.proxy.PROXY_POOL_UPSTREAM_PROXY', ''), \
+                 patch('config.proxy.PLAN_CHECK_UPSTREAM_PROXY', 'http://127.0.0.1:21483'), \
+                 patch('config.proxy.pick_proxy', return_value='http://127.0.0.1:7890'), \
+                 patch('core.grok_browser.verify_proxy_transport'), \
+                 patch('core.grok_service.authorize_cli'):
+                for driver in ('protocol', 'browser'):
+                    email = f'{driver}@icloud.com'
+                    db.import_generic_api_emails([{'email': email, 'code_url': 'https://fixture.test/api'}])
+                    job = store.create_jobs([{'email': email, 'source': 'generic_api'}])[0]
+                    original_record = store.job(job, private=True)
+                    self.assertEqual(original_record.get('status'), 'pending')
+                    store.update_job(job, 'running', 'queued', 'fixture',
+                                     private={**original_record.get('private', {}), 'driver': driver, 'queued': True})
+                    if driver == 'protocol':
+                        store.update_job(job, 'pending', 'queued', 'fixture')
+                    else:
+                        store.update_job(job, 'pending', 'queued', 'fixture')
+                    service._run(job, service.Signals())
+        self.assertEqual(bodies, [('socks5://pool.example:1080', 'http://127.0.0.1:21483')] * 2)
+        self.assertEqual(len(clients), 1)
+        self.assertFalse(clients[0].trust_env)
+        self.assertEqual(clients[0].proxies, {'http': 'http://127.0.0.1:18431',
+                                              'https': 'http://127.0.0.1:18431'})
+        self.assertEqual(browser_proxies, ['http://127.0.0.1:18431'])
+
+    def test_loopback_only_pool_is_rejected_before_claiming_any_mailbox(self):
+        with patch('config.proxy.PROXY_POOL', ['http://127.0.0.1:7890']), \
+             patch('config.proxy.PROXY_POOL_UPSTREAM_PROXY', ''), \
+             patch('config.proxy.PLAN_CHECK_UPSTREAM_PROXY', 'http://127.0.0.1:21483'):
+            with self.assertRaisesRegex(RuntimeError, '只有本机代理'):
+                service.submit([self.item])
     def test_cli_auth_status_is_listed_and_download_secret_is_explicit(self):
         jid = self.create()
         store.update_job(jid, 'running', 'save', 'fixture', private={'profile_submitted': True})
@@ -297,7 +390,7 @@ class GrokStorageTests(unittest.TestCase):
             return {'sso': 'cli-success-sso', 'sso-rw': 'cli-success-rw'}
         fake = {'status': 'success', 'authorized_at': '2026-11-04T00:00:00Z', 'expires_at': '2026-11-04T06:00:00Z',
                 'auth_json': {'scope': {'key': 'fixture-key'}}}
-        with patch('core.grok_protocol.run', side_effect=run), \
+        with patch('core.grok_protocol.run', side_effect=lambda *a, **kw: run(*a[:4])), \
              patch('core.grok_cli_auth.authorize_account', return_value=fake):
             service._run(jid, service.Signals())
         self.assertEqual(store.job(jid)['status'], 'success')
@@ -310,7 +403,7 @@ class GrokStorageTests(unittest.TestCase):
         def run(record, mailbox, signals, update):
             update('running', 'profile_submit', 'fixture', profile_submitted=True, password_confirmed=True)
             return {'sso': 'cli-failure-sso', 'sso-rw': 'cli-failure-rw'}
-        with patch('core.grok_protocol.run', side_effect=run), \
+        with patch('core.grok_protocol.run', side_effect=lambda *a, **kw: run(*a[:4])), \
              patch('core.grok_cli_auth.authorize_account', side_effect=RuntimeError('fixture cli failure')):
             service._run(jid, service.Signals())
         record = store.job(jid)

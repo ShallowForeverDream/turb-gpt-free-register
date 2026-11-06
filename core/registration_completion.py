@@ -129,12 +129,14 @@ def finish_account(account_id: int, *, session=None) -> dict:
     if fresh.get("live_check_status") == "deactivated":
         outcome["status"] = "deactivated"
     else:
-        if outcome["twofa"] == "success":
+        if register.SET_PASSWORD_AFTER_REGISTRATION and outcome["twofa"] == "success":
             from core.password_setup import set_missing_password
             password_result = set_missing_password(account_id, **plan_session)
             outcome["password"] = (password_result.get("status", "success") if password_result.get("ok")
                                    else "failed")
             fresh = db.get_account(account_id) or fresh
+        else:
+            outcome["password"] = "skipped"
         # Enrollment can invalidate an AT captured during reauthentication.
         # Verify once after activation, without another login or OTP request.
         if did_setup_twofa or outcome.get("password") == "success":

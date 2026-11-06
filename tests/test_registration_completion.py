@@ -209,7 +209,7 @@ class RegistrationCompletionTests(unittest.TestCase):
             result = registration_completion.finish_account(99999)
         plan.assert_not_called()
         twofa.assert_not_called()
-        self.assertEqual(result, {"plan": "skipped", "twofa": "skipped", "status": "success"})
+        self.assertEqual(result, {"plan": "skipped", "twofa": "skipped", "password": "skipped", "status": "success"})
 
     def test_unknown_registration_time_never_uses_local_insert_time(self):
         from core.db import _account_registered_at

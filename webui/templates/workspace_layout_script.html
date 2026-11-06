@@ -110,9 +110,22 @@ function mountWorkspaceLayout() {
     workspaceLogFilters={};workspaceLogPage=1;refreshLogHistory();
     setTimeout(syncLogStatus,0);
   });
+  // Select/type once and filter immediately; no separate "筛选" click.
+  let logFilterTimer=null;
+  const applyLogFilters=()=>{
+    workspaceLogFilters=Object.fromEntries(new FormData(logFilters));
+    workspaceLogPage=1;refreshLogHistory();
+  };
+  logFilters.addEventListener('change',event=>{
+    if(event.target.name==='platform')syncLogStatus();
+    applyLogFilters();
+  });
+  logFilters.querySelector('input[name="q"]')?.addEventListener('input',()=>{
+    clearTimeout(logFilterTimer);logFilterTimer=setTimeout(applyLogFilters,250);
+  });
   document.getElementById('previousLogHistory').addEventListener('click',()=>{if(workspaceLogPage>1){workspaceLogPage--;refreshLogHistory();}});
   document.getElementById('nextLogHistory').addEventListener('click',()=>{if(workspaceLogPage<workspaceLogPages){workspaceLogPage++;refreshLogHistory();}});
-  document.getElementById('workspaceLogRows').addEventListener('click',event=>{const grok=event.target.closest('[data-grok-log]');if(grok){openGrokProgress(Number(grok.dataset.grokLog));return;}const button=event.target.closest('[data-history-log]');if(button)openWorkspaceProgress(Number(button.dataset.historyLog));});
+  document.getElementById('workspaceLogRows').addEventListener('click',event=>{const grok=event.target.closest('[data-grok-log]');const history=event.target.closest('[data-history-log]');const jobKind=history?.dataset.logKind||'gpt';if(grok){openGrokProgress(Number(grok.dataset.grokLog));return;}const button=event.target.closest('[data-history-log]');if(button)openProgressForJob(Number(button.dataset.historyLog),jobKind);});
   const progressDialog=document.getElementById('workspaceProgressDialog');
   for(const button of ['workspaceProgressClose','workspaceProgressDone'])document.getElementById(button).addEventListener('click',()=>progressDialog.close());
   progressDialog.addEventListener('close',()=>{
@@ -121,7 +134,10 @@ function mountWorkspaceLayout() {
     clearInterval(workspaceProgressTimer);workspaceProgressController?.abort();workspaceProgressId=null;workspaceProgressGeneration++;
   });
   document.getElementById('workspaceProgressRawLog').addEventListener('click',()=>{
-    const jobId=workspaceProgressId;progressDialog.close();if(jobId!=null)openLog(jobId);
+    // Grok jobs live in a separate table; retain the platform along with the
+    // id so the raw viewer and its "返回可视化日志" action return to the right view.
+    const jobId=workspaceProgressId,kind=workspaceProgressKind;
+    progressDialog.close();if(jobId!=null)openLog(jobId,kind);
   });
   tasks.addEventListener('toggle',()=>{if(!tasks.open)return;if(workspaceSuffix)enableResizableTableHeaders('.jobs-table-v2','jobs');else enableLegacyResizableHeaders('.jobs-table','jobs');refreshJobs();});
 }
@@ -155,6 +171,7 @@ function workspaceLogRecords(log) {
   return String(log||'').split(/\r?\n/).map(text=>{
     if(/\[Job \d+\] 开始注册任务/.test(text))phase='registration';
     else if(/\[2FA\]|开始设置 2FA|\[收尾\] 开启 2FA|operation=twofa/.test(text))phase='twofa';
+    else if(/\[Grok\]|开始 Grok 注册|动态家宽出口|CLI 设备授权|cli_auth|auth\.json/.test(text))phase='grok';
     else if(/\[密码\]/.test(text))phase='password';
     else if(/\[Codex(?:\]|\[)|\[CODEX\]|operation=codex/.test(text))phase='codex';
     return {text,phase};
@@ -208,11 +225,12 @@ function workspaceProgressModel(log,job={},progress={}) {
   const index=Math.max(0,groups[0].index);
   return {index,status,finished,success,note,groups,current:active.title,thirdParty:/accounts\.google\.com|signin\/identifier/i.test(reg)};
 }
-let workspaceProgressId=null,workspaceProgressTimer=null,workspaceProgressController=null,workspaceProgressFlight=null,workspaceProgressGeneration=0;
+let workspaceProgressId=null,workspaceProgressKind='gpt',workspaceProgressTimer=null,workspaceProgressController=null,workspaceProgressFlight=null,workspaceProgressGeneration=0;
 let workspaceProgressExpanded=new Map();
 function openWorkspaceProgress(jobId) {
   if(!Number.isSafeInteger(jobId)||jobId<1)return;
   const dialog=document.getElementById('workspaceProgressDialog');
+  workspaceProgressKind='gpt';
   workspaceProgressId=jobId;
   workspaceProgressExpanded=new Map();
   workspaceProgressGeneration++;workspaceProgressController?.abort();

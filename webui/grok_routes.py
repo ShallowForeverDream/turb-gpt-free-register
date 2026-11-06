@@ -1,5 +1,8 @@
 """Authenticated Grok API; credentials are read only through explicit secret endpoints."""
 from datetime import date
+import io
+import json
+import zipfile
 
 from flask import Blueprint, jsonify, request
 
@@ -22,13 +25,92 @@ def register_grok_routes(app):
 
     def paging():
         page = max(1, request.args.get("page", 1, type=int))
-        size = max(1, min(100, request.args.get("page_size", 20, type=int)))
+        size = max(1, min(1000, request.args.get("page_size", 20, type=int)))
         query = str(request.args.get("q", "")).strip()[:200]
         return {"query": query, "offset": (page - 1) * size, "limit": size}
 
     @bp.get("/accounts")
     def accounts():
-        return jsonify(ok=True, **store.accounts(**paging()))
+        raw = request.args.get("filters", "")
+        try:
+            filters = json.loads(raw) if raw else {}
+        except (ValueError, TypeError):
+            raise ValueError("筛选条件不是有效 JSON") from None
+        return jsonify(ok=True, **store.accounts(**paging(), filters=filters))
+
+    @bp.get("/accounts/filter-options")
+    def filter_options():
+        return jsonify(ok=True, **store.account_filter_options(request.args.get("column", "")))
+
+    @bp.post("/accounts/bulk-auth")
+    def bulk_auth():
+        """Return selected, explicitly-requested credentials; response is no-store."""
+        data = request.get_json(silent=True) or {}
+        ids = data.get("ids")
+        field = str(data.get("field", ""))
+        if field not in {"email", "auth_json", "sso", "password"}:
+            raise ValueError("不支持的批量导出字段")
+        if not isinstance(ids, list) or not 1 <= len(ids) <= 1000:
+            raise ValueError("请选择1到1000个 Grok 账号")
+        try:
+            ids = list(dict.fromkeys(int(value) for value in ids))
+        except (TypeError, ValueError):
+            raise ValueError("账号 ID 不合法") from None
+        items = []
+        for account_id in ids:
+            row = store.account(account_id)
+            if row is None:
+                continue
+            if field == "email":
+                items.append({"id": account_id, "email": row["email"], "value": row["email"]})
+                continue
+            value = store.secret(account_id, "cli_auth" if field == "auth_json" else field)
+            if field == "auth_json":
+                try:
+                    payload = json.loads(value or "{}")
+                except ValueError:
+                    payload = {}
+                if not isinstance(payload, dict) or not payload:
+                    continue
+                items.append({"id": account_id, "email": row["email"], "value": payload})
+            elif value:
+                items.append({"id": account_id, "email": row["email"], "value": value})
+        return jsonify(ok=True, items=items, total=len(items), missing=len(ids) - len(items))
+
+    @bp.post("/accounts/bulk-auth.zip")
+    def bulk_auth_zip():
+        data = request.get_json(silent=True) or {}
+        ids = data.get("ids")
+        if not isinstance(ids, list) or not 1 <= len(ids) <= 1000:
+            raise ValueError("请选择1到1000个 Grok 账号")
+        try:
+            ids = list(dict.fromkeys(int(value) for value in ids))
+        except (TypeError, ValueError):
+            raise ValueError("账号 ID 不合法") from None
+        archive = io.BytesIO()
+        used, included = set(), 0
+        with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as bundle:
+            for account_id in ids:
+                row = store.account(account_id)
+                value = store.secret(account_id, "cli_auth") if row else None
+                try:
+                    payload = json.loads(value or "{}")
+                except ValueError:
+                    payload = {}
+                if row is None or not isinstance(payload, dict) or not payload:
+                    continue
+                name = row["email"].replace("/", "_").replace("\\", "_")
+                filename, suffix = name, 2
+                while filename in used:
+                    filename = f"{name} ({suffix})"; suffix += 1
+                used.add(filename); included += 1
+                bundle.writestr(f"{filename}/auth.json", json.dumps(payload, ensure_ascii=False, indent=2))
+        if not included:
+            raise ValueError("选中的账号没有可导出的 Grok CLI auth.json")
+        from flask import Response
+        return Response(archive.getvalue(), mimetype="application/zip",
+                        headers={"Content-Disposition": 'attachment; filename="grok-auth-json.zip"',
+                                 "Cache-Control": "no-store", "Pragma": "no-cache"})
 
     @bp.get("/accounts/<int:account_id>/secret")
     def secret(account_id):
@@ -54,7 +136,6 @@ def register_grok_routes(app):
         value = store.secret(account_id, "cli_auth")
         if value is None:
             return jsonify(ok=False, error="Grok 账号不存在"), 404
-        import json
         payload = json.loads(value or "{}")
         if not payload:
             return jsonify(ok=False, error="该账号尚未生成 Grok CLI auth.json"), 404

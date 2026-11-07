@@ -161,16 +161,17 @@ async function grokOpenAccountFilter(button){
     grokCloseAccountFilter();grokAccountPage=1;grokFilterButtonIndicators();loadGrok();
   });
   grokAccountFilterPanel=panel;
+  if(key==='q'){
+    // Email uses free text, so there is no option list to fetch.
+    const query=document.createElement('input');query.type='search';query.placeholder='输入邮箱关键词';query.value=draft.values().next().value||'';
+    query.setAttribute('aria-label','筛选邮箱关键词');query.addEventListener('input',()=>{apply.dataset.grokQuery=query.value;});
+    body.replaceChildren(query);choices=[{value:'__q__',label:'按邮箱关键词筛选'}];apply.dataset.grokQuery=query.value;query.focus();
+    return;
+  }
   try{
     const result=await api('/api/grok/accounts/filter-options?column='+encodeURIComponent(key));
     if(grokAccountFilterPanel!==panel)return;
-    if(key==='q'){
-      const query=document.createElement('input');query.type='search';query.placeholder='输入邮箱关键词';query.value=draft.values().next().value||'';
-      query.setAttribute('aria-label','筛选邮箱关键词');query.addEventListener('input',()=>{apply.dataset.grokQuery=query.value;});
-      body.replaceChildren(query);choices=[{value:'__q__',label:'按邮箱关键词筛选'}];apply.dataset.grokQuery=query.value;query.focus();
-    }else{
-      const labels=grokFilterLabels(key);choices=(result.items||[]).map(item=>({value:item.value,label:labels[item.value]||item.label}));render();
-    }
+    const labels=grokFilterLabels(key);choices=(result.items||[]).map(item=>({value:item.value,label:labels[item.value]||item.label}));render();
   }catch(error){body.textContent='加载失败：'+error.message;}
 }
 document.querySelectorAll('[data-grok-filter-button]').forEach(button=>button.addEventListener('click',event=>{
@@ -184,19 +185,33 @@ function grokMountAccountColumns(){
   const table=document.getElementById('grokAccountsTable');if(!table)return;
   if(table.dataset.grokColumnsReady==='1')return;
   table.dataset.grokColumnsReady='1';
-  const key='resize:grok-accounts-columns-v1';
+  // v2 starts from the 1035px layout. The earlier v1 defaults left the table
+  // wider than its panel, so a saved v1 map would keep that stale overflow.
+  const key='resize:grok-accounts-columns-v2';
   let saved={};try{saved=JSON.parse(localStorage.getItem(key)||'{}')||{};}catch(error){}
   const cols=[...table.querySelectorAll('colgroup col')],headers=[...table.querySelectorAll('thead th')];
-  const apply=()=>cols.forEach((col,index)=>{const width=Number(saved[index]);if(width>=40)col.style.width=width+'px';});
+  // Capture the CSS defaults before any user width is written inline, then
+  // sum the defaults and saved overrides for the table's scrollable floor.
+  const defaults=headers.map(header=>Math.round(header.getBoundingClientRect().width));
+  const defaultTotal=defaults.reduce((sum,width)=>sum+width,0);
+  // A table-layout:fixed table must overflow when a resized column grows.
+  // Otherwise the browser shrinks its neighbours and the saved width appears
+  // to be ignored (the table itself still fits the viewport).
+  // With no user resizing the browser's natural layout is authoritative, so
+  // do not turn the measured header widths into a permanent inline floor.
+  const apply=()=>tableColumnWidths(table,cols,saved,defaultTotal,defaults);
   apply();
+  table.classList.add('grok-columns-ready');
   headers.forEach((header,index)=>{
     const grip=document.createElement('span');grip.className='grok-col-resizer';grip.setAttribute('aria-hidden','true');
     grip.addEventListener('pointerdown',event=>{
       event.preventDefault();event.stopPropagation();
+      const col=cols[index];
       const startX=event.clientX,startWidth=header.getBoundingClientRect().width;
       const move=moveEvent=>{
         const width=Math.max(40,Math.round(startWidth+moveEvent.clientX-startX));
         saved[index]=width;col.style.width=width+'px';header.style.width=width+'px';
+        apply();
       };
       const end=()=>{document.removeEventListener('pointermove',move);document.removeEventListener('pointerup',end);
         try{localStorage.setItem(key,JSON.stringify(saved));}catch(error){}};
@@ -325,3 +340,4 @@ document.getElementById('grokStopActive')?.addEventListener('click',async()=>{tr
 document.getElementById('grokContinue')?.addEventListener('click',async()=>{if(!confirm('确认已在官网人工处理提示，允许当前任务继续？不会自动重发验证码。'))return;try{await grokPost(`/jobs/${grokLogId}/continue`,{confirmed:true});await pollGrokLog();}catch(e){showToast(e.message);}});
 document.getElementById('grokNativeVerify')?.addEventListener('click',async()=>{if(!confirm('允许为当前任务打开仅SDK验证窗口？只完成人机验证，不输入邮箱、不走页面注册、不重发验证码。'))return;try{await grokPost(`/jobs/${grokLogId}/verify-native`,{confirmed:true});await pollGrokLog();}catch(e){showToast(e.message);}});
 setInterval(()=>{if(!document.getElementById('tab-grok')?.classList.contains('hidden')||!document.getElementById('tab-outlook')?.classList.contains('hidden'))loadGrok();},5000);
+

@@ -15,3 +15,26 @@ function tableColumnWidthStorageKey(prefix, key) {
   } catch(error) {}
   return current;
 }
+
+/* Apply saved widths to both <col> and the header cells. The native table
+ * algorithm also reads the cells, so setting only <col> is not enough after
+ * its first layout. min-width keeps table-layout:fixed from shrinking the
+ * resized column back to the viewport width. */
+function tableColumnWidths(table, cols, saved, minimum, defaultWidths) {
+  let total = 0;
+  cols.forEach((col, index) => {
+    const width = Number(saved[index]);
+    const chosen = width >= 40 ? width : Number(defaultWidths && defaultWidths[index]);
+    col.style.width = chosen >= 40 ? chosen + 'px' : '';
+    const cell = table.querySelectorAll('thead th')[index];
+    /* <col> carries both the default and the resized width. Clearing it on a
+     * missing saved entry must also clear the inline <th> so resetting all
+     * resizers returns to the natural layout instead of freezing old cells. */
+    if (cell) cell.style.width = width >= 40 && chosen >= 40 ? chosen + 'px' : '';
+    total += chosen >= 40 ? chosen : 0;
+  });
+  /* The width:100% baseline already exceeds min-width; only raise the floor
+   * when the saved widths really need more room than the default table. */
+  const floor = Math.max(Number(minimum) || 0, total);
+  table.style.setProperty('min-width', floor + 'px', 'important');
+}

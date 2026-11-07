@@ -62,7 +62,6 @@ input#grokAccountQuery{display:block;flex:1 1 auto;width:100%;min-width:0;height
 .grok-accounts-table col:nth-child(2),.grok-accounts-table col:nth-child(3){display:table-column}
 .grok-accounts-table th:nth-child(2),.grok-accounts-table th:nth-child(3),
 .grok-accounts-table td:nth-child(2),.grok-accounts-table td:nth-child(3){display:table-cell}
-.grok-accounts-table{min-width:100%;width:100%}
 .grok-accounts-table .col-select{width:40px;min-width:40px}
 .grok-accounts-table .account-filter-toggle{display:inline-flex;flex:0 0 18px;align-items:center;justify-content:center;width:18px;height:18px;min-width:18px;min-height:18px;padding:0;border:1px solid #cbd5e1;border-radius:3px;background:#fff;color:#64748b;font-size:20px;line-height:16px;cursor:pointer}
 .grok-accounts-table .account-filter-toggle.is-filtered{color:#2563eb;border-color:#93b4f9;background:#eff6ff;font-size:10px}
@@ -78,18 +77,20 @@ input#grokAccountQuery{display:block;flex:1 1 auto;width:100%;min-width:0;height
 .grok-accounts-table th,.grok-accounts-table td{position:relative}
 .grok-col-resizer{position:absolute;top:0;right:0;width:6px;height:100%;cursor:col-resize;user-select:none}
 .grok-col-resizer:hover{background:#bcd4ff}
-.grok-accounts-table .col-cli{width:235px}
-.grok-accounts-table .col-id{width:52px}
-.grok-accounts-table .col-email{width:260px}
-.grok-accounts-table .col-source{width:90px}
-.grok-accounts-table .col-small{width:128px}
-.grok-accounts-table .col-time{width:150px}
-.grok-accounts-table .col-password{width:88px}
-.grok-accounts-table .col-sso{width:106px}
-.grok-accounts-table .col-cli{width:220px;white-space:normal;overflow:visible}
-.grok-accounts-table td.col-cli{padding-right:16px}
-.grok-accounts-table td.col-cli{white-space:normal;overflow:visible}
-.grok-accounts-table{min-width:1270px}
+/* Sizes fit the 1170px panel without horizontal scrolling. The column keeps
+ * account data compact while the CLI actions wrap inside their own cell. */
+.grok-accounts-table{min-width:1035px;width:100%}
+.grok-accounts-table .col-id{width:38px}
+.grok-accounts-table .col-email{width:185px}
+.grok-accounts-table .col-source{width:70px}
+.grok-accounts-table .col-small{width:104px}
+.grok-accounts-table .col-time{width:124px}
+.grok-accounts-table .col-sso{width:78px}
+.grok-accounts-table .col-password{width:78px}
+.grok-accounts-table .col-cli{width:172px;white-space:normal;overflow:visible}
+.grok-accounts-table td.col-cli{padding-right:16px;white-space:normal;overflow:visible}
+.grok-accounts-table .grok-col-resizer{display:none}
+.grok-accounts-table.grok-columns-ready .grok-col-resizer{display:block}
 .grok-accounts-table th.col-cli,.grok-accounts-table td.col-cli{white-space:normal;overflow:visible}
 .grok-accounts-table .account-col-heading{display:inline-flex;align-items:center;gap:4px;white-space:nowrap}
 .grok-filter-v2 .grok-check-status{min-width:150px}
@@ -107,3 +108,4 @@ input#grokAccountQuery{display:block;flex:1 1 auto;width:100%;min-width:0;height
 .grok-cli-note{margin:0;padding:12px 16px;color:#909399;font-size:12px;line-height:1.6;border-top:1px solid #ebeef5}
 .grok-cli-note code{background:#f5f7fa;border:1px solid #ebeef5;border-radius:4px;padding:1px 5px;font-size:11px}
 </style>
+{% include 'account_column_widths.html' %}

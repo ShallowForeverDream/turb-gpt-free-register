@@ -39,6 +39,7 @@ async function loadGrok(){
       // Keep choices across pages; hide nothing when another page differs.
       document.getElementById('grokAccountRows').innerHTML=grokAccountRows.map(r=>`<tr class="${grokAccountPicked.has(r.id)?'grok-selected-row':''}"><td><input type="checkbox" data-grok-select="${r.id}" aria-label="选择 ${esc(r.email)}"${grokAccountPicked.has(r.id)?' checked':''}></td><td>#${esc(r.id)}</td><td><div class="acc-v2-email" title="${esc(r.email)}">${esc(r.email)}</div></td><td title="${esc(r.source)}">${esc(r.source)}</td><td>${esc(grokAccountStatus(r))}</td><td>${esc(r.created_at)}</td><td><button type="button" class="acc-v2-token-copy" data-grok-secret="${r.id}" data-field="sso">复制SSO</button></td><td><button type="button" class="acc-v2-token-copy" data-grok-secret="${r.id}" data-field="sso_rw">复制SSO-RW</button></td><td><button type="button" class="acc-v2-token-copy" data-grok-secret="${r.id}" data-field="password">复制密码</button></td><td class="col-cli">${grokCliCell(r)}</td></tr>`).join('')||'<tr><td colspan="10" style="text-align:center;color:#909399;padding:28px;">暂无已注册的 Grok 账号</td></tr>';
       const count=document.getElementById('grokAccountCount');if(count)count.textContent=`已注册 ${accounts.total}`;
+      showGrokUnresolved(await api('/api/grok/jobs/blocked').catch(()=>({items:[]})));
       const pager=document.getElementById('pager-grok-accounts');
       if(pager)pager.innerHTML=`<button type="button" data-grok-account-page="-1"${grokAccountPage<=1?' disabled':''}>← 上一页</button><span class="pager-info">第 ${grokAccountPage} / ${grokAccountPages} 页 · 共 ${accounts.total} 个</span><button type="button" data-grok-account-page="1"${grokAccountPage>=grokAccountPages?' disabled':''}>下一页 →</button>`;
       syncGrokAccountSelection();
@@ -46,6 +47,26 @@ async function loadGrok(){
   })();try{await grokAccountFlight;}finally{grokAccountFlight=null;}
   if(grokAccountRefreshPending){grokAccountRefreshPending=false;return loadGrok();}
 }
+function showGrokUnresolved(data){
+  const note=document.getElementById('grokUnresolved');if(!note)return;
+  const items=(data.items||[]).filter(item=>item.status==='uncertain');
+  note.hidden=!items.length;
+  note.textContent=items.length
+    ? `有 ${items.length} 个邮箱上次 Grok 运行被中断、结果未确认：${items.map(item=>item.email).join('、')}。不会自动重复注册；确认该邮箱未注册后，可结束旧任务再重新选中启动。`
+    : '';
+  note.title=items.map(item=>`${item.email}（任务 ${item.id}）`).join('\n');
+  if(items.length)note.insertAdjacentHTML('beforeend',' <button type="button" class="jobs-tb-btn" id="grokResolveNext">处理选中邮箱的旧任务</button>');
+}
+document.getElementById('grokUnresolved')?.addEventListener('click',async(event)=>{
+  if(!event.target.closest('#grokResolveNext'))return;
+  grokSetSelectedFromPool();
+  const data=await api('/api/grok/jobs/blocked');
+  const selected=new Set([...grokSelected.values()].map(item=>item.email.toLowerCase()));
+  const item=(data.items||[]).find(row=>selected.has(row.email.toLowerCase()))||(!selected.size?(data.items||[])[0]:null);
+  if(!item){showToast('选中的邮箱没有结果未确认的旧任务');return;}
+  if(!confirm(`确认 ${item.email} 未成功注册 Grok？\n只结束旧任务并保留历史，不自动发码、不自动注册；结束后可重新启动。`))return;
+  try{await grokPost(`/jobs/${item.id}/resolve`,{confirmed:true});showToast('旧任务已结束，可重新启动该邮箱');await loadGrok();}catch(e){showToast(e.message);}
+});
 function grokSetSelectedFromPool(){
   // 邮箱池选择跨页保留；后端仍会校验 GPT/Grok 在途任务和已注册状态。
   grokSelected.clear();
@@ -241,7 +262,7 @@ document.getElementById('grokStart')?.addEventListener('click',async()=>{
   const driver=document.getElementById('grokDriver').value;
   if(!confirm(`确认使用本人拥有或获授权的 ${grokSelected.size} 个邮箱注册Grok？\n${driver==='protocol'?'HTTP执行注册；原生SDK使用普通无窗口运行时。需要人工验证时暂停，不自动开可见窗口。':'将打开普通可见浏览器，人机验证/条款请人工完成。'}\n注册成功后会继续尝试官方 Grok CLI 设备授权。`))return;
   const b=document.getElementById('grokStart');b.disabled=true;
-  try{const r=await grokPost('/jobs',{emails:grokSelectedItems(),authorized:true,driver});grokSelected.clear();showToast(`已建立 ${r.job_ids.length} 项Grok计划`);await loadGrok();}catch(e){showToast('Grok未启动：'+e.message);}finally{b.disabled=false;}
+  try{const r=await grokPost('/jobs',{emails:grokSelectedItems(),authorized:true,driver});grokSelected.clear();showToast(`已建立 ${r.job_ids.length} 项Grok计划`);await loadGrok();}catch(e){showToast('Grok未启动：'+e.message,10000);await loadGrok();}finally{b.disabled=false;}
 });
 document.getElementById('grokAccountRows')?.addEventListener('click',async event=>{
   const secret=event.target.closest('[data-grok-secret]');

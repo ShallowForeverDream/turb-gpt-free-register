@@ -118,6 +118,30 @@ class MailboxTests(unittest.TestCase):
         self.assertNotIn('123456', json.dumps(seen)); self.assertNotIn('A'*43, json.dumps(seen))
         self.assertEqual(grok_mail.extract_code({'code': 1, 'data': {'code': '123456'}}), '')
 
+    def test_pool_lookup_accepts_any_sender_and_returns_candidates(self):
+        cases = {
+            1: ('SteamGuard verification code', 'Your code: A1B2-C3D', 'A1B2-C3D', ['A1B2-C3D']),
+            2: ('GitHub', 'Your verification code is 1234-5678', '1234-5678', ['1234-5678']),
+            3: ('Discord', 'Your code: 98 – 57 – 22 – 01', '98572201', ['98572201']),
+            4: ('Shop', 'Order 998877 shipped. Your code is 445566', '445566', ['445566']),
+            5: ('Some service', '验证码：AB12CD', 'AB12CD', ['AB12CD']),
+        }
+        for mid, (sender, body, code, candidates) in cases.items():
+            with self.subTest(body=body):
+                latest = message(mid, platform='grok', code='', subject=sender)
+                http = Mock()
+                http.get.side_effect = [response({'mailbox': EMAIL, 'messages': [latest]}),
+                                        response({**latest, 'text_body': body})]
+                read = mail.latest_code_any(EMAIL, VIEW, http=http)
+                self.assertEqual(read.code, code)
+                self.assertEqual(read.candidates, candidates)
+
+    def test_pool_lookup_requires_own_mailbox_and_problems_stay_redacted(self):
+        http = Mock(); http.get.return_value = response({'mailbox': 'other@icloud.com', 'messages': []})
+        with self.assertRaises(mail.MailboxError):
+            mail.latest_code_any(EMAIL, VIEW, http=http)
+        http.get.assert_called_once()
+
     def test_generic_polling_has_three_30_second_rounds_with_no_old_api_fallback(self):
         account = generic.GenericApiEmailAccount(EMAIL, VIEW)
         http = Mock()

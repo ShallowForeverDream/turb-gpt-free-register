@@ -208,3 +208,32 @@ def fetch_latest_otp(
     if best_otp:
         return best_otp
     raise MailNestClientError(f"等待 MailNest 验证码超时: {target}; {last_error}")
+
+
+def fetch_latest_otp_any(email: str, after_ts: float | None = None, max_wait: int | None = None,
+                         poll_interval: int | None = None, settle_seconds: int | None = None):
+    """Explicit mailbox lookup: any sender, any code shape."""
+    from core.otp_read import OTPRead
+    from core.otp_utils import extract_otp_any
+
+    target = str(email or "").strip()
+    if not target:
+        raise MailNestClientError("MailNest 取码缺少邮箱地址")
+    mails = _get_mails(target)
+    if not isinstance(mails, list):
+        raise MailNestClientError("MailNest 收件箱响应不是数组")
+    for mail in sorted(mails, key=lambda item: _timestamp(item) or float("-inf"), reverse=True):
+        if not isinstance(mail, dict):
+            continue
+        message_time = _timestamp(mail)
+        if after_ts is not None and message_time is not None and message_time < after_ts - 30:
+            continue
+        read = extract_otp_any(_otp_item(mail))
+        if not read.candidates:
+            direct = str(mail.get("code_match") or "").strip()
+            if direct:
+                read = OTPRead(direct, [direct], subject=read.subject, received_at=message_time)
+        if read.candidates:
+            return OTPRead(read.candidates[0], read.candidates,
+                           subject=read.subject, received_at=message_time)
+    raise MailNestClientError(f"{target} 最近没有可用的验证码邮件")

@@ -702,3 +702,42 @@ def fetch_latest_otp(
         return best_otp
 
     raise CFTempMailError(f"等待 Cloudflare 验证码超时: {target}; {last_error}")
+
+
+def fetch_latest_otp_any(
+    email: str,
+    after_ts: float | None = None,
+    max_wait: int | None = None,
+    poll_interval: int | None = None,
+    settle_seconds: int | None = None,
+):
+    """Explicit mailbox lookup: any sender, any code shape."""
+    from core.otp_read import OTPRead
+    from core.otp_utils import extract_otp_any
+
+    target = str(email or "").strip()
+    account = get_account_context(target) if target else None
+    if account is None or not account.jwt:
+        raise CFTempMailError(f"Cloudflare 邮箱上下文缺失: {target}")
+    after = float(after_ts if after_ts is not None else time.time()) - 30
+    target_lower = target.lower()
+    messages = list_messages(account.jwt)
+    for item in messages:
+        msg_id = _message_id(item)
+        detail = item
+        if msg_id:
+            fetched = get_message_detail(account.jwt, msg_id)
+            if fetched:
+                detail = {**item, **fetched}
+        otp_item = _otp_item(detail)
+        recipients = str(otp_item.get("to") or "").lower()
+        if recipients and target_lower not in recipients:
+            continue
+        ts = _message_timestamp(detail)
+        if ts is not None and ts < after:
+            continue
+        read = extract_otp_any(otp_item)
+        if read.candidates:
+            return OTPRead(read.candidates[0], read.candidates,
+                           subject=read.subject, received_at=ts)
+    raise CFTempMailError(f"{target} 最近没有可用的验证码邮件")

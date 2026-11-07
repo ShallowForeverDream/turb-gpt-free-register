@@ -453,6 +453,36 @@ def fetch_latest_otp(email, after_ts=None, max_wait=None, poll_interval=None, se
     raise SmsBowerMailTimeout("等待 SMSBower Gmail 新验证码超时；未判断账号停用")
 
 
+def fetch_latest_otp_any(email, after_ts=None, max_wait=None, poll_interval=None,
+                         settle_seconds=None, exclude_codes=None):
+    """Explicit mailbox lookup: any code shape SMSBower returns."""
+    from core.otp_read import OTPRead
+    from core.otp_formats import extract_candidates, normalize_otp
+
+    target = str(email or "").strip()
+    account = get_account_context(target) or restore_account_context(target)
+    if not account:
+        raise SmsBowerMailError("SMSBower Gmail 缺少 mailId；不根据邮箱地址重新领取")
+    with account.lock:
+        _require_open(account)
+        payload = _request("getCode", {"mailId": account.mail_id}, timeout=20, account=account)
+    if not _success(payload):
+        if "code has not been received yet" in _error(payload).lower():
+            raise SmsBowerMailTimeout("SMSBower 暂未收到新验证码")
+        _require_success(payload)
+    raw = str(payload.get("code") or "").strip()
+    raw_history = payload.get("all_codes") if isinstance(payload.get("all_codes"), list) else []
+    excluded = set(exclude_codes or [])
+    values = [normalize_otp(raw), *(normalize_otp(value) for value in raw_history[:50])]
+    values.extend(extract_candidates(str(payload.get("text") or ""),
+                                     str(payload.get("body") or ""),
+                                     str(payload.get("subject") or "")))
+    unique = [value for value in dict.fromkeys(values) if value and value not in excluded]
+    if not unique:
+        raise SmsBowerMailTimeout("SMSBower 暂未收到可用验证码")
+    return OTPRead(unique[0], unique, received_at=payload.get("code_time"))
+
+
 def mark_account_created(email):
     account = get_account_context(email) or restore_account_context(email)
     if account:

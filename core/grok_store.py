@@ -76,6 +76,17 @@ def create_jobs(items, *, driver="protocol"):
         for email, source in clean:
             if conn.execute("SELECT 1 FROM grok_accounts WHERE email=?", (email,)).fetchone():
                 raise ValueError("所选邮箱已有 Grok 账号，未重复注册")
+            # The partial unique index also covers uncertain rows. A batch must
+            # still be all-or-nothing, so report the busy mailbox by address
+            # instead of failing the whole submit with the bare index message.
+            active = conn.execute("SELECT id,status,stage,completed_at FROM grok_jobs WHERE email=? "
+                                  "AND status IN ('pending','running','manual_required','uncertain') "
+                                  "ORDER BY id DESC LIMIT 1", (email,)).fetchone()
+            if active:
+                if active["status"] == "uncertain":
+                    raise ValueError(f"{email} 的上一次 Grok 任务结果未确认"
+                                     "（不能自动重放；请在下方确认未注册后，结束旧任务再重试）")
+                raise ValueError(f"{email} 已有在途 Grok 任务，未重复提交")
             # Protect GPT mailbox challenges already in flight.
             if conn.execute("SELECT 1 FROM registration_jobs WHERE email=? COLLATE NOCASE "
                             "AND status IN ('pending','running','stopping')", (email,)).fetchone():
@@ -302,6 +313,36 @@ def cancel_pending(ids=None):
         clause = "" if ids is None else " AND id IN (" + ",".join("?" for _ in ids) + ")"
         return conn.execute("UPDATE grok_jobs SET status='cancelled',stage='cancelled',completed_at=? "
                             "WHERE status='pending'" + clause, [db._now(), *(ids or [])]).rowcount
+
+
+def unresolved():
+    """Emails that the next submit must explain instead of failing opaquely."""
+    with closing(connect()) as conn:
+        rows = conn.execute("SELECT id,email,source,status,stage,created_at,completed_at FROM grok_jobs "
+                            "WHERE status='uncertain' AND EXISTS(SELECT 1 FROM email_pool ep "
+                            "WHERE ep.email=grok_jobs.email COLLATE NOCASE AND ep.archived=0)").fetchall()
+    return {"items": [dict(row) for row in rows]}
+
+
+def resolve_uncertain(job_id):
+    """Explicitly release an interrupted attempt without deleting its history.
+
+    A saved account always wins, so this cannot start a second registration
+    for an email whose earlier attempt actually succeeded.
+    """
+    with db._LOCK, closing(connect()) as conn, conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute("SELECT * FROM grok_jobs WHERE id=?", (job_id,)).fetchone()
+        if not row or row["status"] != "uncertain":
+            raise ValueError("只有结果未确认的 Grok 任务可以结束并重试")
+        if conn.execute("SELECT 1 FROM grok_accounts WHERE email=? COLLATE NOCASE", (row["email"],)).fetchone():
+            raise ValueError("该邮箱已有 Grok 账号，未结束任务或重复注册")
+        events = json.loads(row["events"])
+        events.append({"at": db._now(), "stage": "resolved",
+                       "message": "用户确认该邮箱未成功注册；仅结束旧任务，保留历史，不自动重发或注册"})
+        conn.execute("UPDATE grok_jobs SET status='cancelled',stage='resolved',completed_at=?,events=? WHERE id=?",
+                     (db._now(), json.dumps(events[-150:], ensure_ascii=False), job_id))
+    return {"email": row["email"], "status": "cancelled"}
 
 
 def recover():

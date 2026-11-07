@@ -24,7 +24,7 @@ class PoolEmailOtpTests(unittest.TestCase):
         db.import_imap_emails([{"email": self.email, "password": "imap-password", "server": "imap.example.test"}])
         db.import_generic_api_emails([{"email": self.email, "code_url": "https://mail.example.test/code"}])
         db.claim_next_domain_email(self.email)
-        waiter = patch("core.email_provider.wait_for_otp", return_value="001234")
+        waiter = patch("core.email_provider.read_otp_any", return_value="001234")
         self.wait = waiter.start()
         self.addCleanup(waiter.stop)
 
@@ -40,16 +40,14 @@ class PoolEmailOtpTests(unittest.TestCase):
                 before = time.time()
                 response = self.query(source)
                 self.assertEqual(response.status_code, 200)
-                self.assertEqual(response.get_json(), {"ok": True, "email": self.email, "source": source, "code": "001234"})
+                self.assertEqual(response.get_json(), {"ok": True, "email": self.email, "source": source,
+                                                       "code": "001234", "candidates": ["001234"]})
                 self.assertEqual(response.headers["Cache-Control"], "no-store")
                 self.wait.assert_called_once()
                 args, kwargs = self.wait.call_args
                 self.assertEqual(args, (self.email,))
                 self.assertEqual(kwargs["email_source"], source)
-                self.assertTrue(kwargs["force_service"])
-                self.assertEqual((kwargs["max_wait"], kwargs["poll_interval"], kwargs["settle_seconds"]), (2, 1, 0))
-                self.assertGreaterEqual(kwargs["after_ts"], before - 900)
-                self.assertLessEqual(kwargs["after_ts"], time.time() - 900)
+                self.assertEqual(kwargs["lookback_seconds"], 900)
                 self.assertEqual(db.list_accounts_page()["total"], 0)
 
     def test_read_does_not_claim_or_change_mailbox_status(self):
@@ -112,18 +110,51 @@ class PoolEmailOtpTests(unittest.TestCase):
     def test_account_imap_quota_is_reported_as_terminal(self):
         from core.imap_mail_client import ImapFetchLimitError
         aid = db.insert_account(email=self.email, email_source="imap", access_token="fixture")
-        self.wait.side_effect = ImapFetchLimitError("fetch_headers")
-        response = self.client.get(f"/api/accounts/{aid}/email-otp", headers=self.headers)
+        with patch("core.imap_mail_client.fetch_latest_otp",
+                   side_effect=ImapFetchLimitError("fetch_headers")) as fetch:
+            response = self.client.get(f"/api/accounts/{aid}/email-otp", headers=self.headers)
         self.assertEqual(response.status_code, 429)
         self.assertFalse(response.get_json()["retryable"])
         self.assertEqual(response.get_json()["error_code"], "imap_fetch_quota_exceeded")
-        self.wait.assert_called_once()
+        fetch.assert_called_once()
 
     def test_missing_or_malformed_codes_are_not_returned_as_success(self):
-        for code in (None, "", "12345", "1234567", "abcdef", "１２３４５６"):
+        for code in (None, "", "12345", "1234567", "abcdefg", "１２３４５６"):
             with self.subTest(code=code):
                 self.wait.return_value = code
                 self.assertEqual(self.query().status_code, 404)
+
+    def test_every_code_shape_is_returned_with_candidates(self):
+        from core.otp_read import OTPRead
+        cases = {
+            "123456": ["123456"],
+            "12345678": ["12345678"],
+            "1234-5678": ["1234-5678"],
+            "123-456": ["123-456"],
+            "A1B2C3": ["A1B2C3"],
+            "A1B2-C3D": ["A1B2-C3D"],
+        }
+        for code, candidates in cases.items():
+            with self.subTest(code=code):
+                self.wait.return_value = OTPRead(code, candidates)
+                response = self.query()
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.get_json()["code"], code)
+                self.assertEqual(response.get_json()["candidates"], candidates)
+
+    def test_multiple_candidates_are_deduplicated_and_best_code_first(self):
+        from core.otp_read import OTPRead
+        self.wait.return_value = OTPRead("445566", ["445566", "112233", "445566"])
+        payload = self.query().get_json()
+        self.assertEqual(payload["code"], "445566")
+        self.assertEqual(payload["candidates"], ["445566", "112233"])
+
+    def test_lookup_does_not_widen_the_registration_contract(self):
+        import inspect
+        from core.email_provider import wait_for_otp
+        # The account flows still route through the strict six-digit reader.
+        self.assertIn("fetch_latest_otp", inspect.getsource(wait_for_otp))
+        self.assertNotIn("read_otp_any", inspect.getsource(wait_for_otp))
 
     def test_pool_listing_keeps_mailbox_password_separate_from_gpt_account(self):
         db.insert_account(email=self.email, email_source="outlook", access_token="gpt-at")

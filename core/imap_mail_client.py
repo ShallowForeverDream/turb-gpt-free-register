@@ -707,3 +707,72 @@ def fetch_latest_otp(
         f"等待 {email} 的 OTP 超时（>{max_wait}s）；本地检查 {polls} 次，远端刷新 {remote_scans} 次，"
         f"匹配目标邮件 {matched} 封，验证码候选 {candidates} 个，连接错误 {connection_errors} 次"
     )
+
+
+def fetch_latest_otp_any(
+    email: str,
+    after_ts: float | None = None,
+    max_wait: int | None = None,
+    poll_interval: int | None = None,
+    settle_seconds: int | None = None,
+    exclude_codes: set[str] | None = None,
+):
+    """Explicit mailbox lookup: any sender, any code shape.
+
+    Reads the shared inbox once, reusing the same snapshot cache as the
+    registration path. It never sends mail and never claims a pool account.
+    """
+    from core.otp_read import OTPRead
+    from core.otp_utils import extract_otp_any
+
+    account = get_account_context(email)
+    if account is None:
+        raise ImapMailError(f"邮箱池中找不到 IMAP 账号: {email}")
+    if account.forwarded and not account.password:
+        raise _missing_forwarded_authorization(account)
+    after_ts = float(after_ts or time.time())
+    wait = max(0, min(_OTP_WAIT_SECONDS, int(max_wait if max_wait is not None else _OTP_WAIT_SECONDS)))
+    after_dt = datetime.fromtimestamp(
+        max(after_ts - 30, time.time() - imap_message_cache.TTL_SECONDS), tz=timezone.utc)
+    inbox = None
+    generation = None
+    messages = []
+    with ImapDeadline(wait) as deadline:
+        try:
+            if account.cache_enabled:
+                try:
+                    messages = imap_message_cache.read(account, email, after_ts - 30)
+                except (OSError, ValueError, imap_message_cache.sqlite3.Error):
+                    logger.warning("[IMAP] 本地邮件缓存读取失败，使用共享收件箱缓存")
+            if not messages:
+                inbox, generation = _claim_shared_inbox(account)
+                with _shared_connection(inbox, generation, account, deadline, cached_ok=True,
+                                        cache_after_ts=after_ts) as (mail, state):
+                    messages = [dict(item) for item in state.items.values()]
+                    if mail is not None:
+                        messages = _search_messages(
+                            mail, after_dt, account=account, state=state,
+                            limit=100 if account.forwarded else 20, deadline=deadline,
+                            recipients=set(inbox.targets))
+                        _cache_snapshot(account, state)
+        except ImapDeadlineExpired:
+            messages = []
+        except ImapFetchLimitError:
+            raise
+        finally:
+            deadline.close_socket()
+            if inbox is not None:
+                _release_shared_inbox(inbox, account)
+    messages.sort(key=lambda item: _message_timestamp(item), reverse=True)
+    excluded = set(exclude_codes or ())
+    for item in messages:
+        if not _matches_recipient(item, email, forwarded=account.forwarded):
+            continue
+        if _message_timestamp(item) < after_ts - 30:
+            continue
+        read = extract_otp_any(item)
+        read.candidates = [value for value in read.candidates if value not in excluded]
+        if read.candidates:
+            return OTPRead(read.candidates[0], read.candidates,
+                           subject=read.subject, received_at=read.received_at)
+    raise ImapOtpTimeout(f"{email} 最近没有可用的验证码邮件")

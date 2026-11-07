@@ -3,11 +3,13 @@ import re
 import time
 from email.utils import getaddresses
 from html.parser import HTMLParser
+from dataclasses import dataclass
 from urllib.parse import parse_qs, urlsplit
 
 import requests
 
 from config import email as config
+from core.otp_formats import best_candidate, extract_candidates
 from core.otp_freshness import parse_mail_time
 
 ORIGIN = "https://icapi.oaibx.com"
@@ -80,6 +82,19 @@ def code_from_text(text, platform):
     return ""
 
 
+def any_code_from_text(text):
+    """Any sender's code shape. Only the pool lookup uses this."""
+    return extract_candidates(text)
+
+
+@dataclass
+class MailRead:
+    code: str
+    candidates: list[str]
+    subject: str = ""
+    received_at: object = None
+
+
 class _MailText(HTMLParser):
     def __init__(self):
         super().__init__(); self.parts = []; self.hidden = 0
@@ -91,9 +106,10 @@ class _MailText(HTMLParser):
         if not self.hidden: self.parts.append(text)
 
 
-def latest_code(email, view_url, *, platform, http=None, after_ts=None, exclude_codes=()):
+def latest_code(email, view_url, *, platform=None, http=None, after_ts=None, exclude_codes=(), any_shape=False):
     if platform not in {"gpt", "grok"}:
-        raise ValueError("邮件平台不合法")
+        if not (any_shape and platform is None):
+            raise ValueError("邮件平台不合法")
     token = viewer_token(view_url)
     owned = http is None
     if owned:
@@ -118,7 +134,8 @@ def latest_code(email, view_url, *, platform, http=None, after_ts=None, exclude_
             raise MailboxError("邮件列表结构不合法")
         candidates = []
         for message in messages:
-            if not isinstance(message, dict) or email.lower() not in _addresses(message.get("recipient")) or not _platform(message, platform):
+            if (not isinstance(message, dict) or email.lower() not in _addresses(message.get("recipient"))
+                    or (not any_shape and not _platform(message, platform))):
                 continue
             stamp, _ = parse_mail_time(message.get("received_at"))
             if stamp is None or stamp > time.time() + 300:
@@ -134,7 +151,8 @@ def latest_code(email, view_url, *, platform, http=None, after_ts=None, exclude_
             mid = str(message.get("id") or "")
             if not re.fullmatch(r"[1-9][0-9]{0,19}", mid): raise MailboxError("邮件 ID 不合法，未读取任意地址")
             candidates.append((stamp, int(mid), message))
-        if not candidates: return ""
+        empty = MailRead("", [], "", None)
+        if not candidates: return empty if any_shape else ""
         # Newer mail is not necessarily the OTP: OpenAI sends a separate
         # "New sign-in" notification that can arrive after the code mail and
         # has no code in its subject/body.  Skip only that known notification
@@ -146,27 +164,49 @@ def latest_code(email, view_url, *, platform, http=None, after_ts=None, exclude_
             subject = str(message.get("subject") or "")
             if re.search(r"\b(?:new sign-in|sign-in notification|登录通知|新登录)\b", subject, re.I):
                 continue
-            code = code_from_text(subject, platform)
+            list_candidates = []
+            if any_shape:
+                list_candidates = extract_candidates(subject, " ".join(
+                    value for key, value in message.items()
+                    if key in {"preview", "text", "text_body", "snippet", "body_preview"}
+                    and isinstance(value, str)))
+            code = list_candidates[0] if list_candidates else ("" if any_shape else code_from_text(subject, platform))
+            detail_candidates = []
             if not code:
                 mid = str(message.get("id") or "")
                 if not re.fullmatch(r"[0-9]{1,20}", mid): raise MailboxError("邮件 ID 不合法，未读取任意地址")
                 detail = get("/api/v1/public/messages/" + mid)
-                if str(detail.get("id")) != mid or email.lower() not in _addresses(detail.get("recipient")) or not _platform(detail, platform):
+                if (str(detail.get("id")) != mid or email.lower() not in _addresses(detail.get("recipient"))
+                        or (not any_shape and not _platform(detail, platform))):
                     raise MailboxError("邮件详情归属或平台不匹配，未提取验证码")
-                code = code_from_text(detail.get("subject"), platform) or code_from_text(detail.get("text_body"), platform)
-                if not code:
-                    parser = _MailText(); parser.feed(str(detail.get("sanitized_html") or "")[:262144])
-                    code = code_from_text("\n".join(parser.parts), platform)
+                parser = _MailText(); parser.feed(str(detail.get("sanitized_html") or "")[:262144])
+                if any_shape:
+                    detail_candidates = extract_candidates(
+                        detail.get("subject"), detail.get("text_body"), "\n".join(parser.parts))
+                    code = detail_candidates[0] if detail_candidates else ""
+                else:
+                    code = (code_from_text(detail.get("subject"), platform)
+                            or code_from_text(detail.get("text_body"), platform)
+                            or code_from_text("\n".join(parser.parts), platform))
             if code and code not in excluded:
+                if any_shape:
+                    merged = list(dict.fromkeys([code, *(detail_candidates or list_candidates)]))
+                    return MailRead(code, merged, subject, message.get("received_at"))
                 return code
             # A platform-bound verification/confirmation message with no code
             # is the newest authoritative message; do not fall back to older.
-            if re.search(r"\b(?:verification|confirmation|code|验证码|验证|コード)\b", subject, re.I):
-                return ""
-        return ""
+            if not any_shape and re.search(r"\b(?:verification|confirmation|code|验证码|验证|コード)\b", subject, re.I):
+                return empty if any_shape else ""
+        return empty if any_shape else ""
     except requests.RequestException:
         raise MailboxError("邮件页面网络请求失败；未记录私有链接或请求详情", retryable=True) from None
     except (ValueError, TypeError):
         raise MailboxError("邮件页面取信失败或 JSON 无效；不记录私有链接、Token 或邮件正文") from None
     finally:
         if owned: http.close()
+
+
+def latest_code_any(email, view_url, *, http=None, after_ts=None, exclude_codes=()):
+    """Any sender's code, with every distinct candidate in rank order."""
+    return latest_code(email, view_url, platform=None, http=http, after_ts=after_ts,
+                       exclude_codes=exclude_codes, any_shape=True)

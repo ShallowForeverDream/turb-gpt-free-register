@@ -1999,12 +1999,8 @@ def create_app(auth_code: str | None = None, *, local_no_auth: bool = False) -> 
             return jsonify({"ok": False, "error": "该来源的邮箱池中找不到此邮箱"}), 404
         email = str(mailbox.get("email") or email)
         try:
-            from core.email_provider import wait_for_otp
-            code = str(wait_for_otp(
-                email, after_ts=time.time() - 15 * 60,
-                max_wait=2, poll_interval=1, settle_seconds=0,
-                email_source=source, force_service=True,
-            ) or "").strip()
+            from core.email_provider import read_otp_any
+            read = read_otp_any(email, email_source=source, lookback_seconds=15 * 60)
         except Exception as exc:
             # Mail client errors may contain OAuth responses or credentials.
             logger.warning("[邮箱池] 验证码查询失败 source=%s error_type=%s", source, type(exc).__name__)
@@ -2018,9 +2014,18 @@ def create_app(auth_code: str | None = None, *, local_no_auth: bool = False) -> 
                 return jsonify({"ok": False, "error": "验证码时效无法确认：" + failure_message(exc),
                                 "error_code": "mail_otp_freshness_unverified", "retryable": False}), 409
             return jsonify({"ok": False, "error": "暂未获取到验证码，请确认邮件已到达、邮箱收件配置可用后再试"}), 404
-        if len(code) != 6 or not code.isascii() or not code.isdigit():
+        from core.otp_formats import normalize_otp
+        code = normalize_otp(getattr(read, "code", "") or read)
+        candidates = []
+        for value in [*getattr(read, "candidates", []), code]:
+            value = normalize_otp(value)
+            if value and value not in candidates:
+                candidates.append(value)
+        code = code or (candidates[0] if candidates else "")
+        if not code or not candidates:
             return jsonify({"ok": False, "error": "最近没有找到邮箱验证码"}), 404
-        response = jsonify({"ok": True, "email": email, "source": source, "code": code})
+        response = jsonify({"ok": True, "email": email, "source": source, "code": code,
+                            "candidates": candidates})
         response.headers["Cache-Control"] = "no-store"
         return response
 

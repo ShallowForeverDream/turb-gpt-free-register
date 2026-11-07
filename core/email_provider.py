@@ -17,6 +17,7 @@ EMAIL_SOURCE 支持单个或多个来源：
     ["outlook", "generic_api", "mailnest", "cloudmail", "remail", "smsbower_mail"]  # 也兼容列表写法
 """
 import logging
+import time
 from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Iterable
@@ -333,6 +334,48 @@ def wait_for_otp(
         return fetch_latest_otp(email, after_ts=after_ts, **extra_kwargs)
     from core.outlook_client import fetch_latest_otp
     return fetch_latest_otp(email, after_ts=after_ts, **extra_kwargs)
+
+
+def read_otp_any(email: str, *, email_source: str | None = None, lookback_seconds: int = 900):
+    """Mailbox-button read: best code plus every candidate a sender may use.
+
+    It never sends mail or claims an account. Unknown shapes stay here; the
+    registration/live-check path keeps ``wait_for_otp`` and its 6-digit rule.
+    """
+    from core.otp_read import OTPRead
+
+    source = (_normalize_explicit_email_source(email_source)
+              or _normalize_explicit_email_source(_registered_email_source(email)))
+    if not source:
+        raise ValueError("请选择具体的邮箱来源")
+    after_ts = time.time() - max(60, min(3600, int(lookback_seconds)))
+    if source == "generic_api":
+        from core.generic_api_mail_client import query_latest_otp_any
+        return query_latest_otp_any(email)
+    if source == "imap":
+        from core.imap_mail_client import fetch_latest_otp_any
+        return fetch_latest_otp_any(email, after_ts=after_ts, max_wait=2, poll_interval=1,
+                                    settle_seconds=0)
+    kwargs = {"after_ts": after_ts, "max_wait": 2, "poll_interval": 1, "settle_seconds": 0}
+    if source == "outlook":
+        from core.outlook_client import fetch_latest_otp_any
+        return fetch_latest_otp_any(email, after_ts=after_ts, max_wait=2, poll_interval=1,
+                                    settle_seconds=0)
+    module = {
+        "cloudflare_domain": "core.qqmail_client",
+        "gptmail": "core.gptmail_client",
+        "cloudflare": "core.cf_temp_mail_client",
+        "mailnest": "core.mailnest_client",
+        "cloudmail": "core.cloudmail_client",
+        "remail": "core.remail_client",
+        "smsbower_mail": "core.smsbower_mail_client",
+    }.get(source, "core.outlook_client")
+    import importlib
+    fetch = getattr(importlib.import_module(module), "fetch_latest_otp_any", None)
+    if fetch is None:
+        raise ValueError(f"{source} 暂不支持任意格式验证码查询")
+    value = fetch(email, **kwargs)
+    return value if isinstance(value, OTPRead) else OTPRead(str(value or ""))
 
 
 def email_material_line(email: str, source: str | None = None) -> str:

@@ -722,6 +722,48 @@ def fetch_latest_otp(
     raise RemailError(f"等待 Remail 验证码超时: {target}; {last_error}")
 
 
+def fetch_latest_otp_any(email: str, after_ts: float | None = None, max_wait: int | None = None,
+                         poll_interval: int | None = None, settle_seconds: int | None = None):
+    """Explicit mailbox lookup: any sender, any code shape."""
+    from core.otp_read import OTPRead
+    from core.otp_utils import extract_otp_any
+
+    target = str(email or "").strip()
+    if not target:
+        raise RemailError("Remail 取码缺少邮箱地址")
+    account = get_account_context(target) or restore_account_context(target)
+    if account is None:
+        raise RemailError("Remail 找不到该邮箱的 service token，且无法从已保存订单恢复")
+    payload = _request("GET", "/v1/pickup",
+                       params={"email": target, "token": account.service_token},
+                       authenticated=False)
+    items = _pickup_items(payload)
+    items.sort(key=lambda item: _parse_timestamp(
+        _first_value(item, "receivedAt", "received_at", "date", "time", "created_at")
+    ) or float("-inf"), reverse=True)
+    for message in items:
+        ts = _parse_timestamp(_first_value(
+            message, "receivedAt", "received_at", "date", "time", "created_at"))
+        if after_ts is not None and ts is not None and ts < after_ts - 30:
+            continue
+        body = str(_first_value(message, "bodyPreview", "body_preview", "body", "text", "content")
+                   or "")
+        read = extract_otp_any({
+            "from": str(_first_value(message, "sender", "from", "fromEmail") or ""),
+            "subject": str(message.get("subject") or ""),
+            "text": body,
+            "content": body,
+        })
+        direct = _first_value(message, "verificationCode", "verification_code", "code", "otp")
+        if direct is not None and str(direct).strip():
+            read = OTPRead(str(direct).strip(), [str(direct).strip(), *read.candidates],
+                           subject=read.subject)
+        if read.candidates:
+            return OTPRead(read.candidates[0], read.candidates,
+                           subject=read.subject, received_at=ts)
+    raise RemailError(f"{target} 最近没有可用的验证码邮件")
+
+
 def list_projects(*, search: str | None = None, product_type: str | None = "microsoft") -> list[dict]:
     """查询当前 API Key 可见项目，供配置/诊断使用。"""
     params = {"offset": 0, "limit": 100}

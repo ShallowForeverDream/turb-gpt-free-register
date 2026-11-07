@@ -9,6 +9,9 @@ OTP 检测与抽取通用工具，被 outlook_client（Outlook 邮箱）使用�
 """
 import re
 
+from core.otp_formats import extract_candidates, normalize_otp
+from core.otp_read import OTPRead
+
 _OPENAI_SENDER_HINT = "openai"
 
 # 多语言关键字（用于判断是否是 OpenAI 邮件）
@@ -126,3 +129,38 @@ def extract_otp(item: dict) -> str | None:
                 return code
         return all_codes[0]
     return None
+
+
+def extract_otp_any(item: dict):
+    """Any sender's code for an explicit mailbox lookup.
+
+    Account flows keep ``extract_otp`` and its six-digit rule. This variant
+    reports the best code plus every distinct candidate in the mail.
+    """
+    subject = _get_field(item, "subject")
+    return _otp_read_from_message(
+        _message_parts(item),
+        item.get("date") or item.get("receivedDateTime") or item.get("received_at"),
+    )
+
+
+def _message_parts(item: dict) -> list[tuple[str, str]]:
+    subject = _get_field(item, "subject")
+    first = [("subject", subject)] if subject else []
+    body = [("text", str(item.get(key) or "")) for key in
+            ("text", "bodyPreview", "bodyText", "preview", "snippet")]
+    html = [("content", str(item.get(key) or "")) for key in
+            ("content", "html", "body", "body.content", "bodyHtml")]
+    # A code in the subject is the strongest signal, but every body field is
+    # still offered as a candidate.
+    direct = [(key, str(item.get(key) or "")) for key in
+              ("verificationCode", "verification_code", "code", "otp")]
+    return [*first, *body, *html, *direct]
+
+
+def _otp_read_from_message(parts: list[tuple[str, str]], received_at=None) -> OTPRead:
+    subject = next((value for key, value in parts if key == "subject"), "")
+    values = extract_candidates(*(value for _key, value in parts))
+    item = parts[-1][1] if parts and parts[-1][0] in {"code", "otp"} else ""
+    return OTPRead(values[0] if values else normalize_otp(item), values, subject=subject,
+                   received_at=received_at)

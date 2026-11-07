@@ -383,3 +383,38 @@ def fetch_latest_otp(
         f"等待 {email} 的 OTP 超时（>{max_wait or _email_cfg.OTP_MAX_WAIT}s）。"
         f"可能：QQ 邮箱 IMAP 配置有误 / Cloudflare 转发未生效 / OpenAI 邮件未到达。"
     )
+
+
+def fetch_latest_otp_any(
+    email: str,
+    after_ts: float | None = None,
+    max_wait: int | None = None,
+    poll_interval: int | None = None,
+    settle_seconds: int | None = None,
+):
+    """Explicit mailbox lookup for domain mail: any sender, any code shape."""
+    from core.otp_read import OTPRead
+    from core.otp_utils import extract_otp_any
+
+    after_ts = float(after_ts or time.time())
+    after_dt = datetime.fromtimestamp(after_ts - 30, tz=timezone.utc)
+    target_lower = email.lower()
+    mail = None
+    try:
+        mail = _connect_imap()
+        messages = _search_messages(mail, after_dt=after_dt)
+    finally:
+        if mail:
+            try:
+                mail.logout()
+            except Exception:
+                pass
+    messages.sort(key=lambda item: item.get("date") or "", reverse=True)
+    for item in messages:
+        if target_lower not in str(item.get("to") or "").lower():
+            continue
+        read = extract_otp_any(item)
+        if read.candidates:
+            return OTPRead(read.candidates[0], read.candidates,
+                           subject=read.subject, received_at=read.received_at)
+    raise QQMailClientError(f"{email} 最近没有可用的验证码邮件")

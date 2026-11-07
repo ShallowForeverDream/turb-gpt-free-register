@@ -97,6 +97,52 @@ class GrokStorageTests(unittest.TestCase):
         store.update_job(jid, 'uncertain', 'submit', 'fixture')
         with self.assertRaises(ValueError): self.create()
 
+    def test_busy_batch_names_the_mailbox_and_writes_nothing(self):
+        jid = self.create()
+        store.update_job(jid, 'uncertain', 'interrupted', 'fixture')
+        db.import_generic_api_emails([{'email': 'free@icloud.com', 'code_url': 'https://fixture.test/api'}])
+        with self.assertRaises(ValueError) as caught:
+            store.create_jobs([{'email': 'free@icloud.com', 'source': 'generic_api'}, self.item])
+        self.assertIn(self.email, str(caught.exception))
+        self.assertIn('结果未确认', str(caught.exception))
+        with closing(store.connect()) as conn:
+            self.assertEqual(conn.execute('SELECT COUNT(*) FROM grok_jobs').fetchone()[0], 1)
+
+    def test_unresolved_job_releases_only_after_an_explicit_terminal_state(self):
+        jid = self.create()
+        store.update_job(jid, 'uncertain', 'interrupted', 'fixture')
+        with self.assertRaises(ValueError): self.create()
+        # No automatic replay: a user must resolve the old row first.
+        self.assertEqual(store.job(jid)['status'], 'uncertain')
+        self.assertEqual([row['email'] for row in store.unresolved()['items']], [self.email])
+
+    def test_explicit_resolution_preserves_history_and_allows_a_new_job(self):
+        jid = self.create()
+        store.update_job(jid, 'running', 'profile_submit', 'fixture', private={'profile_submitted': True})
+        store.update_job(jid, 'uncertain', 'interrupted', 'fixture')
+        self.assertEqual(store.resolve_uncertain(jid)['status'], 'cancelled')
+        old = store.job(jid)
+        self.assertEqual(old['stage'], 'resolved')
+        self.assertIn('不自动重发或注册', old['events'][-1]['message'])
+        self.assertNotEqual(self.create(), jid)
+
+    def test_resolution_requires_uncertain_status_and_no_saved_account(self):
+        jid = self.create()
+        with self.assertRaises(ValueError): store.resolve_uncertain(jid)
+        store.update_job(jid, 'uncertain', 'interrupted', 'fixture')
+        with closing(store.connect()) as conn, conn:
+            conn.execute("INSERT INTO grok_accounts(email,source,created_at,payload,sso_digest) VALUES(?,?,?,?,?)",
+                         (self.email, 'generic_api', 'fixture', '{}', 'fixture-digest'))
+        with self.assertRaisesRegex(ValueError, '已有 Grok 账号'): store.resolve_uncertain(jid)
+        self.assertEqual(store.job(jid)['status'], 'uncertain')
+
+    def test_unresolved_notice_skips_mailboxes_already_removed_from_the_pool(self):
+        jid = self.create()
+        store.update_job(jid, 'uncertain', 'interrupted', 'fixture')
+        with closing(store.connect()) as conn, conn:
+            conn.execute("UPDATE email_pool SET archived=1 WHERE email=?", (self.email,))
+        self.assertEqual(store.unresolved()['items'], [])
+
     def test_atomic_batch_rolls_back_if_one_mailbox_is_busy(self):
         self.create()
         db.import_generic_api_emails([{'email': 'second@icloud.com', 'code_url': 'https://fixture.test/api'}])

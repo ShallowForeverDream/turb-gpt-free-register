@@ -226,6 +226,17 @@ def register_grok_routes(app):
             raise ValueError("日志起始日期不能晚于结束日期")
         return jsonify(ok=True, queue=service.state(), **store.jobs(status=status, **dates, **paging()))
 
+    @bp.get("/jobs/blocked")
+    def blocked_jobs():
+        """Mailboxes whose previous attempt never reached a confirmed result."""
+        return jsonify(ok=True, **store.unresolved())
+
+    @bp.post("/jobs/<int:job_id>/resolve")
+    def resolve_job(job_id):
+        if (request.get_json() or {}).get("confirmed") is not True:
+            raise ValueError("请确认该邮箱未成功注册 Grok；只结束旧任务，不自动注册或发码")
+        return jsonify(ok=True, **store.resolve_uncertain(job_id))
+
     @bp.get("/jobs/<int:job_id>")
     def job(job_id):
         record = store.job(job_id)

@@ -24,6 +24,21 @@ table .pool-otp-code, table .pool-otp-code:hover {
 }
 table .pool-otp-code:hover { color: #4b70ec; }
 .pool-otp-placeholder { color: #bdc6d4; }
+.pool-otp-extra { position: relative; }
+.pool-otp-extra > summary {
+  display: inline-flex; align-items: center; justify-content: center; min-width: 26px; height: 22px;
+  padding: 0 6px; border-radius: 7px; background: #f3f6ff; color: #5675e8;
+  font-size: 12px; font-weight: 650; cursor: pointer; list-style: none;
+}
+.pool-otp-extra > summary::-webkit-details-marker { display: none; }
+.pool-otp-extra > summary:hover { background: #e5edff; }
+.pool-otp-menu {
+  position: absolute; z-index: 40; top: calc(100% + 6px); left: 0; min-width: 120px;
+  padding: 6px; border: 1px solid #dde4f2; border-radius: 10px; background: #fff;
+  box-shadow: 0 10px 26px rgba(22, 34, 66, .14); display: grid; gap: 2px;
+}
+.pool-otp-menu .pool-otp-code { padding: 6px 8px; border-radius: 7px; text-align: left; }
+.pool-otp-menu .pool-otp-code:hover { background: #f0f4ff; }
 .pool-email-address:focus-visible, .pool-otp-code:focus-visible, .pool-otp-button:focus-visible { outline: 2px solid #99afff; outline-offset: 3px; }
 @keyframes pool-otp-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .pool-otp-button.is-loading svg { animation: none; } }

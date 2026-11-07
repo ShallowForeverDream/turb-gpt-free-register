@@ -25,12 +25,14 @@ from urllib.parse import quote, unquote, urlparse, urlunparse
 import requests
 from core.mail_traffic import track_mail_session
 from core.import_formats import normalize_generic_api_url
-from core.icapi_mailbox import is_viewer_url, latest_code as _mailbox_latest_code, MailboxError
+from core.icapi_mailbox import (is_viewer_url, latest_code as _mailbox_latest_code,
+                                latest_code_any as _mailbox_latest_code_any, MailboxError)
 from core.otp_freshness import (MailBaseline, OtpFreshnessError, new_mail_baseline,
                                 new_code_candidates, verify_mail_freshness, parse_mail_time)
 
 from config import email as _email_cfg
 from core.otp_utils import extract_otp
+from core.otp_formats import extract_candidates, normalize_otp
 
 logger = logging.getLogger(__name__)
 
@@ -112,6 +114,12 @@ def uses_smsbower_signature_polling(email: str) -> bool:
 
 def query_latest_otp(email: str) -> str:
     """Explicit UI query: one read of existing ICAPI/signature data, never a send."""
+    return query_latest_otp_any(email).code
+
+
+def query_latest_otp_any(email: str):
+    """Explicit UI query returning the best code and every distinct candidate."""
+    from core.otp_read import OTPRead
     from core import db
     row = db.get_generic_api_email_by_email(email)
     if not row or not row.get("code_url"):
@@ -119,13 +127,16 @@ def query_latest_otp(email: str) -> str:
     url = row["code_url"]
     if is_viewer_url(url):
         try:
-            return _mailbox_latest_code(email, url, platform="gpt")
+            return _mailbox_latest_code_any(email, url)
         except MailboxError as exc:
             raise GenericApiMailError(str(exc)) from None
     icapi = is_direct_icapi_url(url)
     signature = is_smsbower_signature_url(url)
     if not icapi and not signature:
-        return fetch_latest_otp(email, after_ts=time.time()-900, max_wait=2, poll_interval=1, settle_seconds=0)
+        if _public_inbox_page_api_url(url) or _parse_yangyang_code_url(url):
+            return _read_page_candidates(email, url)
+        return OTPRead(fetch_latest_otp(email, after_ts=time.time()-900, max_wait=2,
+                                        poll_interval=1, settle_seconds=0))
     http = _new_http_session(str(getattr(_email_cfg, "GENERIC_API_PROXY", "") or "").strip())
     try:
         response = http.get(url, headers={"Accept": "application/json", "Cache-Control": "no-cache"},
@@ -137,14 +148,86 @@ def query_latest_otp(email: str) -> str:
         if not (type(status) is int and status == 1 or type(status) is str and status == "1"):
             raise GenericApiMailError("取码 API 暂无可用验证码")
         data = payload.get("data") if icapi else payload
-        code = str(data.get("code") or "").strip() if isinstance(data, dict) else ""
-        if not re.fullmatch(r"[0-9]{6}", code):
-            raise GenericApiMailError("取码 API 暂无有效的六位验证码")
-        return code
+        if not isinstance(data, dict):
+            raise GenericApiMailError("取码 API 暂无可用验证码")
+        raw_codes = [data.get(key) for key in _CODE_FIELD_KEYS if data.get(key) not in (None, "")]
+        history = data.get("all_codes") if isinstance(data.get("all_codes"), list) else []
+        values = [normalize_otp(value) for value in [*raw_codes, *history[:50]]]
+        values.extend(extract_candidates(*(data.get(key) for key in _MAIL_BODY_KEYS
+                                          if isinstance(data.get(key), str))))
+        unique = list(dict.fromkeys(value for value in values if value))
+        if not unique:
+            raise GenericApiMailError("取码 API 暂无有效验证码")
+        code = normalize_otp(raw_codes[0]) if raw_codes else ""
+        if not is_direct_icapi_url(url):
+            # A generic JSON endpoint may answer with only a bare code string.
+            unique.extend(value for value in extract_candidates(response.text)
+                          if value not in unique)
+            code = code or unique[0]
+        return OTPRead(code or unique[0], unique,
+                       received_at=data.get("code_time") or data.get("time") or data.get("date"),
+                       subject=str(data.get("subject") or ""))
     except (requests.RequestException, ValueError):
         raise GenericApiMailError("取码 API 请求失败或响应无效；未重试，不记录地址及响应") from None
     finally:
         http.close()
+
+
+def _read_page_candidates(email: str, url: str):
+    """One read of a public inbox / message page, returning every candidate."""
+    from core.otp_read import OTPRead
+
+    headers = {"Accept": "application/json,text/plain,*/*",
+               "User-Agent": "Mozilla/5.0 (compatible; gpt-register/1.0)",
+               "Cache-Control": "no-cache"}
+    if is_direct_icapi_url(url):
+        headers = {"Accept": "application/json", "Cache-Control": "no-cache"}
+    proxy = str(getattr(_email_cfg, "GENERIC_API_PROXY", "") or "").strip()
+    session = _new_http_session(proxy)
+    try:
+        page_result, _yy_result, resp, text = _fetch_poll_payload(
+            proxy_url=proxy, poll_url=url, email=email, headers=headers,
+            after_ts=None, is_yangyang=_parse_yangyang_code_url(url) is not None,
+            public_inbox_api_url=_public_inbox_page_api_url(url))
+        if page_result:
+            code, meta = page_result
+            return OTPRead(code, [code, *extract_candidates(meta.get("subject"), meta.get("preview"))],
+                           subject=str(meta.get("subject") or ""),
+                           received_at=meta.get("received_at"))
+        if resp is None:
+            raise GenericApiMailError("邮件页面/接口尚未返回可用验证码邮件")
+        if resp.status_code != 200:
+            raise GenericApiMailError(f"取码接口返回 HTTP {resp.status_code}，未重试")
+        try:
+            payload = json.loads(text)
+        except (ValueError, TypeError):
+            payload = None
+        if isinstance(payload, dict):
+            mailbox = payload.get("mailbox") or payload.get("email") or ""
+            if isinstance(mailbox, dict):
+                mailbox = mailbox.get("address") or ""
+            if mailbox and str(mailbox).strip().lower() != email.lower():
+                raise GenericApiMailError("取码接口返回的邮箱与当前邮箱不一致")
+            data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+            values = extract_candidates(*(data.get(key) for key in _MAIL_BODY_KEYS
+                                          if isinstance(data.get(key), str)))
+            values.extend(normalize_otp(data.get(key)) for key in _CODE_FIELD_KEYS)
+            unique = list(dict.fromkeys(value for value in values if value))
+            if unique:
+                return OTPRead(unique[0], unique,
+                               received_at=data.get("code_time") or data.get("time")
+                               or data.get("date") or data.get("received_at"),
+                               subject=str(data.get("subject") or ""))
+        values = extract_candidates(text)
+        if values:
+            return OTPRead(values[0], values)
+        raise GenericApiMailError("取码接口尚未返回可用验证码")
+    except MailboxError as exc:
+        raise GenericApiMailError(str(exc)) from None
+    except requests.RequestException as exc:
+        raise GenericApiMailError(f"取码接口请求失败（{type(exc).__name__}；不记录私有地址）") from None
+    finally:
+        session.close()
 
 
 def _signature_binding(account) -> str:

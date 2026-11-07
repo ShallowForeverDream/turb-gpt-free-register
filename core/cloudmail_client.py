@@ -421,3 +421,31 @@ def fetch_latest_otp(
     if best_otp:
         return best_otp
     raise CloudMailError(f"等待 CloudMail 验证码超时: {target}; {last_error}")
+
+
+def fetch_latest_otp_any(email: str, after_ts: float | None = None, max_wait: int | None = None,
+                         poll_interval: int | None = None, settle_seconds: int | None = None):
+    """Explicit mailbox lookup: any sender, any code shape."""
+    from core.otp_read import OTPRead
+    from core.otp_utils import extract_otp_any
+
+    target = str(email or "").strip()
+    if not target:
+        raise CloudMailError("CloudMail 取码缺少邮箱地址")
+    mails = _request("/api/public/emailList", {
+        "toEmail": target, "timeSort": "desc", "type": 0, "isDel": 0, "num": 1, "size": 20,
+    })
+    if not isinstance(mails, list):
+        raise CloudMailError("CloudMail 邮件查询响应 data 不是数组")
+    for mail in sorted(mails, key=lambda item: _parse_time((item or {}).get("createTime"))
+                       or float("-inf"), reverse=True):
+        if not isinstance(mail, dict):
+            continue
+        ts = _parse_time(mail.get("createTime"))
+        if after_ts is not None and ts is not None and ts < after_ts - 30:
+            continue
+        read = extract_otp_any(_otp_item(mail))
+        if read.candidates:
+            return OTPRead(read.candidates[0], read.candidates,
+                           subject=read.subject, received_at=ts)
+    raise CloudMailError(f"{target} 最近没有可用的验证码邮件")

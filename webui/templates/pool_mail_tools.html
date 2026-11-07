@@ -26,13 +26,21 @@ function poolEmailOtpCell(row) {
     cached = null;
   }
   const code = cached?.code;
+  const candidates = cached?.candidates || (code ? [code] : []);
   const label = loading ? '正在查询邮箱验证码' : code ? '刷新验证码' : '查询邮箱验证码';
   const icon = loading
     ? '<circle cx="12" cy="12" r="8" opacity=".2"/><path d="M12 4a8 8 0 0 1 8 8"/>'
     : code
       ? '<path d="M20 7v5h-5M4 17v-5h5"/><path d="M6.1 6.1A8 8 0 0 1 19.4 9M4.6 15a8 8 0 0 0 13.3 2.9"/>'
       : '<rect x="3" y="5" width="18" height="14" rx="3"/><path d="m4 7 8 6 8-6"/>';
-  return `<div class="pool-email-otp-actions">${code ? `<button type="button" class="pool-otp-code" data-copy-id="${copyId(code)}" aria-label="复制验证码" title="查询于 ${esc(cached.at)}；点击复制验证码">${esc(code)}</button>` : '<span class="pool-otp-placeholder">—</span>'}<button type="button" class="pool-otp-button${loading ? ' is-loading' : ''}" data-pool-email-otp data-email="${esc(row.email)}" data-source="${esc(row.source)}" aria-label="${label}" aria-busy="${loading}" title="${label}（只查收，不发送新验证码）"${loading ? ' disabled' : ''}><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">${icon}</svg></button></div>`;
+  const others = candidates.slice(1);
+  const winner = code
+    ? `<button type="button" class="pool-otp-code" data-copy-id="${copyId(code)}" aria-label="复制验证码" title="查询于 ${esc(cached.at)}；点击复制验证码">${esc(code)}</button>`
+    : '<span class="pool-otp-placeholder">—</span>';
+  const extra = others.length
+    ? `<details class="pool-otp-extra"><summary title="本封邮件里的其它验证码候选">+${others.length}</summary><div class="pool-otp-menu">${others.map(value => `<button type="button" class="pool-otp-code" data-copy-id="${copyId(value)}" title="点击复制该验证码">${esc(value)}</button>`).join('')}</div></details>`
+    : '';
+  return `<div class="pool-email-otp-actions">${winner}${extra}<button type="button" class="pool-otp-button${loading ? ' is-loading' : ''}" data-pool-email-otp data-email="${esc(row.email)}" data-source="${esc(row.source)}" aria-label="${label}" aria-busy="${loading}" title="${label}（只查收，不发送新验证码）"${loading ? ' disabled' : ''}><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">${icon}</svg></button></div>`;
 }
 async function queryPoolEmailOtp(email, source) {
   const key = poolMailKey(email, source);
@@ -43,8 +51,11 @@ async function queryPoolEmailOtp(email, source) {
   try {
     const result = await api(`/api/outlook/email-otp?email=${encodeURIComponent(email)}&source=${encodeURIComponent(source)}`);
     if (!result.code) { showToast('最近没有找到邮箱验证码'); return; }
-    POOL_EMAIL_OTP_CACHE.set(key, {code: String(result.code), fetchedAt: Date.now(), at: new Date().toLocaleString()});
-    showToast('已获取邮箱验证码，点击验证码即可复制');
+    const candidates = Array.isArray(result.candidates) && result.candidates.length
+      ? result.candidates.map(String).filter(Boolean)
+      : [String(result.code)];
+    POOL_EMAIL_OTP_CACHE.set(key, {code: String(result.code), candidates, fetchedAt: Date.now(), at: new Date().toLocaleString()});
+    showToast(candidates.length > 1 ? `已获取 ${candidates.length} 个验证码候选，点击验证码即可复制` : '已获取邮箱验证码，点击验证码即可复制');
   } catch (err) {
     showToast('获取邮箱验证码失败：' + err.message);
   } finally {

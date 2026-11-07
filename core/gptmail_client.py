@@ -203,3 +203,40 @@ def fetch_latest_otp(
     if best_otp:
         return best_otp
     raise GPTMailError(f"等待 GPTMail 验证码超时: {target}; {last_error}")
+
+
+def fetch_latest_otp_any(email: str, after_ts: float | None = None, max_wait: int | None = None,
+                         poll_interval: int | None = None, settle_seconds: int | None = None):
+    """Explicit mailbox lookup: any sender, any code shape."""
+    from core.otp_read import OTPRead
+    from core.otp_utils import extract_otp_any
+
+    target = str(email or "").strip()
+    if not target:
+        raise GPTMailError("GPTMail 取码缺少邮箱地址")
+    data = _get("/api/emails", params={"email": target})
+    emails = data.get("emails")
+    if not isinstance(emails, list):
+        raise GPTMailError("GPTMail 收件箱响应缺少 emails 数组")
+    best = None
+    for summary in sorted(emails, key=lambda item: _timestamp(item) or float("-inf"), reverse=True):
+        if not isinstance(summary, dict):
+            continue
+        message_time = _timestamp(summary)
+        if after_ts is not None and message_time is not None and message_time < after_ts - 30:
+            continue
+        message_id = str(summary.get("id") or "").strip()
+        if not message_id:
+            continue
+        read = extract_otp_any(_otp_item(_get(f"/api/email/{message_id}")))
+        if not read.code:
+            read = extract_otp_any(_otp_item(summary))
+        if not read.candidates:
+            continue
+        read.received_at = message_time
+        best = read
+        break
+    if best is None:
+        raise GPTMailError(f"{target} 最近没有可用的验证码邮件")
+    return OTPRead(best.candidates[0], best.candidates, subject=best.subject,
+                   received_at=best.received_at)

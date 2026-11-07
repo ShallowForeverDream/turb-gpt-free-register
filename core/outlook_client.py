@@ -1127,6 +1127,43 @@ def fetch_latest_otp(
     )
 
 
+def fetch_latest_otp_any(email: str, after_ts: float | None = None, max_wait: int | None = None,
+                         poll_interval: int | None = None, settle_seconds: int | None = None):
+    """Explicit mailbox lookup: any sender, any code shape, candidates included."""
+    from core.otp_read import OTPRead
+    from core.otp_utils import extract_otp_any
+    account = get_account_context(email)
+    if account is None:
+        raise OutlookClientError(f"未找到 {email} 的账号上下文，无法取 OTP")
+    deadline = time.time() + (max_wait or _email_cfg.OTP_MAX_WAIT)
+    interval = poll_interval or _email_cfg.OTP_POLL_INTERVAL
+    session = _http_session()
+    best = None
+    try:
+        while time.time() < deadline:
+            items = []
+            for protocol in ("graph", "imap"):
+                for item in _fetch_via(session, protocol, account):
+                    items.append((_parse_email_ts(item) or 0.0, item))
+            items.sort(key=lambda pair: pair[0], reverse=True)
+            for ts, item in items:
+                if after_ts is not None and not _is_after(item, after_ts):
+                    continue
+                read = extract_otp_any(item)
+                if not read.code:
+                    continue
+                best = read
+                break
+            if best is not None:
+                return best
+            time.sleep(interval)
+    finally:
+        session.close()
+    if best is not None:
+        return best
+    raise OutlookClientError(f"{email} 最近没有可用的验证码邮件")
+
+
 # 时差容忍：只保留极小容忍。
 # 重发 OTP 时上一封旧码常常只早 10~20 秒；若容忍 30 秒，会把上一轮旧码误判为新码。
 _OTP_CLOCK_SKEW_TOLERANCE = 2

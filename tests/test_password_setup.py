@@ -453,11 +453,13 @@ class PasswordSetupTests(unittest.TestCase):
     def test_failed_twofa_never_starts_password_and_failed_password_is_partial(self):
         row=db.get_account(self.aid);row['totp_secret']='';db._save_accounts([row])
         with patch('config.register.AUTO_PLAN_CHECK_AFTER_REGISTER',False),patch('config.twofa.ENABLE_2FA',True), \
+             patch('config.register.SET_PASSWORD_AFTER_REGISTRATION',True), \
              patch('core.twofa_service.enqueue_account_totp_setup',return_value={'ok':False}), \
              patch.object(pw,'set_missing_password') as password:
             self.assertEqual(completion.finish_account(self.aid)['status'],'partial');password.assert_not_called()
         row['totp_secret']='JBSWY3DPEHPK3PXP';db._save_accounts([row])
         with patch('config.register.AUTO_PLAN_CHECK_AFTER_REGISTER',False),patch('config.twofa.ENABLE_2FA',True), \
+             patch('config.register.SET_PASSWORD_AFTER_REGISTRATION',False), \
              patch.object(pw,'set_missing_password',return_value={'ok':False,'status':'failed'}):
             result=completion.finish_account(self.aid)
         self.assertEqual((result['twofa'],result['password']),('success','skipped'))

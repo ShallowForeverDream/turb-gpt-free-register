@@ -9,6 +9,24 @@ from webui.app import create_app
 
 
 class LiveCheckBlockedStatusTests(unittest.TestCase):
+    def test_password_downgrade_reports_action_required_without_waiting_for_otp(self):
+        session = object()
+        with patch.object(liveness, "_reset_reauth_validate_result"), \
+             patch.object(liveness, "_trigger_reauth_with_retry", return_value="https://auth.openai.com/authorize"), \
+             patch.object(liveness, "_follow_reauth_with_retry", return_value="https://auth.openai.com/log-in/password"), \
+             patch.object(liveness, "initialize_passwordless_login_otp", return_value=False), \
+             patch.object(liveness, "_raise_password_downgrade",
+                          side_effect=liveness.PasswordLoginRequiredError("password page")) as downgrade, \
+             patch.object(liveness, "_validate_reauth_with_retry") as validate:
+            with self.assertRaises(liveness.PasswordLoginRequiredError):
+                liveness._login_via_reauth(session, "test@example.test", 123.0)
+        downgrade.assert_called_once()
+        validate.assert_not_called()
+
+    def test_password_downgrade_is_not_a_retryable_network_error(self):
+        self.assertFalse(liveness._is_retryable_network_error(
+            liveness.PasswordLoginRequiredError("密码登录页；连接不会发送验证码")))
+
     def test_otp_workspace_result_does_not_fetch_session_or_repeat_otp(self):
         with patch.object(liveness, "_validate_with_retry", return_value={
             "page": {"type": "workspace"},

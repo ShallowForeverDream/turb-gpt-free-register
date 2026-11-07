@@ -165,6 +165,10 @@ def accounts(*, query="", offset=0, limit=20, filters=None):
         where.append("instr(lower(email),lower(?))>0"); params.append(str(query)[:200])
     for column in ("source", "origin", "cli"):
         values = filters.get(column)
+        # The UI sends {"cli": {"values": [...]}} so that older saved filter
+        # maps stay readable; accept the bare list as well.
+        if isinstance(values, dict):
+            values = values.get("values")
         values = [str(v)[:80] for v in values] if isinstance(values, list) else []
         if not values:
             continue

@@ -73,6 +73,10 @@ class WorkspaceSelectionRequiredError(RuntimeError):
         super().__init__(f"认证已进入工作区选择页面，但{reason}；OAuth 回调尚未完成，未获取 AT。请在账号页的“登录工作区”中选择后重新查活。")
 
 
+class PasswordLoginRequiredError(RuntimeError):
+    """Server downgraded a passwordless reauth to the password page."""
+
+
 def _requires_workspace_selection(url: str) -> bool:
     parsed = urlsplit(str(url or ""))
     return parsed.hostname in (None, "auth.openai.com") and parsed.path.rstrip("/") == "/workspace"
@@ -99,6 +103,9 @@ _SESSION_FINGERPRINT_KEYS = {
 
 
 def _is_retryable_network_error(exc: BaseException) -> bool:
+    if isinstance(exc, PasswordLoginRequiredError):
+        # A downgraded password page is a service decision, not transport noise.
+        return False
     if isinstance(exc, ImapOtpTimeout):
         # The three-round mail budget is handled by the OTP loop; never start
         # another authentication flow just because those rounds were exhausted.
@@ -694,6 +701,39 @@ def _validate_reauth_with_retry(
     raise last_exc if last_exc else RuntimeError("重认证 OTP 验证失败")
 
 
+def _raise_password_downgrade(session: BrowserSession, email: str) -> None:
+    """Fail fast when no code will ever arrive.
+
+    ``/log-in/password`` has no pending email-OTP send, so the 3 x 30s mailbox
+    read cannot succeed.  Report the real cause and whether the stored token
+    is still usable, instead of waiting and calling it a mail timeout.
+    """
+    access_token = _stored_access_token(email)
+    usable = False
+    if access_token:
+        try:
+            from core.chatgpt_bootstrap import _API_BASE
+            headers = session.get_chatgpt_headers(referer="https://chatgpt.com/")
+            headers["authorization"] = (
+                access_token if access_token.lower().startswith("bearer ") else f"Bearer {access_token}")
+            response = session.get(f"{_API_BASE}/me", headers=headers)
+            payload = response.json() if int(getattr(response, "status_code", 0) or 0) == 200 else {}
+            payload = payload if isinstance(payload, dict) else {}
+            usable = (bool(payload.get("id"))
+                      and str(payload.get("email") or "").strip().lower() == email.strip().lower())
+        except Exception:
+            usable = False
+    if usable:
+        logger.warning("[查活] 重认证被降级为密码登录页，不会发送邮箱验证码；已保存的 accessToken 仍有效")
+        raise PasswordLoginRequiredError(
+            "服务端把免密重认证改成了密码登录页，该页不会发送邮箱验证码；"
+            "本地已有 accessToken 仍有效，但未能重新签发。请人工登录一次或提供密码后再查活")
+    logger.warning("[查活] 重认证被降级为密码登录页，不会发送邮箱验证码；已保存的 accessToken 也已失效")
+    raise PasswordLoginRequiredError(
+        "服务端把免密重认证改成了密码登录页，该页不会发送邮箱验证码；"
+        "本地 accessToken 已失效，无法只靠邮箱验证码完成查活。请人工登录一次或提供密码")
+
+
 def _login_via_reauth(
     session: BrowserSession,
     email: str,
@@ -724,6 +764,11 @@ def _login_via_reauth(
                 page_ready_at = float(session._registration_otp_ready_at)
                 otp_after_ts = page_ready_at
                 logger.info("[查活] 邮箱验证页已完成首次发码，开始收码；不调用重发接口")
+            elif final_path == "/log-in/password":
+                # The server downgraded passwordless reauth to its password
+                # page: the document has no pending send, so no mail will
+                # arrive and waiting 3 x 30s can never succeed.
+                _raise_password_downgrade(session, email)
             else:
                 otp_after_ts = page_ready_at
                 logger.info("[查活] 邮箱验证页已就绪，直接等待页面触发的验证码；不重复调用发送接口")
@@ -1224,6 +1269,11 @@ def check_account_liveness(
         logger.warning("[查活] 停止：%s", exc)
         return {"ok": False, "status": "blocked", "checked_at": checked_at,
                 "stage": "login_preflight", "error_code": f"http_{exc.status_code}",
+                "error": str(exc)}
+    except PasswordLoginRequiredError as exc:
+        logger.warning("[查活] 等待人工处理：%s", exc)
+        return {"ok": False, "status": "action_required", "checked_at": checked_at,
+                "stage": "reauth_password_downgrade", "error_code": "password_login_required",
                 "error": str(exc)}
     except AccountUnusableError as exc:
         code = getattr(exc, "error_code", "") or detect_account_unusable_text(str(exc)) or "account_deactivated"

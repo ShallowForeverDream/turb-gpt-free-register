@@ -25,16 +25,22 @@ function tableColumnWidths(table, cols, saved, minimum, defaultWidths) {
   cols.forEach((col, index) => {
     const width = Number(saved[index]);
     const chosen = width >= 40 ? width : Number(defaultWidths && defaultWidths[index]);
-    col.style.width = chosen >= 40 ? chosen + 'px' : '';
+    // The stylesheet is authoritative until this column is resized. Applying
+    // measured widths also as inline styles makes the table lose its flexible
+    // width: the sum of integer measurements is wider than the panel.
+    col.style.width = width >= 40 ? width + 'px' : '';
     const cell = table.querySelectorAll('thead th')[index];
     /* <col> carries both the default and the resized width. Clearing it on a
      * missing saved entry must also clear the inline <th> so resetting all
      * resizers returns to the natural layout instead of freezing old cells. */
-    if (cell) cell.style.width = width >= 40 && chosen >= 40 ? chosen + 'px' : '';
+    if (cell) cell.style.width = width >= 40 ? width + 'px' : '';
     total += chosen >= 40 ? chosen : 0;
   });
-  /* The width:100% baseline already exceeds min-width; only raise the floor
-   * when the saved widths really need more room than the default table. */
-  const floor = Math.max(Number(minimum) || 0, total);
-  table.style.setProperty('min-width', floor + 'px', 'important');
+  if (Object.values(saved).some(width => Number(width) >= 40)) {
+    /* Only a user-resized table needs a scroll floor; default sizing continues
+     * to flex with the panel instead of freezing at a rounded measured sum. */
+    table.style.setProperty('min-width', Math.max(Number(minimum) || 0, total) + 'px', 'important');
+  } else {
+    table.style.removeProperty('min-width');
+  }
 }

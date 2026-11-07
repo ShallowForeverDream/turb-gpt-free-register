@@ -70,6 +70,21 @@ class GrokStorageTests(unittest.TestCase):
         self.assertEqual(store.jobs()['total'], 1)
         self.assertNotIn('private-fixture', json.dumps(store.jobs()))
 
+    def test_account_column_filters_accept_the_ui_value_wrapper(self):
+        self.complete()
+        db.import_generic_api_emails([
+            {'email': 'second@icloud.com', 'code_url': 'https://icapi.oaibx.com/api?token=private-two'}])
+        second = store.create_jobs([{'email': 'second@icloud.com', 'source': 'generic_api'}])[0]
+        store.update_job(second, 'running', 'profile_submit', 'fixture',
+                         private={'profile_submitted': True, 'password_confirmed': True})
+        store.save_account(second, {'sso': 'second-sso', 'sso-rw': 'second-rw'})
+        store.update_job(second, 'success', 'complete', 'fixture')
+        wrapped = {'cli': {'values': ['missing']}}
+        self.assertEqual(store.accounts(filters=wrapped)['total'], 2)
+        self.assertEqual(store.accounts(filters={'cli': ['missing']})['total'], 2)
+        self.assertEqual(store.accounts(filters={'source': {'values': ['generic_api']}})['total'], 2)
+        self.assertEqual(store.accounts(filters={'origin': {'values': ['manual_capture']}})['total'], 0)
+
     def test_password_candidate_has_all_basic_character_classes(self):
         value = store.job(self.create(), private=True)['private']['password']
         self.assertGreaterEqual(len(value), 24)

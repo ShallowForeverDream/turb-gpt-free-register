@@ -1,5 +1,6 @@
 const GROK_LABELS={unregistered:'未注册',registered:'已注册',pending:'待启动',running:'运行中',manual_required:'等待人工处理',uncertain:'结果未确认',success:'成功',failed:'失败',blocked:'受阻',cancelled:'已取消',already_registered:'已有账号（未保存凭据）'};
 const grokSelected=new Map();let grokAccountPage=1,grokAccountPages=1,grokAccountFlight=null,grokLogId=null,grokLogTimer=null,grokLogText='',grokGeneration=0,grokWorkersLoaded=false;
+let grokAccountRefreshPending=false;
 const grokAccountPicked=new Set();let grokAccountRows=[];
 const GROK_ACCOUNT_FILTERS={};
 let grokAccountFilterPanel=null,grokAccountFilterAnchor=null;
@@ -15,7 +16,9 @@ function grokCliCell(row){
   return `<div class="grok-cli-actions${state==='ready'?' ready':''}">${buttons.join('')}<span class="grok-cli-state ${esc(state)}" title="${esc(row.cli_auth_error||'')}">${esc(label)}</span></div>`;
 }
 async function loadGrok(){
-  if(grokAccountFlight)return grokAccountFlight;
+  // A filter change during an in-flight page load must not be dropped: the
+  // older response would render rows that no longer match the new filter.
+  if(grokAccountFlight){grokAccountRefreshPending=true;return grokAccountFlight;}
   grokAccountFlight=(async()=>{
     try{
       const aq=(GROK_ACCOUNT_FILTERS.q?.values?.[0]??document.getElementById('grokAccountQuery')?.value??'').trim();
@@ -41,6 +44,7 @@ async function loadGrok(){
       syncGrokAccountSelection();
     }catch(e){const queueState=document.getElementById('grokQueueState');if(queueState)queueState.textContent='加载失败：'+e.message;}
   })();try{await grokAccountFlight;}finally{grokAccountFlight=null;}
+  if(grokAccountRefreshPending){grokAccountRefreshPending=false;return loadGrok();}
 }
 function grokSetSelectedFromPool(){
   // 邮箱池选择跨页保留；后端仍会校验 GPT/Grok 在途任务和已注册状态。

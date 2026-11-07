@@ -11,7 +11,9 @@ _EXECUTOR = None
 _PENDING = deque()
 _RUNNING = {}
 _PAUSED = False
-_WORKERS = 1
+# Concurrent Grok registrations (1-10). Each task owns its own dynamic exit,
+# SDK context and mailbox, so the default matches the GPT registration pool.
+_WORKERS = 10
 _ACTIVE_BROWSER_TARGETS: set[str] = set()
 
 
@@ -389,3 +391,8 @@ def initialize():
         store.recover()
         if not _RUNNING and not _PENDING:
             _WORKERS = store.workers()
+            # Older builds persisted 1; an untouched queue now follows the
+            # concurrency default instead of staying permanently serial.
+            if _WORKERS == 1:
+                _WORKERS = 10
+                store.workers(_WORKERS)

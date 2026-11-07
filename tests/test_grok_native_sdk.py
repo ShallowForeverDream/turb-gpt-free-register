@@ -57,16 +57,17 @@ class NativeSDKTests(unittest.TestCase):
         with self.assertRaises(protocol.GrokProtocolError) as error:sdk._stop()
         self.assertEqual(error.exception.reason,'sdk_isolation')
 
-    def test_normal_runtime_is_headless_sandboxed_and_not_stealth(self):
+    def test_normal_runtime_uses_direct_chrome_cdp_without_automation_marker(self):
         sdk=self.make();sdk.playwright=Mock();sdk.binary='/fixture/chrome.exe'
-        page=sdk.playwright.chromium.launch.return_value.new_context.return_value.new_page.return_value
+        browser=Mock()
+        page=browser.new_context.return_value.new_page.return_value
         response=SimpleNamespace(status=200)
         page.goto.return_value=response;page.url='https://grok.com/'
         page.locator.return_value.all_text_contents.return_value=[json.dumps({'CASTLE_PK':KEY})]
-        with patch.object(native,'site_key',return_value=SITE),patch.object(sdk,'_sync'),patch.object(sdk,'_load_script'),patch.object(sdk,'_wait_for_security_context'):
+        with patch.object(native,'site_key',return_value=SITE),patch.object(sdk,'_sync'),patch.object(sdk,'_load_script'),patch.object(sdk,'_wait_for_security_context'),patch.object(sdk,'_launch_chrome_cdp',return_value=(browser, Mock())) as launch:
             sdk._open()
-        sdk.playwright.chromium.launch.assert_called_once_with(headless=True,executable_path='/fixture/chrome.exe',chromium_sandbox=True)
-        sdk.browser.new_context.assert_called_once_with()
+        launch.assert_called_once_with(None)
+        browser.new_context.assert_called_once_with()
         self.assertFalse(sdk.interactive_window)
         page.route.assert_called_once()
 
@@ -110,7 +111,7 @@ class NativeSDKTests(unittest.TestCase):
     def test_missing_sign_up_entry_is_never_forged_or_faked(self):
         sdk=self.make();sdk.page=Mock();sdk.primed_navigation=False
         entry=sdk.page.locator.return_value;entry.count.return_value=0
-        with patch.object(native.time,'monotonic',side_effect=[0,11]):
+        with patch.object(native.time,'monotonic',side_effect=[0,21]):
             with self.assertRaises(protocol.GrokProtocolError) as error:sdk._open_sign_up_component()
         self.assertEqual(error.exception.reason,'sdk_page')
         entry.click.assert_not_called()

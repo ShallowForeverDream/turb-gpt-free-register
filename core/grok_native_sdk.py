@@ -89,6 +89,7 @@ class NativeSDK:
     def __init__(self, http, signals, update):
         self.http, self.signals, self.update = http, signals, update
         self.playwright = self.browser = self.context = self.page = None
+        self._cdp_process = None
         self.binary = None
         self.pk = self.sitekey = None
         self.responses = []
@@ -170,7 +171,17 @@ class NativeSDK:
         proxy = browser_proxy(self.http)
         if proxy:
             options["proxy"] = proxy
-        self.browser = self.playwright.chromium.launch(**options)
+        if not headless:
+            # A verification window deliberately uses the real installed
+            # Chrome.  The headless runtime below is a separate sandbox so the
+            # HTTP client never reuses an interactive profile or its cookies.
+            self.browser = self.playwright.chromium.launch(**options)
+        else:
+            # Some launchers set navigator.webdriver even when launching a
+            # local Chrome binary.  Start that binary directly and attach over
+            # CDP, exactly like the visible driver, so the SDK runtime has a
+            # real Chrome UA and webdriver=false without stealth patches.
+            self.browser, self._cdp_process = self._launch_chrome_cdp(proxy)
         self.context = self.browser.new_context(**({"storage_state": storage} if storage else {}))
         self.page = self.context.new_page()
         self.page.route("**/api/auth/**", self._route)
@@ -191,8 +202,8 @@ class NativeSDK:
         if self.document_status is None:
             self.document_status=response.status
             self.document_path='/'
-        self.page.wait_for_timeout(3500)
-        self._wait_for_security_context()
+        self.page.wait_for_timeout(8000)
+        self._wait_for_security_context(timeout=90)
         self._stop()
         self.phase='sdk_public_key'
         self.pk = public_key(self.page.locator("script:not([src])").all_text_contents())
@@ -210,13 +221,47 @@ class NativeSDK:
         self._sync()
         self.update("running", "native_sdk", "原生SDK已在普通无窗口上下文就绪；保留真实运行时信号，业务认证请求已隔离", native_sdk_ready=True)
 
+
+    def _launch_chrome_cdp(self, proxy):
+        import socket
+        import subprocess
+        import tempfile
+        import urllib.request
+        from pathlib import Path as _Path
+        port_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            port_sock.bind(("127.0.0.1", 0))
+            port = port_sock.getsockname()[1]
+        finally:
+            port_sock.close()
+        profile = tempfile.mkdtemp(prefix="grok-sdk-")
+        args = [self.binary, f"--remote-debugging-port={port}", f"--user-data-dir={profile}",
+                "--headless=new", "--no-first-run", "--no-default-browser-check",
+                "--disable-features=Translate", "--disable-blink-features=AutomationControlled"]
+        if proxy:
+            server = f"{proxy.get('server','')}"
+            args.append("--proxy-server=" + str(server))
+            args.append("--proxy-bypass-list=<-loopback>")
+        args.append("about:blank")
+        process = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline:
+            try:
+                with urllib.request.urlopen(f"http://127.0.0.1:{port}/json/version", timeout=1) as response:
+                    if response.status == 200:
+                        return (self.playwright.chromium.connect_over_cdp(f"http://127.0.0.1:{port}"), process)
+            except Exception:
+                time.sleep(0.25)
+        process.terminate()
+        raise GrokProtocolError("原生SDK浏览器运行时未就绪，未回退直连", reason="sdk_unavailable")
+
     def _site_configuration(self):
         self.phase='sdk_verification_configuration'
         sources, size, index = [], 0, 0
         inline = self.page.locator('script:not([src])').all_text_contents()
         if isinstance(inline, list):
             sources.extend(inline)
-        deadline=time.monotonic()+15
+        deadline=time.monotonic()+30
         primed=False
         while True:
             self._stop()
@@ -242,7 +287,7 @@ class NativeSDK:
                 primed=True
             self.page.wait_for_timeout(250)
 
-    def _wait_for_security_context(self, timeout=45):
+    def _wait_for_security_context(self, timeout=90):
         """Wait for the genuine anonymous nonce/clearance issued by grok.com."""
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
@@ -472,7 +517,7 @@ class NativeSDK:
         "Open the in-page sign-up component once; never navigate off grok.com."
         self._stop()
         entry = self.page.locator('a[href^="/sign-up"]')
-        deadline = time.monotonic() + 10
+        deadline = time.monotonic() + 20
         while time.monotonic() < deadline:
             self._stop()
             if entry.count() == 1 and entry.is_visible():
@@ -501,6 +546,14 @@ class NativeSDK:
                 except Exception:
                     pass  # Already-closed runtime must not discard a confirmed SSO.
         finally:
+            process = getattr(self, '_cdp_process', None)
+            self._cdp_process = None
+            if process is not None:
+                try:
+                    process.terminate()
+                    process.wait(timeout=5)
+                except Exception:
+                    pass
             self.browser = self.context = self.page = None
             self.pk = self.sitekey = None
             self.cookie_snapshot = ()

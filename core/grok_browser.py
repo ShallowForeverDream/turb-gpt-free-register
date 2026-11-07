@@ -34,6 +34,9 @@ NATIVE_AUTH_PATHS = {
 }
 NATIVE_HOSTS = {"grok.com", "www.grok.com"}
 OTP_READ_INTERVAL = 30
+PAGE_LOAD_TIMEOUT_MS = 90000
+INITIAL_SETTLE_MS = 8000
+SUBMIT_WAIT_SECONDS = 90
 
 
 class GrokBrowserError(RuntimeError):
@@ -78,7 +81,13 @@ def launch_ordinary_browser(proxy_url=None):
     port = _free_port()
     profile = tempfile.mkdtemp(prefix="grok-browser-")
     args = [binary, f"--remote-debugging-port={port}", f"--user-data-dir={profile}",
-            "--no-first-run", "--no-default-browser-check", "--disable-features=Translate",
+            "--no-first-run", "--no-default-browser-check",
+            "--disable-features=Translate,AsyncDns",
+            # Verification widgets must not be able to open a direct
+            # QUIC/WebRTC path around the task's fixed dynamic residential
+            # exit. These are privacy/transport settings, not stealth patches.
+            "--disable-quic",
+            "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
             # Attaching over CDP makes Playwright add --enable-automation to
             # its usual launched child. Starting Chrome ourselves does not,
             # but this switch also keeps navigator.webdriver=false when a CDP
@@ -185,7 +194,12 @@ def submit_form(page, input_node, *, before_click=None):
         return False
     if before_click is not None:
         before_click()
-    ready[0].click(timeout=5000)
+    try:
+        ready[0].click(timeout=5000)
+    except Exception:
+        # A click can race a rerender after the button was located. The
+        # caller already recorded uncertainty; never retry a mutation.
+        return False
     return True
 
 
@@ -295,6 +309,41 @@ def verify_proxy_transport(proxy_url):
         raise GrokBrowserError("动态家宽出口预检未通过，未打开注册页", reason="proxy_unavailable") from None
 
 
+
+def _wait_profile_challenge(page, signals, update, timeout=SUBMIT_WAIT_SECONDS):
+    """Wait for the profile page's Turnstile token without clicking/submitting."""
+    deadline = time.monotonic() + timeout
+    announced = False
+    while time.monotonic() < deadline:
+        if signals.stop.is_set():
+            raise GrokBrowserError("用户已停止本邮箱任务", reason="user_stop")
+        if page.is_closed():
+            raise GrokBrowserError("注册浏览器已关闭", reason="browser_closed")
+        try:
+            state = page.evaluate("""() => {
+                const input = document.querySelector('input[name="cf-turnstile-response"]');
+                const frame = document.querySelector('iframe[src*="challenges.cloudflare.com"], iframe[title*="challenge" i]');
+                return {token: input ? String(input.value || '') : '', frame: !!frame};
+            }""")
+        except Exception:
+            page.wait_for_timeout(500)
+            continue
+        if not isinstance(state, dict):
+            state = {}
+        if state.get("token"):
+            return True
+        if not state.get("frame"):
+            # No visible Turnstile widget: the normal submit button is the
+            # only path this page exposes.
+            return True
+        if not announced:
+            update("running", "profile", "人机验证组件正在初始化；等待其自动通过后再提交一次，不重复点击")
+            announced = True
+        page.wait_for_timeout(1000)
+    update("manual_required", "profile", "人机验证组件未在等待时间内通过；请在当前浏览器完成验证后继续")
+    return False
+
+
 def run(record, mailbox, signals, update, *, proxy_url=None):
     from playwright.sync_api import sync_playwright
     launch_options = require_browser()
@@ -373,8 +422,22 @@ def run(record, mailbox, signals, update, *, proxy_url=None):
                         update("running", "profile_submit", "检测到人工提交建号；尚未确认密码内容，不记录为已知密码", profile_submitted=True, password_confirmed=False)
                 page.on("request", observe_request)
                 update("running", "open", "已打开独立的普通浏览器；人机验证请在浏览器中人工完成")
-                page.goto(SIGNUP_URL, wait_until="load", timeout=45000)
+                try:
+                    page.goto(SIGNUP_URL, wait_until="domcontentloaded", timeout=PAGE_LOAD_TIMEOUT_MS)
+                except Exception:
+                    # Slow residential exits can miss the navigation deadline
+                    # while the document is already usable. Continue only when
+                    # the page really is the Grok origin; never retry goto.
+                    if urlsplit(page.url).hostname not in ALLOWED_HOSTS:
+                        raise
+                    update("running", "open", "页面脚本仍在初始化；继续等待页面就绪")
+                try:
+                    page.wait_for_load_state("load", timeout=60000)
+                except Exception:
+                    pass
+                page.wait_for_timeout(INITIAL_SETTLE_MS)
                 deadline = time.monotonic() + 600
+                profile_submit_since = None
                 while time.monotonic() < deadline:
                     if signals.stop.is_set():
                         raise GrokBrowserError("用户已停止本邮箱任务", reason="user_stop")
@@ -459,7 +522,11 @@ def run(record, mailbox, signals, update, *, proxy_url=None):
                         update("running", "continued", "已收到人工继续确认；不重发验证码，验证页就绪后再等待30秒读取API")
                     if urlsplit(page.url).hostname not in ALLOWED_HOSTS:
                         raise GrokBrowserError("进入第三方页面，已停止且未提交后续信息", reason="third_party")
-                    text = page.locator("body").inner_text(timeout=3000)[:30000]
+                    try:
+                        text = page.locator("body").inner_text(timeout=5000)[:30000]
+                    except Exception:
+                        page.wait_for_timeout(500)
+                        continue
                     if re.search(r"existing account found|account already exists|邮箱已注册|账号已存在", text, re.I):
                         update("already_registered", "existing", "官网提示已有 Grok 账号；未将本次候选保存为密码")
                         return None
@@ -506,6 +573,37 @@ def run(record, mailbox, signals, update, *, proxy_url=None):
                                     page.remove_listener("request", capture_session_cookie)
                                 except Exception:
                                     pass
+                        # CDP-attached Chrome stores authenticated cookies in
+                        # the browser root store; Playwright's fresh context
+                        # can report an empty cookie list even though the page
+                        # is logged in. Read only same-origin sso/sso-rw over
+                        # CDP, then bind them to the session above.
+                        try:
+                            cdp = context.new_cdp_session(page)
+                            cdp_cookies = cdp.send("Network.getAllCookies").get("cookies", [])
+                            native_cookies = [{"domain": c["domain"], "path": c["path"],
+                                               "name": c["name"], "value": c["value"],
+                                               "secure": c.get("secure", True)}
+                                              for c in cdp_cookies
+                                              if str(c.get("domain") or "").lstrip(".").lower() in {"grok.com", "www.grok.com"}
+                                              and c.get("name") in {"sso", "sso-rw"} and c.get("path") == "/"]
+                            if native_cookies:
+                                cdp_session_cookies = session_cookies(native_cookies, native=True)
+                                session_payload = page.evaluate("""async () => {
+                                    const r = await fetch('/api/auth/session', {credentials:'include'});
+                                    return await r.json();
+                                }""")
+                                session = session_payload.get("session") if isinstance(session_payload, dict) else None
+                                if (isinstance(session, dict)
+                                        and str(session.get("email") or "").strip().lower() == record["email"].lower()
+                                        and session.get("emailConfirmed") is True
+                                        and isinstance(session.get("userId"), str) and session["userId"]
+                                        and cdp_session_cookies.get("sso")):
+                                    update("running", "save", "浏览器登录态已确认本任务邮箱与验证状态；保存 Grok SSO",
+                                           password_confirmed=candidate_was_submitted and session.get("hasPassword") is True)
+                                    return cdp_session_cookies
+                        except Exception:
+                            pass
                         update("manual_required", "identity", "已取得 SSO，但页面邮箱尚未确认；请在当前浏览器打开账号资料页")
                     password = visible(page, PASSWORD)
                     code_fields = otp_inputs(page)
@@ -523,13 +621,20 @@ def run(record, mailbox, signals, update, *, proxy_url=None):
                         if profile_filled and not profile_submitted:
                             # Record uncertainty BEFORE the mutation. A timeout must never cause an automatic replay.
                             update("manual_required", "profile", "请在浏览器完成服务条款与人机验证；只提交可用的正常按钮")
+                            # Turnstile can take tens of seconds on a cold
+                            # residential exit. Wait once for its token, then
+                            # try a single submit; never spam button clicks.
+                            _wait_profile_challenge(page, signals, update)
                             def mark_profile_submit():
                                 nonlocal profile_submitted, candidate_was_submitted
                                 profile_submitted = True
                                 candidate_was_submitted = password.input_value() == record["private"]["password"]
                                 update("running", "profile_submit", "资料已准备，提交一次；后续异常保留为未确认", profile_submitted=True,
                                        password_confirmed=candidate_was_submitted and not native_flow)
-                            submit_form(page, password, before_click=mark_profile_submit)
+                            if not submit_form(page, password, before_click=mark_profile_submit):
+                                update("manual_required", "profile", "提交按钮暂不可用；请在当前浏览器完成人机验证后继续")
+                                page.wait_for_timeout(1000)
+                                continue
                     elif code_input is not None and not otp_submitted:
                         if not native_flow and email_submitted and not issued:
                             # Legacy form navigation has no native JSON acceptance response.
@@ -598,6 +703,15 @@ def run(record, mailbox, signals, update, *, proxy_url=None):
                             page.wait_for_timeout(1500)
                         else:
                             update("manual_required", "open", "请在浏览器选择使用邮箱注册并完成页面要求；不自动处理人机挑战")
+                    if profile_submitted and not confirmed_session_sso and profile_submit_since is None:
+                        profile_submit_since = time.monotonic()
+                    if profile_submitted and not confirmed_session_sso and profile_submit_since is not None and time.monotonic() - profile_submit_since >= 90:
+                        # The create request returned, but no authenticated
+                        # session appeared. Leave the task in manual review:
+                        # never resubmit the account mutation automatically.
+                        update("manual_required", "identity",
+                               "建号请求已提交但未取得登录态：请在当前浏览器查看是否已登录；若未登录请人工处理，不要重复建号")
+                        profile_submit_since = time.monotonic()
                     page.wait_for_timeout(500)
                 raise GrokBrowserError("等待浏览器或人工操作超过10分钟，已停止；不自动重试", reason="timeout")
             finally:

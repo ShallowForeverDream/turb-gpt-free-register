@@ -3,7 +3,7 @@ const fs=require('node:fs');const path=require('node:path');const vm=require('no
 const base=path.join(__dirname,'../webui/templates');const read=n=>fs.readFileSync(path.join(base,n),'utf8');
 for(const name of ['index.html','index_legacy.html'])test(name+' Grok navigation and namespace separation',()=>{
   const s=read(name),nav=s.slice(s.indexOf('<nav'),s.indexOf('</nav>'));
-  assert.deepEqual([...nav.matchAll(/data-tab="([^"]+)"/g)].map(m=>m[1]),['outlook','accounts','grok','register','config']);
+  assert.deepEqual([...nav.matchAll(/data-tab="([^"]+)"/g)].map(m=>m[1]),['outlook','accounts','grok','qoder','register','config']);
   assert.ok(s.includes("if (tab === 'grok') loadGrok()"));assert.ok(s.includes("include 'grok_script.html'"));
   assert.ok(s.includes('poolPlatformStatus(r)'));assert.ok(!nav.includes('github'));
 });

@@ -1,0 +1,23 @@
+<!-- Qoder registration controls in the mailbox pool page. -->
+<section class="registration-block registration-block--qoder" id="qoderRegistrationBlock" aria-label="QODER 注册">
+  <header class="registration-block-head">
+    <span class="registration-block-badge registration-block-badge--qoder">QODER</span>
+    <div><h2>QODER 注册</h2><p>使用邮箱池当前选中的邮箱注册；队列、并发与 GPT/Grok 完全独立。Qoder 使用普通可见浏览器 + 本地滑块验证码。</p></div>
+  </header>
+  <div class="jobs-toolbar-v2" id="qoderRegistrationToolbar">
+    <label class="jobs-tb-field">Qoder并发
+      <span class="el-input-number">
+        <input id="qoderWorkers" type="number" min="1" max="10" value="1" inputmode="numeric" aria-label="Qoder 注册并发">
+        <button type="button" class="el-input-number__increase" data-step-for="qoderWorkers" data-step="1" aria-label="增加"><svg viewBox="0 0 24 24"><polyline points="6 14 12 8 18 14"/></svg></button>
+        <button type="button" class="el-input-number__decrease" data-step-for="qoderWorkers" data-step="-1" aria-label="减少"><svg viewBox="0 0 24 24"><polyline points="6 10 12 16 18 10"/></svg></button>
+      </span>
+      <button type="button" class="jobs-tb-btn" id="qoderSaveWorkers">保存</button>
+    </label>
+    <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="qoderStart">用选中邮箱注册 Qoder</button>
+    <button type="button" class="jobs-tb-btn" data-qoder-control="pause" title="只暂停补充新任务，已开始的注册继续">暂停补充</button>
+    <button type="button" class="jobs-tb-btn" data-qoder-control="resume">继续</button>
+    <button type="button" class="jobs-tb-btn jobs-tb-btn--danger" data-qoder-control="stop" title="停止尚未开始的 Qoder 任务">停止待启动任务</button>
+    <span class="acc-v2-selected" id="qoderQueueState" role="status">加载中…</span>
+  </div>
+  <p class="registration-block-note" id="qoderUnresolved" hidden></p>
+</section>

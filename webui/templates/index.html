@@ -2075,6 +2075,12 @@
       </svg>
       <span class="sidebar-item-label">Grok账号</span>
     </button>
+    <button type="button" data-tab="qoder" class="sidebar-item">
+      <svg class="sidebar-item-icon" viewBox="0 0 24 24" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+      </svg>
+      <span class="sidebar-item-label">Qoder账号</span>
+    </button>
     <button type="button" data-tab="register" class="sidebar-item active">
       <svg class="sidebar-item-icon" viewBox="0 0 24 24" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <path d="M12 5v14M5 12h14"/>
@@ -2874,21 +2880,22 @@ function activateTab(tab, persist=true) {
   }
   if (tab === 'codex') tab = 'accounts';
   if (tab === 'github') tab = 'grok';
-  const allowed = ['outlook','accounts','grok','register','config'];
+  const allowed = ['outlook','accounts','grok','qoder','register','config'];
   if (!allowed.includes(tab)) tab = 'outlook';
   const activeNav = tab;
   $$('nav button').forEach(x => x.classList.toggle('active', x.dataset.tab === activeNav));
   allowed.forEach(t => $('#tab-'+t).classList.toggle('hidden', t !== tab));
   $('#tab-codex').classList.add('hidden');
-  if (['register','accounts','codex','outlook'].includes(tab)) {
+  if (['register','accounts','codex','outlook','qoder'].includes(tab)) {
     const key = tab === 'register' ? 'history' : tab;
     enableResizableTableHeaders(key === 'history' ? '.history-table' : `.${key}-table-v2`, key === 'outlook' ? 'outlook-mail-tools-v1' : key);
   }
   if (persist) localStorage.setItem('gpt_console_active_tab', activeNav);
   if (tab === 'accounts') loadAccounts();
   if (tab === 'grok') loadGrok();
+  if (tab === 'qoder') loadQoder();
 
-  if (tab === 'outlook') { loadOutlook(); refreshJobs(); if (typeof grokSetSelectedFromPool === 'function') grokSetSelectedFromPool(); }
+  if (tab === 'outlook') { loadOutlook(); refreshJobs(); if (typeof grokSetSelectedFromPool === 'function') grokSetSelectedFromPool(); if (typeof qoderSetSelectedFromPool === 'function') qoderSetSelectedFromPool(); }
   if (tab === 'config') loadConfig();
   if (tab === 'register') refreshLogHistory();
 }
@@ -7413,6 +7420,7 @@ function enableResizableTableHeaders(selector, storageKey) {
   });
 }
 {% include 'grok_script.html' %}
+{% include 'qoder_script.html' %}
 {% include 'workspace_layout_script.html' %}
 loadSummary();
 activateTab(localStorage.getItem('gpt_console_active_tab') || 'outlook', false);

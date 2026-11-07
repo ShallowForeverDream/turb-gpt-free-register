@@ -410,6 +410,8 @@ def create_app(auth_code: str | None = None, *, local_no_auth: bool = False) -> 
     register_auth_routes(app, local_no_auth=local_no_auth)
     from webui.grok_routes import register_grok_routes
     register_grok_routes(app)
+    from webui.qoder_routes import register_qoder_routes
+    register_qoder_routes(app)
     db.sync_deactivated_accounts()
     recovered_plan_checks = db.recover_interrupted_plan_checks()
     if recovered_plan_checks:

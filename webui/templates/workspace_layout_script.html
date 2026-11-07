@@ -64,6 +64,8 @@ function mountWorkspaceLayout() {
   if(poolTitle)poolTitle.insertAdjacentElement('afterend',registration);else pool.prepend(registration);
   const grokBlock=document.getElementById('grokRegistrationBlock');
   if(grokBlock)registration.insertAdjacentElement('afterend',grokBlock);
+  const qoderBlock=document.getElementById('qoderRegistrationBlock');
+  if(qoderBlock)registration.insertAdjacentElement('afterend',qoderBlock);
   pool.append(tasks);
   if(!workspaceSuffix){
     for(const id of ['btnCancelPending','btnPauseRegistration','btnResumeRegistration','registrationPauseStatus']){
@@ -125,7 +127,7 @@ function mountWorkspaceLayout() {
   });
   document.getElementById('previousLogHistory').addEventListener('click',()=>{if(workspaceLogPage>1){workspaceLogPage--;refreshLogHistory();}});
   document.getElementById('nextLogHistory').addEventListener('click',()=>{if(workspaceLogPage<workspaceLogPages){workspaceLogPage++;refreshLogHistory();}});
-  document.getElementById('workspaceLogRows').addEventListener('click',event=>{const grok=event.target.closest('[data-grok-log]');const history=event.target.closest('[data-history-log]');const jobKind=history?.dataset.logKind||'gpt';if(grok){openGrokProgress(Number(grok.dataset.grokLog));return;}const button=event.target.closest('[data-history-log]');if(button)openProgressForJob(Number(button.dataset.historyLog),jobKind);});
+  document.getElementById('workspaceLogRows').addEventListener('click',event=>{const grok=event.target.closest('[data-grok-log]');const qoder=event.target.closest('[data-qoder-log]');const history=event.target.closest('[data-history-log]');const jobKind=history?.dataset.logKind||'gpt';if(grok){openGrokProgress(Number(grok.dataset.grokLog));return;}if(qoder){openQoderLog(Number(qoder.dataset.qoderLog));return;}const button=event.target.closest('[data-history-log]');if(button)openProgressForJob(Number(button.dataset.historyLog),jobKind);});
   const progressDialog=document.getElementById('workspaceProgressDialog');
   for(const button of ['workspaceProgressClose','workspaceProgressDone'])document.getElementById(button).addEventListener('click',()=>progressDialog.close());
   progressDialog.addEventListener('close',()=>{
@@ -303,6 +305,18 @@ async function refreshLogHistory() {
       if(workspaceLogPage>workspaceLogPages){workspaceLogPage=workspaceLogPages;return refreshLogHistory();}
       document.getElementById('workspaceLogSummary').textContent=`Grok · ${data.total}条日志 · 运行${data.queue.active} · 待启动${data.queue.waiting}`;
       document.getElementById('workspaceLogRows').innerHTML=data.items.map(j=>`<tr><td>G#${j.id}</td><td>${esc(GROK_LABELS[j.status]||j.status)}</td><td>${esc(j.email)}</td><td>${esc(workspaceDateTime(j.started_at))}</td><td>${esc(workspaceDateTime(j.completed_at))}</td><td>—</td><td>${esc(j.stage)}</td><td><button class="btn" type="button" data-grok-log="${j.id}">查看Grok进度</button></td></tr>`).join('')||'<tr><td colspan="8">暂无Grok日志</td></tr>';
+      document.getElementById('workspaceLogPage').textContent=`${workspaceLogPage}/${workspaceLogPages}页`;
+      document.getElementById('previousLogHistory').disabled=workspaceLogPage<=1;document.getElementById('nextLogHistory').disabled=workspaceLogPage>=workspaceLogPages;
+      workspaceLogSignature='';return;
+    }
+    if(workspaceLogFilters.platform==='qoder'){
+      const params=new URLSearchParams({page:String(workspaceLogPage),page_size:'20',...workspaceLogFilters});
+      const data=await api(`/api/qoder/jobs?${params}`,{signal:workspaceLogAbort.signal});
+      if(request!==workspaceLogRequest)return;
+      workspaceLogPages=Math.max(1,Math.ceil(Number(data.total||0)/20));
+      if(workspaceLogPage>workspaceLogPages){workspaceLogPage=workspaceLogPages;return refreshLogHistory();}
+      document.getElementById('workspaceLogSummary').textContent=`Qoder · ${data.total}条日志 · 运行${data.queue.active} · 待启动${data.queue.waiting}`;
+      document.getElementById('workspaceLogRows').innerHTML=data.items.map(j=>`<tr><td>Q#${j.id}</td><td>${esc(QODER_LABELS[j.status]||j.status)}</td><td>${esc(j.email)}</td><td>${esc(workspaceDateTime(j.started_at))}</td><td>${esc(workspaceDateTime(j.completed_at))}</td><td>—</td><td>${esc(j.stage)}</td><td><button class="btn" type="button" data-qoder-log="${j.id}">查看Qoder进度</button></td></tr>`).join('')||'<tr><td colspan="8">暂无Qoder日志</td></tr>';
       document.getElementById('workspaceLogPage').textContent=`${workspaceLogPage}/${workspaceLogPages}页`;
       document.getElementById('previousLogHistory').disabled=workspaceLogPage<=1;document.getElementById('nextLogHistory').disabled=workspaceLogPage>=workspaceLogPages;
       workspaceLogSignature='';return;

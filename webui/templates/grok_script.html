@@ -4,7 +4,7 @@ let grokAccountRefreshPending=false;
 const grokAccountPicked=new Set();let grokAccountRows=[];
 const GROK_ACCOUNT_FILTERS={};
 let grokAccountFilterPanel=null,grokAccountFilterAnchor=null;
-function poolPlatformStatus(row){const g=(v)=>esc(GROK_LABELS[v]||({processing:'注册中'}[v])||v||'未注册');return 'GPT：'+g(row.gpt_registration_status||row.registration_status)+'<br>Grok：'+g(row.grok_registration_status||'unregistered')+'<br>GitHub：'+g(row.github_registration_status||'unregistered');}
+function poolPlatformStatus(row){const g=(v)=>esc(GROK_LABELS[v]||({processing:'注册中'}[v])||v||'未注册');return 'GPT：'+g(row.gpt_registration_status||row.registration_status)+'<br>Grok：'+g(row.grok_registration_status||'unregistered')+'<br>Qoder：'+g(row.qoder_registration_status||'unregistered')+'<br>GitHub：'+g(row.github_registration_status||'unregistered');}
 function grokAccountStatus(row){return row.registration_origin==='manual_capture'?'人工抓包导入 · SSO未在线复验':row.registration_origin==='protocol'?'协议注册（未验证API套餐）':'普通浏览器注册（未验证API套餐）';}
 function grokPost(path,data){return api('/api/grok'+path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});}
 function grokSelectedItems(){return [...grokSelected.values()];}

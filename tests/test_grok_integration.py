@@ -201,7 +201,7 @@ class GrokStorageTests(unittest.TestCase):
 
     def test_refusal_has_safe_http_diagnostic_and_stops_without_retry(self):
         jid = self.create()
-        with patch('core.grok_protocol.run', side_effect=GrokBrowserError('private-content', http_status=429)) as run:
+        with patch('core.grok_service._run_protocol', side_effect=GrokBrowserError('private-content', http_status=429)) as run:
             service._run(jid, service.Signals())
         record = store.job(jid)
         self.assertEqual(record['status'], 'blocked')

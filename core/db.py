@@ -170,6 +170,19 @@ def _ensure_sqlite() -> None:
             );
             CREATE UNIQUE INDEX IF NOT EXISTS idx_grok_active_email ON grok_jobs(email)
                 WHERE status IN ('pending','running','manual_required','uncertain');
+            CREATE TABLE IF NOT EXISTS qoder_accounts (
+                id INTEGER PRIMARY KEY, email TEXT NOT NULL COLLATE NOCASE UNIQUE,
+                source TEXT NOT NULL, created_at TEXT NOT NULL, payload TEXT NOT NULL,
+                pat_digest TEXT NOT NULL UNIQUE
+            );
+            CREATE TABLE IF NOT EXISTS qoder_jobs (
+                id INTEGER PRIMARY KEY, email TEXT NOT NULL COLLATE NOCASE,
+                source TEXT NOT NULL, status TEXT NOT NULL, stage TEXT NOT NULL,
+                created_at TEXT NOT NULL, started_at TEXT, completed_at TEXT,
+                owner_pid INTEGER NOT NULL, payload TEXT NOT NULL, events TEXT NOT NULL DEFAULT '[]'
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_qoder_active_email ON qoder_jobs(email)
+                WHERE status IN ('pending','running','manual_required','uncertain');
         """)
         for table in {"accounts", "email_pool", "registration_jobs"}:
             conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{table}_status ON {table}(status, id DESC)")
@@ -1149,16 +1162,21 @@ def list_email_pool_page(
     elif status:
         where.append("ep.status=?")
         params.append(status)
-    if platform_name in {"gpt", "grok", "github"} and platform_state in {"registered", "unregistered", "processing"}:
+    if platform_name in {"gpt", "grok", "github", "qoder"} and platform_state in {"registered", "unregistered", "processing"}:
         if platform_name == "gpt":
             exists = "EXISTS (SELECT 1 FROM accounts AS a WHERE a.email = ep.email COLLATE NOCASE AND " + _usable_gpt_account_sql("a") + ")"
         elif platform_name == "grok":
             exists = "EXISTS (SELECT 1 FROM grok_accounts AS g WHERE g.email = ep.email COLLATE NOCASE)"
+        elif platform_name == "qoder":
+            exists = "EXISTS (SELECT 1 FROM qoder_accounts AS q WHERE q.email = ep.email COLLATE NOCASE)"
         else:
             exists = "lower(COALESCE(json_extract(ep.payload, '$.github_registration_status'), '')) = 'registered'"
         if platform_name == "gpt" and platform_state == "processing":
             where.append("EXISTS (SELECT 1 FROM registration_jobs AS j WHERE j.email = ep.email COLLATE NOCASE "
                          "AND j.status IN ('pending','running','stopping'))")
+        elif platform_name == "qoder" and platform_state == "processing":
+            where.append("EXISTS (SELECT 1 FROM qoder_jobs AS j WHERE j.email = ep.email COLLATE NOCASE "
+                         "AND j.status IN ('pending','running','manual_required','uncertain'))")
         elif platform_name == "gpt" and platform_state == "unregistered":
             where.append("NOT (" + exists + ") AND lower(COALESCE(ep.status, '')) NOT IN ('used','failed','disabled') "
                          "AND lower(COALESCE(json_extract(ep.payload, '$.registration_status'), '')) <> 'disabled' "
@@ -1238,6 +1256,10 @@ def list_email_pool_page(
                 f"SELECT email FROM grok_accounts WHERE email IN ({marks})", emails)}
             states = {r[0].lower(): r[1] for r in conn.execute(
                 f"SELECT email,status FROM grok_jobs WHERE email IN ({marks}) ORDER BY id", emails)}
+            qoder_registered = {r[0].lower() for r in conn.execute(
+                f"SELECT email FROM qoder_accounts WHERE email IN ({marks})", emails)}
+            qoder_states = {r[0].lower(): r[1] for r in conn.execute(
+                f"SELECT email,status FROM qoder_jobs WHERE email IN ({marks}) ORDER BY id", emails)}
         github_registered = {str(item.get("email") or "").lower() for item in items
                              if str(item.get("github_registration_status") or "").lower() == "registered"}
         for item in items:
@@ -1251,6 +1273,7 @@ def list_email_pool_page(
                 item["gpt_registration_status"] = base
             item["grok_registration_status"] = "registered" if email in registered else states.get(email, "unregistered")
             item["github_registration_status"] = "registered" if email in github_registered else "unregistered"
+            item["qoder_registration_status"] = "registered" if email in qoder_registered else qoder_states.get(email, "unregistered")
     return {"items": items, "total": total, "offset": offset, "limit": limit, "latest": latest}
 
 
@@ -3284,7 +3307,7 @@ def set_pool_platform_status(email: str, source: str, platform: str, platform_st
     """Set per-platform mailbox registration status (gpt/grok/github)."""
     name = str(platform or "").strip().lower()
     value = str(platform_status or "").strip().lower()
-    if name not in {"gpt", "grok", "github"}:
+    if name not in {"gpt", "grok", "github", "qoder"}:
         raise ValueError("platform 非法")
     if value not in {"registered", "unregistered"}:
         raise ValueError("platform_status 非法")

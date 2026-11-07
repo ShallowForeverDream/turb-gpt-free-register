@@ -1,0 +1,136 @@
+const QODER_LABELS={unregistered:'未注册',registered:'已注册',pending:'待启动',running:'运行中',manual_required:'等待人工处理',uncertain:'结果未确认',success:'成功',failed:'失败',blocked:'受阻',cancelled:'已取消',already_registered:'已有账号（未保存凭据）'};
+const qoderSelected=new Map();let qoderAccountPage=1,qoderAccountPages=1,qoderAccountFlight=null,qoderLogId=null,qoderLogTimer=null,qoderWorkersLoaded=false;let qoderAccountRefreshPending=false;
+const qoderAccountPicked=new Set();let qoderAccountRows=[];
+
+function qoderPost(path,data){return api('/api/qoder'+path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});}
+function qoderSelectedItems(){return [...qoderSelected.values()];}
+
+async function loadQoder(){
+  if(qoderAccountFlight){qoderAccountRefreshPending=true;return qoderAccountFlight;}
+  qoderAccountFlight=(async()=>{
+    try{
+      const aq=(document.getElementById('qoderAccountQuery')?.value??'').trim();
+      const [accounts,queue]=await Promise.all([
+        api(`/api/qoder/accounts?page=${qoderAccountPage}&q=${encodeURIComponent(aq)}`),
+        api('/api/qoder/queue')]);
+      qoderAccountPages=Math.max(1,Math.ceil(accounts.total/20));
+      if(qoderAccountPage>qoderAccountPages){qoderAccountPage=qoderAccountPages;setTimeout(loadQoder,0);return;}
+      const queueState=document.getElementById('qoderQueueState');
+      if(queueState)queueState.textContent=`${queue.paused?'已暂停补充':'可补充'} · 并发 ${queue.workers} · 运行 ${queue.active} · 待启动 ${queue.waiting}`+(qoderSelected.size?` · 已选 ${qoderSelected.size}`:'');
+      const workers=document.getElementById('qoderWorkers');
+      if(workers&&!qoderWorkersLoaded){workers.value=queue.workers;qoderWorkersLoaded=true;}
+      qoderAccountRows=accounts.items||[];
+      document.getElementById('qoderAccountRows').innerHTML=qoderAccountRows.map(r=>`<tr class="${qoderAccountPicked.has(r.id)?'grok-selected-row':''}"><td><input type="checkbox" data-qoder-select="${r.id}" aria-label="选择 ${esc(r.email)}"${qoderAccountPicked.has(r.id)?' checked':''}></td><td>#${esc(r.id)}</td><td><div class="acc-v2-email" title="${esc(r.email)}">${esc(r.email)}</div></td><td title="${esc(r.source)}">${esc(r.source)}</td><td>${esc(r.created_at)}</td><td><button type="button" class="acc-v2-token-copy" data-qoder-secret="${r.id}" data-field="pat">复制PAT</button></td><td><button type="button" class="acc-v2-token-copy" data-qoder-secret="${r.id}" data-field="password">复制密码</button></td></tr>`).join('')||'<tr><td colspan="7" style="text-align:center;color:#909399;padding:28px;">暂无已注册的 Qoder 账号</td></tr>';
+      const count=document.getElementById('qoderAccountCount');if(count)count.textContent=`已注册 ${accounts.total}`;
+      const pager=document.getElementById('pager-qoder-accounts');
+      if(pager)pager.innerHTML=`<button type="button" data-qoder-account-page="-1"${qoderAccountPage<=1?' disabled':''}>← 上一页</button><span class="pager-info">第 ${qoderAccountPage} / ${qoderAccountPages} 页 · 共 ${accounts.total} 个</span><button type="button" data-qoder-account-page="1"${qoderAccountPage>=qoderAccountPages?' disabled':''}>下一页 →</button>`;
+      syncQoderAccountSelection();
+    }catch(e){const queueState=document.getElementById('qoderQueueState');if(queueState)queueState.textContent='加载失败：'+e.message;}
+  })();try{await qoderAccountFlight;}finally{qoderAccountFlight=null;}
+  if(qoderAccountRefreshPending){qoderAccountRefreshPending=false;return loadQoder();}
+}
+
+function qoderSetSelectedFromPool(){
+  qoderSelected.clear();
+  for(const key of (typeof OUTLOOK_SELECTED!=='undefined'?OUTLOOK_SELECTED:[])){
+    const [source,...rest]=String(key).split('|');const email=rest.join('|');
+    if(!email)continue;
+    const row=(typeof OUTLOOK!=='undefined'?OUTLOOK:[]).find(item=>item.email===email&&(item.source||'')===source);
+    if(row&&row.qoder_registration_status==='registered')continue;
+    qoderSelected.set(key,{email,source});
+  }
+  const state=document.getElementById('qoderQueueState');
+  if(state&&qoderSelected.size)state.textContent=`已选 ${qoderSelected.size} 个邮箱，可开始 Qoder 注册`;
+}
+document.addEventListener('qoder-pool-selection-changed',qoderSetSelectedFromPool);
+
+function syncQoderAccountSelection(){
+  const count=qoderAccountPicked.size;
+  const label=document.getElementById('qoderAccountSelection');if(label)label.textContent=`已选 ${count}`;
+  const copy=document.getElementById('qoderCopySelected');if(copy)copy.disabled=!count;
+  const all=qoderAccountRows.length&&qoderAccountRows.every(row=>qoderAccountPicked.has(row.id));
+  const header=document.getElementById('qoderHeaderSelect');if(header)header.checked=!!all;
+  const toggle=document.getElementById('qoderAccountSelectAll');
+  if(toggle){toggle.textContent=all?'全不选本页':'全选本页';toggle.setAttribute('aria-pressed',all?'true':'false');}
+}
+function toggleQoderAccountPage(){
+  const all=qoderAccountRows.length&&qoderAccountRows.every(row=>qoderAccountPicked.has(row.id));
+  for(const row of qoderAccountRows){if(all)qoderAccountPicked.delete(row.id);else qoderAccountPicked.add(row.id);}
+  loadQoder();
+}
+
+document.getElementById('qoderRefresh')?.addEventListener('click',loadQoder);
+document.getElementById('qoderAccountRefresh')?.addEventListener('click',loadQoder);
+document.getElementById('qoderAccountQuery')?.addEventListener('input',debounce(()=>{qoderAccountPage=1;loadQoder();},250));
+document.getElementById('qoderAccountSelectAll')?.addEventListener('click',toggleQoderAccountPage);
+document.getElementById('qoderHeaderSelect')?.addEventListener('change',toggleQoderAccountPage);
+document.getElementById('qoderAccountRows')?.addEventListener('change',event=>{
+  const box=event.target.closest('[data-qoder-select]');if(!box)return;
+  const id=Number(box.dataset.qoderSelect);
+  if(box.checked)qoderAccountPicked.add(id);else qoderAccountPicked.delete(id);
+  box.closest('tr')?.classList.toggle('grok-selected-row',box.checked);
+  syncQoderAccountSelection();
+});
+document.getElementById('qoderAccountRows')?.addEventListener('click',async event=>{
+  const secret=event.target.closest('[data-qoder-secret]');
+  if(secret){try{const r=await api(`/api/qoder/accounts/${Number(secret.dataset.qoderSecret)}/secret?field=${encodeURIComponent(secret.dataset.field)}`);if(r.value)await copyText(r.value);else showToast('该凭据未留存');}catch(e){showToast(e.message);}return;}
+});
+document.getElementById('pager-qoder-accounts')?.addEventListener('click',event=>{const b=event.target.closest('[data-qoder-account-page]');if(!b)return;qoderAccountPage=Math.max(1,qoderAccountPage+Number(b.dataset.qoderAccountPage));loadQoder();});
+document.getElementById('qoderSaveWorkers')?.addEventListener('click',async()=>{try{const r=await qoderPost('/queue',{action:'configure',workers:Number(document.getElementById('qoderWorkers').value)});document.getElementById('qoderWorkers').value=r.workers;await loadQoder();}catch(e){showToast(e.message);}});
+document.querySelectorAll('[data-qoder-control]').forEach(b=>b.addEventListener('click',async()=>{try{await qoderPost('/queue',{action:b.dataset.qoderControl});await loadQoder();}catch(e){showToast(e.message);}}));
+document.getElementById('qoderStart')?.addEventListener('click',async()=>{
+  qoderSetSelectedFromPool();
+  if(!qoderSelected.size){showToast('请先在邮箱池勾选要注册 Qoder 的邮箱');return;}
+  if(!confirm(`确认使用本人拥有或获授权的 ${qoderSelected.size} 个邮箱注册Qoder？\
+将打开普通可见浏览器，人机验证/条款请人工完成。\
+注册成功后会创建 Qoder PAT。`))return;
+  const b=document.getElementById('qoderStart');b.disabled=true;
+  try{const r=await qoderPost('/jobs',{emails:qoderSelectedItems(),authorized:true,driver:'browser'});qoderSelected.clear();showToast(`已建立 ${r.job_ids.length} 项Qoder计划`);await loadQoder();}catch(e){showToast('Qoder未启动：'+e.message,10000);await loadQoder();}finally{b.disabled=false;}
+});
+document.getElementById('qoderCopySelected')?.addEventListener('click',async()=>{
+  const field=document.getElementById('qoderBulkCopyField')?.value||'email';
+  if(!qoderAccountPicked.size)return showToast('请先勾选 Qoder 账号');
+  try{const r=await qoderPost('/accounts/bulk-auth',{ids:[...qoderAccountPicked],field});
+    if(!r.items?.length)throw new Error('选中账号中没有该字段的凭据');
+    const values=r.items.map(item=>item.value);await copyText(values.join('\
+---\
+'));
+    showToast(`已复制 ${r.items.length} 项${r.missing?`（${r.missing} 项无该凭据）`:''}`);}catch(e){showToast(e.message);}
+});
+
+function openQoderLog(jobId){
+  qoderLogId=jobId;document.getElementById('qoderLogDialog').showModal();qoderLogTimer=setInterval(pollQoderLog,3000);pollQoderLog();
+}
+async function pollQoderLog(){
+  if(!qoderLogId)return;
+  try{
+    const r=await api(`/api/qoder/jobs/${qoderLogId}`);
+    document.getElementById('qoderLogStatus').textContent=`${QODER_LABELS[r.status]||r.status} · ${r.stage}`;
+    document.getElementById('qoderLogBody').textContent=r.log||'';
+    document.getElementById('qoderCodeForm').hidden=!['running','manual_required'].includes(r.status);
+    document.getElementById('qoderContinue').hidden=!['captcha','pat','open','email_code'].includes(r.stage)||!['running','manual_required'].includes(r.status);
+    document.getElementById('qoderStopActive').disabled=!['running','manual_required'].includes(r.status);
+    if(!['running','manual_required','pending'].includes(r.status))clearInterval(qoderLogTimer);
+  }catch(e){if(qoderLogId)document.getElementById('qoderLogStatus').textContent=e.message;}
+}
+document.getElementById('qoderLogClose')?.addEventListener('click',()=>{qoderLogId=null;clearInterval(qoderLogTimer);document.getElementById('qoderLogDialog').close();});
+document.getElementById('qoderCopyLog')?.addEventListener('click',async()=>{const t=document.getElementById('qoderLogBody').textContent;if(t)await copyText(t);});
+document.getElementById('qoderStopActive')?.addEventListener('click',async()=>{try{await qoderPost(`/jobs/${qoderLogId}/stop`,{});}catch(e){showToast(e.message);}});
+document.getElementById('qoderCodeForm')?.addEventListener('submit',async event=>{
+  event.preventDefault();
+  try{await qoderPost(`/jobs/${qoderLogId}/code`,{code:document.getElementById('qoderManualCode').value});document.getElementById('qoderManualCode').value='';}catch(e){showToast(e.message);}
+});
+document.getElementById('qoderContinue')?.addEventListener('click',async()=>{try{await qoderPost(`/jobs/${qoderLogId}/continue`,{confirmed:true});}catch(e){showToast(e.message);}});
+
+function showQoderUnresolved(data){
+  const note=document.getElementById('qoderUnresolved');if(!note)return;
+  const items=(data.items||[]).filter(item=>item.status==='uncertain');
+  note.hidden=!items.length;
+  note.textContent=items.length
+    ? `有 ${items.length} 个邮箱上次 Qoder 运行被中断、结果未确认：${items.map(item=>item.email).join('、')}。不会自动重复注册；确认该邮箱未注册后，可结束旧任务再重新选中启动。`
+    : '';
+}
+function refreshQoderUnresolved(){
+  api('/api/qoder/jobs/blocked').then(showQoderUnresolved).catch(()=>{});
+}
+setInterval(()=>{if(!document.getElementById('tab-qoder')?.classList.contains('hidden')||!document.getElementById('tab-outlook')?.classList.contains('hidden')){loadQoder();refreshQoderUnresolved();}},5000);

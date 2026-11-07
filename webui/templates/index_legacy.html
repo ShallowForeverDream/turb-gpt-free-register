@@ -471,6 +471,7 @@
     <button data-tab="outlook">邮箱池</button>
     <button data-tab="accounts">GPT账号</button>
     <button data-tab="grok">Grok账号</button>
+    <button data-tab="qoder">Qoder账号</button>
     <button data-tab="register" class="active">日志</button>
     <button data-tab="config">设置</button>
   </nav>
@@ -931,20 +932,21 @@ function debounce(fn, wait=250) {
 function activateTab(tab, persist=true) {
   if (tab === 'codex') tab = 'accounts';
   if (tab === 'github') tab = 'grok';
-  const allowed = ['outlook','accounts','grok','register','config'];
+  const allowed = ['outlook','accounts','grok','qoder','register','config'];
   if (!allowed.includes(tab)) tab = 'outlook';
   $$('nav button').forEach(x => x.classList.toggle('active', x.dataset.tab === tab));
   allowed.forEach(t => $('#tab-'+t).classList.toggle('hidden', t !== tab));
   $('#tab-codex').classList.add('hidden');
-  if (['register','accounts','codex','outlook'].includes(tab)) {
+  if (['register','accounts','codex','outlook','qoder'].includes(tab)) {
     const key = tab === 'register' ? 'history' : tab;
     enableLegacyResizableHeaders(`.${key}-table`, key === 'outlook' ? 'outlook-mail-tools-v1' : key);
   }
   if (persist) localStorage.setItem('gpt_console_active_tab', tab);
   if (tab === 'accounts') loadAccounts();
   if (tab === 'grok') loadGrok();
+  if (tab === 'qoder') loadQoder();
 
-  if (tab === 'outlook') { loadOutlook(); refreshJobs(); }
+  if (tab === 'outlook') { loadOutlook(); refreshJobs(); if (typeof grokSetSelectedFromPool === 'function') grokSetSelectedFromPool(); if (typeof qoderSetSelectedFromPool === 'function') qoderSetSelectedFromPool(); }
   if (tab === 'config') loadConfig();
   if (tab === 'register') refreshLogHistory();
 }
@@ -3937,6 +3939,7 @@ function enableLegacyResizableHeaders(selector, key) {
   });
 }
 {% include 'grok_script.html' %}
+{% include 'qoder_script.html' %}
 {% include 'workspace_layout_script.html' %}
 loadSummary();
 activateTab(localStorage.getItem('gpt_console_active_tab') || 'outlook', false);

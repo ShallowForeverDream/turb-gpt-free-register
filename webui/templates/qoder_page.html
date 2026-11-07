@@ -1,0 +1,51 @@
+<!-- Qoder accounts page: same style as Grok, only registered accounts. -->
+<div id="tab-qoder" class="hidden">
+  <h1 class="register-title">Qoder账号</h1>
+  <section class="accounts-panel-v2 grok-accounts-panel" id="qoderAccountsPanel" aria-label="Qoder账号列表">
+    <div class="accounts-filter-v2 grok-filter-v2" id="qoderAccountsFilter">
+      <div class="acc-v2-btn-group acc-v2-search-wrap">
+        <input id="qoderAccountQuery" type="search" placeholder="搜索邮箱" autocomplete="off" aria-label="搜索 Qoder 账号">
+      </div>
+      <div class="acc-v2-btn-group">
+        <span class="acc-v2-selected" id="qoderAccountCount">已注册 0</span>
+        <button type="button" class="jobs-tb-btn" id="qoderAccountRefresh">刷新账号</button>
+        <button type="button" class="jobs-tb-btn" id="qoderAccountSelectAll" aria-pressed="false">全选本页</button>
+        <button type="button" class="jobs-tb-btn" id="qoderCopySelected" disabled>批量复制</button>
+        <select id="qoderBulkCopyField" aria-label="批量复制的字段">
+          <option value="email">邮箱</option>
+          <option value="pat">PAT</option>
+          <option value="password">密码</option>
+        </select>
+        <span class="acc-v2-selected" id="qoderAccountSelection">已选 0</span>
+      </div>
+    </div>
+    <div class="accounts-table-v2-wrap">
+      <table class="accounts-table-v2 grok-accounts-table" id="qoderAccountsTable">
+        <colgroup>
+          <col class="col-select"><col class="col-id"><col class="col-email"><col class="col-source"><col class="col-time"><col class="col-pat"><col class="col-password">
+        </colgroup>
+        <thead>
+          <tr><th class="col-select"><input type="checkbox" id="qoderHeaderSelect" aria-label="全选本页 Qoder 账号"></th>
+            <th class="col-id">ID</th>
+            <th class="col-email">邮箱</th>
+            <th class="col-source">来源</th>
+            <th class="col-time">创建时间</th><th class="col-pat">PAT</th><th class="col-password">密码</th></tr>
+        </thead>
+        <tbody id="qoderAccountRows"></tbody>
+      </table>
+    </div>
+    <div class="jobs-v2-pager" id="pager-qoder-accounts"></div>
+    <p class="grok-cli-note">Qoder PAT 用于登录 Qoder IDE / Agentic；PAT 和密码只通过已认证接口按需读取，不在列表中明文展示。</p>
+  </section>
+</div>
+<dialog id="qoderLogDialog" class="workspace-dialog" aria-labelledby="qoderLogTitle">
+  <header><h2 id="qoderLogTitle">Qoder任务</h2><button type="button" id="qoderLogClose" aria-label="关闭">×</button></header>
+  <p id="qoderLogStatus" role="status"></p><pre id="qoderLogBody" style="white-space:pre-wrap;max-height:50vh;overflow:auto"></pre>
+  <button type="button" class="btn" id="qoderContinue" hidden>已人工处理，继续（不重发）</button>
+  <form id="qoderCodeForm"><label>人工邮箱验证码 <input id="qoderManualCode" autocomplete="off" placeholder="六位数字" maxlength="6"></label><button class="btn" type="submit">提交给当前等待任务</button></form>
+  <footer><button type="button" class="btn" id="qoderCopyLog">复制日志</button><button type="button" class="btn" id="qoderStopActive">停止此任务</button></footer>
+</dialog>
+<style>
+#tab-qoder .grok-accounts-table .col-pat{width:78px}
+#tab-qoder .grok-accounts-table .col-password{width:78px}
+</style>

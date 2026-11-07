@@ -136,7 +136,7 @@ class GrokBrowserTests(unittest.TestCase):
                         page.wait_for_function("document.getElementById('grokAccountRows').textContent.includes('暂无已注册的 Grok 账号')")
                         self.assertTrue(page.locator('#tab-grok').is_visible())
                         self.assertEqual(page.locator('nav button').evaluate_all('(nodes)=>nodes.map(n=>n.dataset.tab)'),
-                                         ['outlook', 'accounts', 'grok', 'register', 'config'])
+                                         ['outlook', 'accounts', 'grok', 'qoder', 'register', 'config'])
                         self.assertEqual(errors, [])
                         context.close()
             finally: b.close()

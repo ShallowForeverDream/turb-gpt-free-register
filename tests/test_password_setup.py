@@ -276,9 +276,48 @@ class PasswordSetupTests(unittest.TestCase):
     def test_ineligible_or_unknown_eligibility_does_not_submit(self):
         for value in (False,1,None,'true'):
             with self.subTest(value=value):
-                self.session.get.side_effect=None;self.session.get.return_value=response({'eligible':value})
+                def get(url,**kwargs):
+                    if url.endswith('/add_password/eligibility'):return response({'eligible':value})
+                    if url.endswith('/change_password/eligibility'):return response({'eligible':False})
+                    raise AssertionError('unexpected GET')
+                self.session.get.side_effect=get
                 self.assertFalse(self.run_setup()['ok'])
                 self.session.post.assert_not_called();self.generate.assert_not_called()
+
+    def test_password_already_set_is_not_failed_or_reported_as_new_password(self):
+        original=self.session.post.side_effect
+        def post(url,**kwargs):
+            self.submissions.append(url.split('?')[0])
+            if url.endswith('/password/add'):
+                return response({'error':{'code':'password_already_set',
+                                          'message':'You already have a password. Please reset it instead.'}},400)
+            return original(url,**kwargs)
+        self.session.post.side_effect=post
+        result=self.run_setup()
+        self.assertTrue(result['ok'])
+        self.assertEqual(result['status'],'already_set')
+        saved=db.get_account(self.aid)
+        self.assertEqual(saved['password_setup_status'],'already_set')
+        self.assertFalse(db._extract_registration_password(saved))
+        self.assertEqual(len([u for u in self.submissions if u.endswith('/password/add')]),1)
+
+    def test_bare_success_acknowledgement_is_confirmed(self):
+        self.assertTrue(pw._confirmed_add_result({'success':True},200))
+        self.assertFalse(pw._confirmed_add_result({'success':False},200))
+        self.assertFalse(pw._confirmed_add_result({'page':{'type':'login'}},200))
+
+    def test_password_login_page_after_reauth_marks_existing_password(self):
+        self.stack.enter_context(patch('core.openai_auth.follow_authorize',
+                                       return_value='https://auth.openai.com/log-in/password'))
+        with self.assertLogs('core.password_setup',level='INFO') as logs:
+            result=self.run_setup()
+        self.assertTrue(result['ok'])
+        self.assertEqual(result['reason'],'already_set')
+        saved=db.get_account(self.aid)
+        self.assertEqual(saved['password_setup_status'],'already_set')
+        self.assertFalse(db._extract_registration_password(saved))
+        self.assertNotIn('password/add',self.submissions)
+        self.assertFalse(any('Fixture-password' in line for line in logs.output))
 
     def test_missing_twofa_blocks_password_changes(self):
         row=db.get_account(self.aid);row['totp_secret']='';db._save_accounts([row])
@@ -344,12 +383,14 @@ class PasswordSetupTests(unittest.TestCase):
                 self.session.post.assert_not_called()
 
     def test_wrong_origin_or_password_reset_page_never_receives_password(self):
-        for target in ('https://evil.example.test/reset-password/new-password',
-                       'https://auth.openai.com/reset-password',
-                       'https://auth.openai.com/log-in/password'):
+        outcomes=('https://evil.example.test/reset-password/new-password',
+                  'https://auth.openai.com/reset-password',
+                  'https://auth.openai.com/log-in/password')
+        expected=(False,False,True)  # log-in/password is positive existing-password evidence
+        for target,accepted in zip(outcomes,expected):
             with self.subTest(target=target):
                 self.navigate.side_effect=lambda *a:target
-                self.assertFalse(self.run_setup()['ok'])
+                self.assertEqual(self.run_setup()['ok'],accepted)
                 self.generate.assert_not_called()
 
     def test_browser_session_does_not_fall_back_to_protocol(self):

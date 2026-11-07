@@ -12,7 +12,12 @@ test('Grok view only lists registered accounts and no mailbox/job panels',()=>{
   for(const id of ['tab-grok','grokAccountRows','grokCodeForm','grokLogDialog','pager-grok-accounts'])assert.ok(html.includes(id));
   for(const removed of ['grokMailboxRows','grokJobRows','grokPrev','grokNext','grokSource'])assert.ok(!html.includes(removed));
   assert.ok(html.includes('accounts-panel-v2'));assert.ok(html.includes('accounts-table-v2'));
-  assert.ok(script.includes('/api/grok'));assert.ok(!script.includes('localStorage'));assert.ok(!script.includes('/api/accounts/'));
+  // Column widths are the only browser-local Grok preference; no account data
+  // or task state may be copied into web storage.
+  assert.ok(script.includes('/api/grok'));
+  const storageUses=[...script.matchAll(/localStorage\.[A-Za-z]+\(([^)]*)/g)].map(m=>m[1]);
+  assert.ok(storageUses.length>0&&storageUses.every(arg=>arg.includes('key')));
+  assert.ok(!script.includes('/api/accounts/'));
   assert.ok(script.includes('data-grok-secret'));assert.ok(script.includes('grokGeneration'));assert.ok(script.includes('textContent=grokLogText'));
 });
 test('Grok registration controls live in the mailbox pool page and are separated from GPT',()=>{

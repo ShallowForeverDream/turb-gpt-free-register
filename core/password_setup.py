@@ -40,6 +40,15 @@ def _failure(exc, stage: str, *, sensitive_values=()) -> dict:
                                        sensitive_values=sensitive_values)
     else:
         detail = dict(detail)
+    if detail.get("http_status") in (0, None):
+        response = getattr(exc, "response", None)
+        if response is not None:
+            detail = auth_error_diagnostic(response, stage=stage, sensitive_values=sensitive_values)
+    for name in ("status_code", "headers"):
+        if not getattr(exc, name, None):
+            response = getattr(exc, "response", None)
+            if response is not None:
+                setattr(exc, name, getattr(response, name, None))
     detail["exception_type"] = type(exc).__name__
     if isinstance(exc, PasswordSetupError):
         detail["reason"] = redact_error_text(str(exc), sensitive_values=sensitive_values)
@@ -66,13 +75,20 @@ def _json_response(response, *, stage="response", sensitive_values=(), accept_4x
     try:
         data = response.json()
     except ValueError:
-        raise PasswordSetupError("密码流程响应不是有效 JSON（不是原始响应正文）", diagnostic=auth_error_diagnostic(
-            response, stage=stage, sensitive_values=sensitive_values)) from None
+        error = PasswordSetupError("密码流程响应不是有效 JSON（不是原始响应正文）",
+                                   diagnostic=auth_error_diagnostic(
+                                       response, stage=stage, sensitive_values=sensitive_values))
+        error.response = response
+        raise error from None
     # A 4xx error body is parsed by the add-password rejection branch so its
     # structured diagnostic is retained. Other responses must be a JSON object.
     if not isinstance(data, dict) or (data.get("error") and not 400 <= response.status_code < 500):
-        raise PasswordSetupError("密码流程响应不符合预期，已停止（未记录原始响应正文）", diagnostic=auth_error_diagnostic(
-            response, stage=stage, sensitive_values=sensitive_values))
+        error = PasswordSetupError("密码流程响应不符合预期，已停止（未记录原始响应正文）",
+                                   diagnostic=auth_error_diagnostic(
+                                       response, stage=stage, sensitive_values=sensitive_values))
+        error.response = response
+        error.payload = data
+        raise error
     return data
 
 
@@ -189,6 +205,11 @@ def _password_page(session, row: dict) -> str:
             return url
         if path == "/email-verification":
             url = _continuation(_email_otp(session, row, url))
+        elif path == "/log-in/password":
+            # The site only offers "add password" when the account has none.
+            # After a prior attempt the same reauth can land here, which is
+            # positive evidence that a password now exists; never overwrite it.
+            return _ALREADY_SET
         elif path.startswith("/mfa-challenge/"):
             if not row.get("totp_secret"):
                 raise PasswordSetupError("密码重认证需要已激活的 2FA")
@@ -232,6 +253,10 @@ def _confirmed_add_result(data, status_code: int | None = None, response=None) -
         if page_type not in (None, "reset_password_success") or data.get("success") is False:
             return False
         return True
+    # A bare success flag is accepted only under the freshly bound add-password
+    # page. Here it comes from a 2xx response to this POST, not a saved session.
+    if data.get("success") is True and status_code is not None and 200 <= status_code < 300:
+        return True
     if data.get("success") is False:
         return False
     if not data:
@@ -246,6 +271,18 @@ def _explicit_password_rejection(data, status_code: int | None = None) -> bool:
     if not isinstance(data, dict) or not data.get("error"):
         return False
     return status_code is not None and 400 <= status_code < 500 and status_code != 408
+
+
+def _password_already_set(data, status_code: int | None = None) -> bool:
+    """The site says this account already has a password; do not overwrite it."""
+    if status_code != 400 or not isinstance(data, dict):
+        return False
+    error = data.get("error")
+    detail = error if isinstance(error, dict) else {}
+    code = str(detail.get("code") or data.get("code") or "").strip()
+    message = str(detail.get("message") or (error if isinstance(error, str) else "")
+                  or data.get("message") or "").lower()
+    return code == "password_already_set" or "already have a password" in message
 
 
 def verify_private_candidate(row: dict, proxy: str | None = None) -> bool:
@@ -336,6 +373,9 @@ def _add_password(session, row: dict, *, mutation_allowed: bool = True) -> dict:
         if not _eligibility(session, row["access_token"], "add"):
             raise PasswordSetupError("官网当前不允许添加密码，未修改账号")
     elif not _eligibility(session, row["access_token"], "add"):
+        # A missing add eligibility can be a transient capability answer while
+        # a password already exists. Confirm "change" before claiming failure,
+        # and never treat an unknown eligibility as absent.
         if _eligibility(session, row["access_token"], "change"):
             db.update_account_password_setup(row["id"], "already_set")
             logger.info("[密码] 官网确认已有密码，跳过；不覆盖、不猜测原密码")
@@ -375,6 +415,13 @@ def _submit_password(session, row: dict, url: str) -> dict:
         result = _json_response(response,
                                 stage="password_add", sensitive_values=(password, row["access_token"], row["totp_secret"]),
                                 accept_4xx=True)
+        if _password_already_set(result, response.status_code):
+            # Another client may have set the password between eligibility and
+            # add. The site is authoritative: retain no candidate and never
+            # overwrite the existing credential.
+            db.update_account_password_setup(row["id"], "already_set", candidate="")
+            logger.info("[密码] 官网返回已有密码，停止覆盖；请在官网使用重置流程")
+            return {"ok": True, "status": "already_set", "reason": "password_already_set"}
         if _explicit_password_rejection(result, response.status_code):
             rejection = PasswordSetupError("官网明确拒绝了密码提交", diagnostic=auth_error_diagnostic(
                 response, stage="password_add", sensitive_values=(password, row["access_token"], row["totp_secret"])))
